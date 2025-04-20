@@ -1,0 +1,1 @@
+Project aiming to implement some basic Synthesizer-based SBI SED fitting. Specifically aiming to do model comparison through direct comparioson of Bayesian evidence using LtU-ILI. Early work in progress.
