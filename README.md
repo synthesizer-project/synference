@@ -13,5 +13,7 @@ To Do:
 4. Variety of ways to implement the SBI model and hyperparameter optimization using Optuna.
 5. Assesing performance of SBI model, both from test dataset and classifcation of out of domain photometry. Typical plots to assess model performance.
 6. Comparison of models with e.g. different grids, IMFs etc or ensembling over them.
-7. More Pop III models e.g. Nakajima & Maiolino 2023. 
+7. More Pop III models e.g. Nakajima & Maiolino 2023.
+8. Documentation and testing.
+9. Generealization to other types of compiste models/inference of standard SED fitting parameters. 
 
