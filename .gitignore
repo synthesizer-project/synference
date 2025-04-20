@@ -1,0 +1,18 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+sbi-logs/
+plots/
+Yggdrasil/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints
+uv.lock
