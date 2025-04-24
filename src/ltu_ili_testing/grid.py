@@ -1,3 +1,7 @@
+import sys
+import os
+import h5py
+import scipy.stats
 import warnings
 import numpy as np
 import matplotlib.pyplot as plt
@@ -9,17 +13,19 @@ from synthesizer.emissions import plot_spectra
 from synthesizer.emission_models.dust.emission import Greybody
 from synthesizer.grid import Grid
 from synthesizer.parametric import SFH, Stars, ZDist
-from synthesizer.instruments import Instrument
+from synthesizer.instruments import Instrument, FilterCollection
+from synthesizer.particle.stars import sample_sfzh
 from typing import Dict, Any, List, Tuple, Union, Optional, Type
 from abc import ABC, abstractmethod
 import copy
 from scipy.stats import uniform, loguniform
-from unyt import unyt_array, unyt_quantity, erg, cm, s, Angstrom, um, Hz, m, nJy, K, Msun, Myr, yr, Unit, kg
+from unyt import unyt_array, unyt_quantity, erg, cm, s, Angstrom, um, Hz, m, nJy, K, Msun, Myr, yr, Unit, kg, Mpc
 from astropy.cosmology import Planck18, Cosmology, z_at_value
 from synthesizer.emission_models.attenuation import Inoue14
 import astropy.units as u
 from matplotlib.ticker import ScalarFormatter, FuncFormatter
 from tqdm import tqdm
+from synthesizer.pipeline import Pipeline
 
 warnings.filterwarnings('ignore')
 
@@ -275,6 +281,7 @@ def generate_emission_models(emission_model: Type[EmissionModel],
     # Create emission model objects for each parameter combination
 
     emission_models = []
+    out_params = {}
     for i, params in tqdm(enumerate(varying_param_combinations)):
         # Create parameter dictionary for emission model constructor
         emission_params = {
@@ -286,6 +293,14 @@ def generate_emission_models(emission_model: Type[EmissionModel],
         for key, value in emission_params.items():
             if 'units' in varying_params[key] and varying_params[key]['units'] is not None:
                 emission_params[key] = value * varying_params[key]['units']
+            if key not in out_params:
+                out_params[key] = []
+            out_params[key].append(emission_params[key])
+
+
+        # store value of varying parameter(s) in dictionary for this emission model
+
+    
         
         emission_params.update(fixed_params)
         
@@ -294,7 +309,7 @@ def generate_emission_models(emission_model: Type[EmissionModel],
         emission_models.append(emission_model_instance)
 
 
-    return emission_models
+    return emission_models, out_params
 
 def generate_sfh_basis(
         sfh_type: Type[SFH.Common],
@@ -410,8 +425,905 @@ def generate_sfh_basis(
 
     return np.array(sfhs), redshifts
 
+def generate_constant_R(R=300, start=1*Angstrom, end=9e5*Angstrom):
+    
+    x=[start.to(Angstrom).value]
 
-class sed_grid_generator():
+    while x[-1] < end.to(Angstrom).value:
+        x.append(x[-1] * (1.0 + 0.5 / R))
+    
+    return np.array(x) * Angstrom
+
+def list_parameters(distribution):
+    """List parameters for scipy.stats.distribution.
+    # Arguments
+        distribution: a string or scipy.stats distribution object.
+    # Returns
+        A list of distribution parameter strings.
+    # from https://stackoverflow.com/questions/30453097/getting-the-parameter-names-of-scipy-stats-distributions
+    """
+    if isinstance(distribution, str):
+        distribution = getattr(scipy.stats, distribution)
+    if distribution.shapes:
+        parameters = [name.strip() for name in distribution.shapes.split(',')]
+    else:
+        parameters = []
+    if distribution.name in scipy.stats._discrete_distns._distn_names:
+        parameters += ['loc']
+    elif distribution.name in scipy.stats._continuous_distns._distn_names:
+        parameters += ['loc', 'scale']
+    else:
+        sys.exit("Distribution name not found in discrete or continuous lists.")
+    return parameters
+
+def rename_overlapping_parameters(lists_dict):
+    """
+    Check if N lists have any overlapping parameters and rename them if they do.
+    
+    Args:
+        lists_dict: Dictionary where keys are list names and values are the lists
+    
+    Returns:
+        Dictionary with renamed parameters where overlapping occurred
+    """
+    # Collect all parameters across all lists
+    all_params = {}
+    for list_name, params in lists_dict.items():
+        for param in params:
+            if param not in all_params:
+                all_params[param] = []
+            all_params[param].append(list_name)
+    
+    # Build the result with renamed parameters where needed
+    result = {}
+    for list_name, params in lists_dict.items():
+        result[list_name] = []
+        for param in params:
+            # If parameter appears in multiple lists, rename it
+            if len(all_params[param]) > 1:
+                result[list_name].append(f"{list_name}_{param}")
+            else:
+                result[list_name].append(param)
+    
+    return result
+
+class GalaxyBasis:
+    def __init__(self, 
+                model_name: str,
+                redshifts: np.ndarray,
+                grid: Grid,
+                emission_model: Type[EmissionModel],
+                galaxy_params: dict = {},
+                sfhs: List[Type[SFH.Common]] = None,
+                metal_dists: List[Type[ZDist.Common]] = None,
+                cosmo: Type[Cosmology] = Planck18,
+                instrument: Instrument = None,
+                stellar_masses: unyt_array = None,
+                redshift_dependent_sfh: bool = False,
+                params_to_ignore: List[str] = [],
+
+    ) -> None:
+        """
+        Initialize the GalaxyBasis object with SFHs, redshifts, and other parameters.
+        
+        Parameters
+        ----------
+        sfhs : List[Type[SFH.Common]]
+            List of SFH objects.
+        redshifts : np.ndarray
+            Array of redshift values.
+        grid : Grid
+            Grid object containing the SPS grid.
+        emission_model : Type[EmissionModel]
+            Emission model class to instantiate.
+        emission_model_params : dict
+            Dictionary of parameters for the emission model.
+        galaxy_params : dict
+            Dictionary of parameters for the galaxy.
+        metal_dists : List[Type[ZDist.Common]], optional
+            List of metallicity distribution objects, by default None
+        cosmo : Type[Cosmology], optional
+            Cosmology object, by default Planck18
+        instrument : Instrument, optional
+            Instrument object containing the filters, by default None
+        stellar_masses : unyt_array, optional
+            Array of stellar masses for the galaxies, by default None
+        redshift_dependent_sfh : bool, optional
+            If True, the SFH will depend on redshift, by default False. If True, expect each
+            SFH to have a redshift attribute.
+        params_to_ignore : List[str], optional
+            List of parameters to ignore as being different when calculating which parameters are varying.
+            E.g. max_age may be dependent on redshift, so we don't want to include it in the varying parameters as the model can learn this. 
+        """
+        
+        self.model_name = model_name
+        self.sfhs = sfhs
+        self.redshifts = redshifts
+        self.grid = grid
+        self.emission_model = emission_model
+        self.galaxy_params = galaxy_params
+        self.metal_dists = metal_dists
+        self.cosmo = cosmo
+        self.instrument = instrument
+        self.stellar_masses = stellar_masses
+        self.redshift_dependent_sfh = redshift_dependent_sfh
+        self.params_to_ignore = params_to_ignore
+
+        if isinstance(self.metal_dists, ZDist.Common):
+            self.metal_dists = [self.metal_dists]
+
+        if isinstance(self.sfhs, SFH.Common):
+            self.sfhs = [self.sfhs]
+
+        self.per_particle = False
+
+        # Check if any galaxy parameters are dictionaries with keys like 'prior', 'min', 'max', etc.
+        for key, value in galaxy_params.items():
+            if isinstance(value, dict):
+                # If the value is a dictionary, process it as a prior
+                self.galaxy_params[key] = self.process_priors(value)
+        
+        if self.redshift_dependent_sfh:
+            # Check if the SFHs have a redshift attribute
+            for sfh in self.sfhs:
+                if not hasattr(sfh, 'redshift'):
+                    raise ValueError("SFH must have a redshift attribute if redshift_dependent_sfh is True")
+                
+            if not isinstance(self.redshifts, np.ndarray):
+                self.redshifts = np.array(self.redshifts)
+
+            # Check all redshifts are in self.redshifts
+            for sfh in self.sfhs:
+                if sfh.redshift not in self.redshifts:
+                    raise ValueError(f"SFH redshift {sfh.redshift} not in redshifts array")
+                
+            # Make self.SFHs a dictionary with redshift as key
+            sfh_dict = {}
+            for sfh in self.sfhs:
+                if sfh.redshift not in sfh_dict:
+                    sfh_dict[sfh.redshift] = []
+                sfh_dict[sfh.redshift].append(sfh)
+            self.sfhs = sfh_dict
+        else:
+            self.sfhs = {z: self.sfhs for z in self.redshifts}
+
+    def process_priors(self, 
+                       prior_dict: Dict[str, Any],
+                       ) -> unyt_array:
+
+        assert isinstance(prior_dict, dict), "prior_dict must be a dictionary"
+        
+        assert 'prior' in prior_dict, "prior_dict must contain a 'prior' key"
+        assert 'size' in prior_dict, "prior_dict must contain a 'size' key"
+        
+        stats_params = list_parameters(prior_dict['prior'])
+
+        # Check required parameters are present
+        params = {}
+        for param in stats_params:
+            assert param in prior_dict, f"prior_dict must contain a '{param}' key"
+            params[param] = prior_dict[param]
+
+        # draw values for this parameter
+
+        values = prior_dict['prior'].rvs(
+            size=int(prior_dict['size']),
+            **params
+        )
+
+        if 'units' in prior_dict and prior_dict['units'] is not None:
+            values = unyt_array(values, units=prior_dict['units'])
+
+        return values
+    
+    def create_galaxies(self, 
+                        stellar_masses: Union[unyt_array, unyt_quantity, None] = None,
+                        base_mass: unyt_quantity = 1e9 * Msun
+                        ) -> List[Type[Galaxy]]:
+        """
+        Create galaxies with the specified SFHs, redshifts, and other parameters.
+        
+        Parameters
+        ----------
+        stellar_masses : np.ndarray
+            Array of stellar masses for the galaxies.
+        
+        Returns
+        -------
+        List[Type[Galaxy]]
+            List of Galaxy objects.
+        """
+
+        if stellar_masses is None:
+            stellar_masses = self.stellar_masses
+            if stellar_masses is None:
+                raise ValueError("stellar_masses must be provided or set in the constructor")
+        
+        varying_param_values = [i for i in self.galaxy_params.values() if type(i) in [list, np.ndarray]]
+        # generate all combinations of the varying parameters
+        if len(varying_param_values) == 0:
+            param_list = [{}]
+            fixed_params = self.galaxy_params
+
+        else:
+            varying_param_combinations = np.array(np.meshgrid(*varying_param_values)).T.reshape(-1, len(varying_param_values))
+            column_names = [i for i, j in zip(self.galaxy_params.keys(), varying_param_values) if type(j) in [list, np.ndarray]]
+            fixed_params = {key: value for key, value in self.galaxy_params.items() if type(value) not in [list, np.ndarray]}
+            param_list = [{column_names[i]: j for i, j in enumerate(row)} for row in varying_param_combinations]
+
+
+        galaxies = []
+        all_parameters = {}
+        for i, redshift in tqdm(enumerate(self.redshifts), desc=f"Creating {self.model_name} galaxies", total=len(self.redshifts)):
+            # get the sfh for this redshift
+            sfh_models = self.sfhs[redshift]
+            for sfh_model in sfh_models:
+                sfh_parameters = sfh_model.parameters
+                for k, Z_dist in enumerate(self.metal_dists):
+                    Z_parameters = Z_dist.parameters
+
+                    # Create a new galaxy with the specified parameters
+                    for params in param_list:
+                        params.update(fixed_params)
+                        gal = self.create_galaxy(sfh=sfh_model,
+                                                    redshift=redshift,
+                                                    metal_dist=Z_dist,
+                                                    base_mass=base_mass,
+                                                    stellar_mass=stellar_masses,
+                                                    **params)
+                        save_params = copy.deepcopy(params)
+                        save_params['redshift'] = redshift
+                        save_params.update(sfh_parameters)
+                        save_params.update(Z_parameters)
+
+                        # This stores all input parameters for the galaxy so we can work out which parameters
+                        # are varying and which are fixed later.
+                        gal.all_params = save_params
+
+                        # add all_parameters to dictionary if that key doesn't exist
+
+                        for key, value in save_params.items():
+                            if key not in all_parameters:
+                                all_parameters[key] = []
+                            
+                            if value not in all_parameters[key]:
+                                all_parameters[key].append(value)
+                            else:
+                                pass
+
+                        galaxies.append(gal)
+
+        self.galaxies = galaxies
+
+        # Remove any paremters which are just [None]
+        to_remove = []
+        fixed_param_names = []
+        varying_param_names = []
+
+        for key, value in all_parameters.items():
+            if len(value) == 1 and value[0] is None:
+                to_remove.append(key)
+                continue
+            # check if all values are the same. 
+            if len(np.unique(value)) == 1:
+                fixed_param_names.append(key)
+            else:
+                varying_param_names.append(key)
+        
+        for param in self.params_to_ignore:
+            if param in varying_param_names:
+                varying_param_names.remove(param)
+            
+        # Sanity check all varying parameters combinations on self.galaxies are unique
+
+        hashes = []
+        for gal in self.galaxies:
+            hash_i = 0
+            for key in varying_param_names:
+                if key in gal.all_params:
+                    if isinstance(gal.all_params[key], unyt_array) or isinstance(gal.all_params[key], unyt_quantity):
+                        hash_i += hash(float(gal.all_params[key].value))
+                    else:
+                        hash_i += hash(gal.all_params[key])
+            hashes.append(hash_i)
+        if len(hashes) != len(np.unique(hashes)):
+            raise ValueError("Varying parameters are not unique across galaxies. Check your input parameters.")
+
+        self.varying_param_names = varying_param_names
+        self.fixed_param_names = fixed_param_names
+        self.all_parameters = all_parameters
+        
+
+        for key in to_remove:
+            all_parameters.pop(key)
+
+        return self.galaxies
+    
+    def create_galaxy(self, 
+                      sfh: Type[SFH.Common],
+                      redshift: float,
+                      metal_dist: Type[ZDist.Common],
+                      base_mass: unyt_quantity = 1e9 * Msun,
+                      stellar_mass: Union[unyt_array, unyt_quantity, None] = None,
+                      **galaxy_kwargs) -> Type[Galaxy]:
+        """
+        Create a new galaxy with the specified parameters.
+        """
+        
+        # Initialise the parametric Stars object
+        param_stars = Stars(
+            log10ages=self.grid.log10ages,
+            metallicities=self.grid.metallicity,
+            sf_hist=sfh,
+            metal_dist=metal_dist,
+            initial_mass=base_mass,
+            **galaxy_kwargs, # most parameters want to be on the emitter
+        )
+
+        # Define the number of stellar particles we want
+        n = stellar_mass.size if isinstance(stellar_mass, unyt_array) else 1
+        
+
+        if n > 1:
+            # Sample the parametric SFZH to create "fake" stellar particles
+            part_stars = sample_sfzh(
+                sfzh=param_stars.sfzh,
+                log10ages=np.log10(param_stars.ages),
+                log10metallicities=np.log10(param_stars.metallicities),
+                nstar=n,
+                current_masses=stellar_mass,
+                redshift=redshift,
+                coordinates=np.random.normal(0, 0.01, (n, 3)) * Mpc,
+                centre=np.zeros(3) * Mpc,
+            )
+            self.per_particle = True
+        else:
+            part_stars = param_stars
+
+
+        # And create the galaxy
+        galaxy = Galaxy(
+            stars=part_stars,
+            redshift=redshift,
+        )
+
+        return galaxy
+
+    def process_galaxies(self, 
+                        galaxies: List[Type[Galaxy]],
+                        out_name: str = 'output.hdf5',
+                        n_proc: int = 4,
+                        verbose: int = 1,
+                        save: bool = True,
+                        ) -> Pipeline:
+
+        self.emission_model.set_per_particle(self.per_particle)
+
+        pipeline = Pipeline(
+            emission_model=self.emission_model,
+            instruments=self.instrument,
+            nthreads=n_proc,
+            verbose=verbose,
+        )
+
+
+        for key in self.all_parameters.keys():
+            pipeline.add_analysis_func(lambda gal, key=key: gal.all_params[key], result_key=key)
+            
+        pipeline.add_analysis_func(lambda gal: gal.stars.initial_mass, result_key='mass')
+
+        pipeline.add_galaxies(galaxies)
+        pipeline.get_spectra()
+        pipeline.get_observed_spectra(self.cosmo)
+        pipeline.get_photometry_luminosities()
+        pipeline.get_photometry_fluxes()
+
+        pipeline.run()
+
+        if save:
+            # Save the pipeline to a file
+            out_name = f"{self.out_dir}/{self.model_name}_{out_name}"
+
+            pipeline.write(out_name, verbose=0)
+
+        return pipeline
+
+class CombinedBasis:
+    def __init__(self, 
+                bases: List[Type[GalaxyBasis]],
+                total_stellar_masses: unyt_array,
+                redshifts: np.ndarray,
+                base_emission_model_keys: List[str],
+                combination_weights: np.ndarray,
+                out_name='combined_basis',
+                out_dir='../output/',
+                base_mass=1e9 * Msun,
+                ) -> None:
+        
+
+        self.bases = bases
+        self.total_stellar_masses = total_stellar_masses
+        self.redshifts = redshifts
+        self.combination_weights = combination_weights
+        self.out_name = out_name
+        self.out_dir = out_dir
+        self.base_mass = base_mass
+        self.base_emission_model_keys = base_emission_model_keys
+
+        # stellar mass just scales the basis SED. So computing spectra/photometry for each mass/combination is just a weighted sum of the basis SEDs.
+        # We can just compute the basis SEDs for a single mass, and then scale them by the combination weights.
+
+        # Based on total stellar masses and combination weights, calculate the stellar masses we need to
+        # compute for each basis
+        # combination weights would look like this:
+        # [[0.1, 0.9], [0.2, 0.8], [0.3, 0.7], [0.4, 0.6], [0.5, 0.5]] for 2 bases, or [[0.1, 0.1, 0.1, 0.1, 0.5], [...]] for 5 bases
+        # stellar masses is e.g. [1e5, 1e6, 1e7, 1e8, 1e9] * Msun.
+        # Calculate the stellar masses for each basis
+
+    def process_bases(self, 
+                      overwrite: Union[bool, List[bool]] = False,
+                      ) -> None:
+        """
+        Process the bases and save the output to files.
+        Parameters
+        ----------
+        overwrite : bool or list of bools
+            If True, overwrite the existing files. If False, skip the files that already exist.
+            If a list of bools is provided, it should have the same length as the number of bases.
+        """
+
+        
+        if not isinstance(overwrite, (tuple, list, np.ndarray)):
+            overwrite = [overwrite] * len(self.bases)
+        else:
+            if len(overwrite) != len(self.bases):
+                raise ValueError("overwrite must be a boolean or a list of booleans with the same length as bases")
+            
+
+        for i, base in enumerate(self.bases):
+            full_out_path = f"{self.out_dir}/{self.out_name}_{base.model_name}_0.hdf5"
+
+            if os.path.exists(full_out_path) and not overwrite[i]:
+                print(f"File {full_out_path} already exists. Skipping.")
+                continue
+            elif os.path.exists(full_out_path) and overwrite[i]:
+                print(f"File {full_out_path} already exists. Overwriting.")
+                os.remove(full_out_path)
+            elif not os.path.exists(self.out_dir):
+                os.makedirs(self.out_dir)
+
+            # Create galaxies for each base. Only create for one mass. We will scale later.
+            galaxies = base.create_galaxies(self.base_mass)
+
+            print(f'Created {len(galaxies)} galaxies for base {base.model_name}')
+            # Process the galaxies
+            pipeline = base.process_galaxies(galaxies, self.out_name, n_proc=6, verbose=1, save=False)
+            # Save the pipeline
+
+            pipeline.write(full_out_path.replace('_0', ''), verbose=0)
+
+            with h5py.File(full_out_path, 'r+') as f:
+                # Add the varying and fixed parameters to the file
+                f.attrs['varying_param_names'] = base.varying_param_names
+                f.attrs['fixed_param_names'] = base.fixed_param_names
+
+                # Store grid wavelengths since I can't see them in the pipeline output (the filter wavelength array doesn't match)
+                f.create_dataset('Wavelengths', data=base.emission_model.grid.lam.to(Angstrom).value)
+                f['Wavelengths'].attrs['Units'] = 'Angstrom'
+
+    def load_bases(self, indexes: List[int] = None) -> dict:
+        # Load the bases from the files
+
+        outputs = {}
+        for i, base in enumerate(self.bases):
+
+            print(f'Emission model key for base {base.model_name}: {self.base_emission_model_keys[i]}')
+
+            full_out_path = f"{self.out_dir}/{self.out_name}_{base.model_name}_0.hdf5"
+            if not os.path.exists(full_out_path):
+                raise ValueError(f"File {full_out_path} does not exist")
+            
+            properties = {}
+            
+            with h5py.File(full_out_path, 'r') as f:
+                
+                # Load in which parameters are varying and fixed
+                base.varying_param_names = f.attrs['varying_param_names']
+                base.fixed_param_names = f.attrs['fixed_param_names']
+
+                galaxies = f['Galaxies']
+
+                property_keys = list(galaxies.keys())
+                property_keys.remove('Stars')
+
+                for key in property_keys:
+                    properties[key] = galaxies[key][()]
+                    # get unit
+                    if hasattr(galaxies[key], 'attrs'):
+                        if 'Units' in galaxies[key].attrs:
+                            unit = galaxies[key].attrs['Units']
+                            properties[key] = unyt_array(properties[key], unit)
+
+                # Get the spectra
+                spec = galaxies['Stars']['Spectra']['SpectralFluxDensities']
+                assert self.base_emission_model_keys[i] in spec.keys(), f"Emission model key {self.base_emission_model_keys[i]} not found in {spec.keys()}"
+                observed_spectra = spec[self.base_emission_model_keys[i]]
+                observed_spectra = unyt_array(observed_spectra, units=observed_spectra.attrs['Units'])
+
+
+                observed_photometry = galaxies['Stars']['Photometry']['Fluxes'][self.base_emission_model_keys[i]][base.instrument.label]
+
+                phot = {}
+                for key in observed_photometry.keys():
+                    phot[key] = observed_photometry[key][()]
+
+                
+                outputs[base.model_name] = {
+                    'properties': properties,
+                    'observed_spectra': observed_spectra,
+                    'wavelengths': unyt_array(f['Instruments']['Wavelengths'][()], units=f['Instruments']['Wavelengths'].attrs['Units']),
+                    'observed_photometry': phot,
+                }
+
+        self.pipeline_outputs = outputs
+
+        return outputs
+        
+    def create_grid(self, 
+                override_instrument: Union[Instrument, None] = None,
+                save: bool = True,
+                out_name: str = 'output.hdf5',
+                overwrite: bool = False,
+                ) -> dict:    
+        """
+        Create a grid of SEDs for the given bases and stellar masses from the pipeline outputs.
+        Can override the instrument used to compute the SEDs if you want to subset which filters are used in the grid.
+        E.g. the base model is run for all NIRCam wide and medium filters, but you want to create a grid for just the wide filters.
+        """
+
+        if os.path.exists(f"{self.out_dir}/{out_name}") and not overwrite:
+            print(f"File {self.out_dir}/{out_name} already exists. Skipping.")
+            self.load_grid_from_file(f"{self.out_dir}/{out_name}")
+            return
+        
+        
+        pipeline_outputs = self.load_bases()
+
+        # Pipeline
+
+        # given the true self.total_stellar_masses and self.combination_weights, create a grid of photometry. All masses 
+        # for computed photometry are given in pipeline_outputs['properties']['mass']. Need to calculate scaling factor
+        # to account for both total mass and mass split between bases.
+
+        # create the output array. It should be (size(base1) * size(base2) * ... * size(basen) * len(self.combination_weights), len(self.filters))
+        
+        # calculate size of every combination of bases
+
+        base_filters = self.bases[0].instrument.filters.filter_codes
+        for i, base in enumerate(self.bases):
+            if base.instrument.filters.filter_codes != base_filters:
+                raise ValueError(f"Base {i} has different filters to base 0. Cannot combine bases with different filters.")
+            
+        if override_instrument is not None:
+            # Check all filters in override_instrument are in the base filters
+            for filter_code in override_instrument.filters.filter_codes:
+                if filter_code not in base_filters:
+                    raise ValueError(f"Filter {filter_code} not found in base filters. Cannot override instrument.")
+                
+            filter_codes = override_instrument.filters.filter_codes
+        else:
+            filter_codes = base_filters
+
+        filter_codes = [i.split('/')[-1] for i in filter_codes]
+
+        all_outputs = []
+        all_params = []
+
+        ignore_keys = ['redshift']
+
+        total_property_names = {}
+        for i, base in enumerate(self.bases):
+            total_property_names[base.model_name] = [f'{base.model_name}/{i}' for i in base.varying_param_names if i not in ignore_keys]
+            params = pipeline_outputs[base.model_name]['properties']
+            rename_keys = [i for i in base.varying_param_names if i not in ignore_keys]
+            for key in list(params.keys()):
+                if key in rename_keys:
+                    # rename the key to be the base name + parameter name
+                    params[f'{base.model_name}/{key}'] = params[key]
+
+        print(f"Total property names: {total_property_names}")
+
+        # Check if any of the bases have the same varying parameters
+        all_combined_param_names = []
+        for key, value in total_property_names.items():
+            all_combined_param_names.extend(value)
+        
+        # Add our standard parameters that are always included
+        param_columns = ['redshift', 'log_mass', 'weight_fraction']
+        param_columns.extend(all_combined_param_names)
+
+        for redshift in tqdm(self.redshifts):
+            for total_mass in self.total_stellar_masses:
+                for combination in self.combination_weights:
+                    mass_weights = np.array(combination) * total_mass
+
+                    scaled_photometries = []
+                    base_param_values = []
+
+                    for i, base in enumerate(self.bases):
+                        outputs = pipeline_outputs[base.model_name]
+                        z_base = outputs['properties']['redshift']
+                        mask = z_base == redshift
+                        mass = outputs['properties']['mass'][mask]
+
+                        # Calculate the scaling factor for each base
+                        scaling_factors = mass_weights[i] / mass
+
+                        base_photometry = np.array([pipeline_outputs[base.model_name]['observed_photometry'][filter_code][mask] for filter_code in filter_codes], dtype=np.float32)
+
+                        # Scale the photometry by the scaling factor
+                        scaled_photometry = base_photometry * scaling_factors
+
+                        scaled_photometries.append(scaled_photometry)
+
+                        # Get the varying parameters for this base
+                        base_params = {}
+                        for param_name in total_property_names[base.model_name]:
+                            # Extract the original parameter name without the base prefix
+                            orig_param = param_name.split('/')[-1]
+                            if f'{base.model_name}/{orig_param}' in outputs['properties']:
+                                base_params[param_name] = outputs['properties'][f'{base.model_name}/{orig_param}'][mask]
+                            elif orig_param in outputs['properties']:
+                                base_params[param_name] = outputs['properties'][orig_param][mask]
+                        
+                        base_param_values.append(base_params)
+
+                    # Calculate the total number of combinations
+                    dimension = np.prod([i.shape[-1] for i in scaled_photometries])
+
+                    output_array = np.zeros((scaled_photometries[0].shape[0], dimension))
+                    params_array = np.zeros((len(param_columns), dimension))
+
+                    # Create all combinations of indices
+                    combinations = np.meshgrid(*[np.arange(i.shape[-1]) for i in scaled_photometries], indexing='ij')
+                    combinations = np.array(combinations).T.reshape(-1, len(scaled_photometries))
+                    
+                    # Fill the output and parameter arrelf.out_name
+                    for i, combo_indices in enumerate(combinations):
+                        # Add the scaled photometries for each base
+                        for j, base in enumerate(self.bases):
+                            output_array[:, i] += scaled_photometries[j][:, combo_indices[j]]
+                        
+                        # Fill parameter values
+                        param_idx = 0
+                        
+                        # Add standard parameters first
+                        params_array[param_idx, i] = redshift
+                        param_idx += 1
+                        
+                        params_array[param_idx, i] = np.log10(total_mass.value)
+                        param_idx += 1
+                        
+                        params_array[param_idx, i] = combination[0]  # assuming this is weight fraction
+                        param_idx += 1
+                        
+                        # Add all varying parameters from each base
+                        for j, base in enumerate(self.bases):
+                            for param_name in total_property_names[base.model_name]:
+                                if param_name in base_param_values[j]:
+                                    params_array[param_idx, i] = base_param_values[j][param_name][combo_indices[j]]
+                                param_idx += 1
+
+
+                    all_outputs.append(output_array)
+                    all_params.append(params_array)
+        
+        # Combine all outputs and parameters
+        combined_outputs = np.hstack(all_outputs)
+        combined_params = np.hstack(all_params)
+
+        print(f"Combined outputs shape: {combined_outputs.shape}")
+        print(f"Combined parameters shape: {combined_params.shape}")
+        print(f"Combined parameters: {combined_params}")
+        print(f"Filter codes: {filter_codes}")
+
+        out = {
+            'photometry': combined_outputs,
+            'parameters': combined_params,
+            'parameter_names': param_columns,
+            'filter_codes': filter_codes
+        }
+
+        self.grid_photometry = combined_outputs
+        self.grid_parameters = combined_params
+        self.grid_parameter_names = param_columns
+        self.grid_filter_codes = filter_codes
+
+        if save:
+            self.save_grid(out, out_name=out_name, overwrite=overwrite)      
+
+    def save_grid(self,
+                  grid_dict: dict, # E.g. output from create_grid
+                  out_name: str = 'grid.hdf5',
+                  overwrite: bool = False,
+                  ) -> None:
+        
+        """
+        Save the grid to a file.
+        Parameters
+        ----------
+        grid_dict : dict
+            Dictionary containing the grid data.
+            Expected keys are 'photometry', 'parameters', 'parameter_names', and 'filter_codes'.
+
+        out_name : str, optional
+            Name of the output file, by default 'grid.hdf5'
+        """
+        # Check if the output directory exists, if not create it
+        if not os.path.exists(self.out_dir):
+            os.makedirs(self.out_dir)
+        # Create the full output path
+        full_out_path = os.path.join(self.out_dir, out_name)
+        # Check if the file already exists
+        if os.path.exists(full_out_path) and not overwrite:
+            print(f"File {full_out_path} already exists. Skipping.")
+            return
+        elif os.path.exists(full_out_path) and overwrite:
+            print(f"File {full_out_path} already exists. Overwriting.")
+            os.remove(full_out_path)
+        # Create a new HDF5 file
+        with h5py.File(full_out_path, 'w') as f:
+            # Create a group for the grid data
+            grid_group = f.create_group('Grid')
+            # Create datasets for the photometry and parameters
+            grid_group.create_dataset('Photometry', data=grid_dict['photometry'], compression='gzip')
+            grid_group.create_dataset('Parameters', data=grid_dict['parameters'], compression='gzip')
+            # Create a dataset for the parameter names
+            f.attrs['ParameterNames'] = grid_dict['parameter_names']
+            f.attrs['FilterCodes'] = grid_dict['filter_codes']
+            
+    def plot_galaxy_from_grid(self,
+        index: int,
+    ):
+        '''
+        Given an index, plot the galaxy from the grid. Open the relevant hdf5 files and load the spectra.
+        
+        '''
+
+        if self.grid_photometry is None:
+            raise ValueError("Grid photometry not created. Run create_grid() first.")
+
+        if not hasattr(self, 'pipeline_outputs'):
+            self.load_bases()
+
+        # Get the parameters for this index
+        params = self.grid_parameters[:, index]
+
+        # Get the photometry for this index
+        photometry = self.grid_photometry[:, index]
+
+        # Get the filter codes
+        filter_codes = [f'JWST/{i}' for i in self.grid_filter_codes]
+        filterset = FilterCollection(filter_codes)
+
+        # For each basis, look at which parameters for that basis and match to the spectra.
+
+        combined_spectra = []
+        total_wavelengths = []
+        for i, base in enumerate(self.bases):
+            # Get the varying parameters for this base
+            base_params = {}
+            for i, param_name in enumerate(self.grid_parameter_names):
+                # Extract the original parameter name without the base prefix
+                if '/' in param_name:
+                    basis, orig_param = param_name.split('/')
+                else:
+                    basis = base.model_name
+                    orig_param = param_name
+                if basis == base.model_name:
+                    base_params[orig_param] = params[i]
+                    
+
+            basis_params = list(self.pipeline_outputs[base.model_name]['properties'].keys())
+
+            total_mask = np.ones(len(self.pipeline_outputs[base.model_name]['properties'][basis_params[0]]), dtype=bool)
+            for key in base_params.keys():
+                if key not in basis_params:
+                    continue
+                all_values = self.pipeline_outputs[base.model_name]['properties'][key]
+                _i = all_values == base_params[key]
+                total_mask = np.logical_and(total_mask, _i)
+
+            assert np.sum(total_mask) == 1, f"Found {np.sum(total_mask)} matches for {base.model_name} with parameters {base_params}. Expected 1 match."
+            index = np.where(total_mask)[0][0]
+
+            print(index, self.pipeline_outputs[base.model_name]['observed_spectra'])
+            # Get the spectra for this index
+            spectra = self.pipeline_outputs[base.model_name]['observed_spectra'][index]
+            # get the mass of the spectra and the expected mass, and renormalise the spectra
+            mass = self.pipeline_outputs[base.model_name]['properties']['mass'][index]
+            expected_mass = params[1]
+            scaling_factor = expected_mass / mass
+            spectra = spectra * scaling_factor
+            # Append the spectra to the combined spectra
+            combined_spectra.append(spectra)
+            wavs = self.pipeline_outputs[base.model_name]['wavelengths']
+            total_wavelengths.append(wavs)
+
+        # Assert wavelengths for all bases are the same for now (could refactor this to resample later)
+        for i, wavs in enumerate(total_wavelengths):
+            if i == 0:
+                continue
+            assert np.all(wavs == total_wavelengths[0]), f"Wavelengths for base {i} do not match base 0. {wavs} != {total_wavelengths[0]}"
+
+        weight_pos = 'weight_fraction' == self.grid_parameter_names
+        weights = params[weight_pos]
+
+        # Only works for combining 2 bases at the moment
+        weights = (weights, 1-weights)
+
+        # Stack the spectra according to the combination weights
+        combined_spectra = np.array(combined_spectra)
+        combined_spectra = combined_spectra * weights
+        combined_spectra_summed = np.sum(combined_spectra, axis=0)
+        fig, ax = plt.subplots(figsize=(10, 6))
+        
+        photwavs = filterset.pivot_lams
+
+        ax.scatter(photwavs, photometry, label='Photometry', color='red', s=10)
+        print(np.shape(combined_spectra_summed))
+        ax.plot(wavs, combined_spectra_summed, label='Combined Spectra', color='blue')
+
+        for i, base in enumerate(self.bases):
+            # Get the spectra for this index
+            spectra = combined_spectra[i]
+            
+            ax.plot(wavs, spectra, label=f'{base.model_name} Spectra', color='green', alpha=0.5)
+
+        ax.set_xlabel('Wavelength (AA)')
+
+        plt.show()
+
+                               
+    def load_grid_from_file(self, 
+                        file_path: str,
+                        ) -> dict:
+        """
+        Load the grid from a file.
+        Parameters
+        ----------
+        file_path : str
+            Path to the HDF5 file containing the grid data.
+        Returns
+        -------
+        dict
+            Dictionary containing the grid data.
+        """
+        with h5py.File(file_path, 'r') as f:
+            grid_data = {
+                'photometry': f['Grid']['Photometry'][()],
+                'parameters': f['Grid']['Parameters'][()],
+                'parameter_names': f.attrs['ParameterNames'],
+                'filter_codes': f.attrs['FilterCodes'],
+            }
+
+        self.grid_photometry = grid_data['photometry']
+        self.grid_parameters = grid_data['parameters']
+        self.grid_parameter_names = grid_data['parameter_names']
+        self.grid_filter_codes = grid_data['filter_codes']
+        
+        return grid_data
+
+
+            
+        
+
+
+                
+                
+
+
+class sed_grid_generator:
     """
     Abstract base class for generating grids of data.
     """
@@ -644,12 +1556,17 @@ class sed_grid_generator():
                 # Get the redshift
                 redshift = gal.redshift
 
+                if key == 'Pop III':
+                    grid = self.popIII_sps_grid
+                else:
+                    grid = self.grid
+                    
                 # Get the SFH
                 stars_sfh = gal.stars.get_sfh()
-                stars_sfh = stars_sfh / np.diff(10**(self.grid.log10age), prepend=0) / yr
+                stars_sfh = stars_sfh / np.diff(10**(grid.log10age), prepend=0) / yr
                 t, sfh = gal.stars.sf_hist_func.calculate_sfh()
 
-                ax[1].plot(10**(self.grid.log10age-6), stars_sfh, label=f'{key} SFH', color=colors[key])
+                ax[1].plot(10**(grid.log10age-6), stars_sfh, label=f'{key} SFH', color=colors[key])
                 ax[1].plot(t/1e6, sfh/np.max(sfh) * np.max(stars_sfh), label=f'Requested {key} SFH', color=colors[key], linestyle='--')
 
                 mass = gal.stars.initial_mass
@@ -728,18 +1645,41 @@ class sed_grid_generator():
         """
 
         # Create a list to store the generated SEDs
-        seds = []
-
+        galaxies = []
+        params = []
+        # sfhs, metal_dists, emission_models, masses, ratios, popIII_sfhs, popIII_metal_dists, popIII_emission_models
         # Iterate over all combinations of parameters
         for sfh in tqdm(self.sfhs):
             for metal_dist in self.metal_dists:
                 for emission_model in self.emission_models:
                     for logm in self.masses:
-                        # Create a new SED object with the current parameters
-                        sed = self.create_galaxy(sfh, metal_dist, emission_model, logm, sfh.redshift)
-                        seds.append(sed)
+                        if self.has_popIII:
+                            for popIII_sfh in self.popIII_sfhs:
+                                for popIII_metal_dist in self.popIII_metal_dists:
+                                    for popIII_emission_model in self.popIII_emission_models:
+                                        for pop_III_mass_fraction in self.mass_fractions:
+                                            # Create a new SED object with the current parameters
+                                            galaxy = self.create_galaxy(sfh, metal_dist, emission_model, logm, sfh.redshift,
+                                                                    popIII_sfh=popIII_sfh,
+                                                                    pop_III_mass_fraction=pop_III_mass_fraction,
+                                                                    popIII_metal_dist=popIII_metal_dist,
+                                                                    popIII_emission_model=popIII_emission_model)
+                                            galaxies.append(galaxy)
+                                            params.append([sfh.redshift, sfh, metal_dist, emission_model, logm,
+                                                            popIII_sfh, pop_III_mass_fraction, popIII_metal_dist, popIII_emission_model])
+                            else:
+                                        
+                                # Create a new SED object with the current parameters
+                                galaxy = self.create_galaxy(sfh, metal_dist, emission_model, logm, sfh.redshift)
+                                galaxies.append(galaxy)
+                                params.append([sfh.redshift, sfh, metal_dist, emission_model, logm])
+                                
 
-        return seds
+        # Group into grid/emission model, and run Pipeline to generate SEDs/photometry.
+
+        # Store photometry, redshift and parameters of model in HDF5 file. 
+
+        return grid
     
     def create_galaxy(self,
                         sfh: SFH,
@@ -799,6 +1739,7 @@ class sed_grid_generator():
 
             if get_spectra:
                 popIII_sed = popIII_galaxy.stars.get_spectra(popIII_emission_model)
+                #popIII_sed.lnu = np.squeeze(popIII_sed.lnu)
                 popIII_galaxy.get_observed_spectra(cosmo=self.cosmo, igm=self.igm)
 
 
@@ -807,9 +1748,9 @@ class sed_grid_generator():
             galaxy.get_observed_spectra(cosmo=self.cosmo, igm=self.igm)
 
             if popIII_sfh is not None:
-                combined_galaxy_sed = galaxy.stars.spectra['total'] + popIII_galaxy.stars.spectra['intrinsic']
+                combined_galaxy_sed = galaxy.stars.spectra[self.emission_keys['Pop II']] + popIII_galaxy.stars.spectra[self.emission_keys['Pop III']]
             else:
-                combined_galaxy_sed = galaxy.stars.spectra['total']
+                combined_galaxy_sed = galaxy.stars.spectra[self.emission_keys['Pop II']]
                  
             phot = combined_galaxy_sed.get_photo_fnu(filters=self.instrument)
             
@@ -823,7 +1764,6 @@ class sed_grid_generator():
             output = galaxy
 
         return output
-
 
     def _time_convert(self, lookback_time):
         time_unit = getattr(self, 'tmp_time_unit', u.yr)
@@ -842,3 +1782,8 @@ class sed_grid_generator():
         return (
             self.cosmo.lookback_time(z) - self.cosmo.lookback_time(self.tmp_redshift)
         ).to(time_unit).value
+
+
+if __name__ == "__main__":
+    print("This is a module, not a script.")
+
