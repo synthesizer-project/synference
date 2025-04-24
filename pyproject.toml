@@ -154,6 +154,7 @@ dependencies = [
     "pyqt5-qt5==5.15.16",
     "pyqt5-sip==12.17.0",
     "pyrsistent==0.20.0",
+    "pytest>=8.3.5",
     "python-dateutil==2.9.0.post0",
     "python-gflags==3.1.2",
     "python-json-logger==3.3.0",
