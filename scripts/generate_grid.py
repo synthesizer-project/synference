@@ -26,7 +26,10 @@ from astropy.cosmology import Planck18, Cosmology, z_at_value
 import astropy.units as u
 from matplotlib.ticker import ScalarFormatter, FuncFormatter
 from tqdm import tqdm
-from ltu_ili_testing import generate_emission_models, generate_sfh_basis, generate_metallicity_distribution, sed_grid_generator, generate_constant_R, GalaxyBasis, CombinedBasis
+from ltu_ili_testing import (generate_emission_models, generate_sfh_basis, 
+                            generate_metallicity_distribution, sed_grid_generator, 
+                            generate_constant_R, GalaxyBasis, CombinedBasis,
+                            calculate_muv)
 
 warnings.filterwarnings('ignore')
 
@@ -54,12 +57,11 @@ filter_codes = [
     "JWST/NIRCam.F480M",
 ]
 
-filterset = FilterCollection(filter_codes)
-instrument = Instrument('JWST', filters=filterset)
-
-# Consistent wavelength grid for both SPS grids
+# Consistent wavelength grid for both SPS grids and filters
 new_wav = generate_constant_R(R=300)
 
+filterset = FilterCollection(filter_codes, new_lam=new_wav)
+instrument = Instrument('JWST', filters=filterset)
 
 # --------------------------------------------------------------
 
@@ -189,9 +191,19 @@ popIII_sfhs, redshifts = generate_sfh_basis(
 )
 
 popIII_metal_dists = ZDist.DeltaConstant(metallicity=0)
-popIII_emission_model = IncidentEmission(
-    grid=popIII_grid,
-)
+
+if 'incident' not in grid.available_spectra:
+    # Need a custom emission model for the Pop III grid if loading the nebular spectra. 
+    popIII_emission_model = EmissionModel(
+        label = 'Pop III',
+        extract=popIII_grid.available_spectra[0],
+        grid=popIII_grid,
+        emitter='stellar'
+    )
+else:
+    popIII_emission_model = IncidentEmission(
+        grid=popIII_grid,
+    )
 
 popIII_basis = GalaxyBasis(
     model_name='Pop III',
@@ -211,18 +223,20 @@ popIII_basis = GalaxyBasis(
 combined_basis = CombinedBasis(
     bases=[popII_basis, popIII_basis],
     total_stellar_masses=unyt_array(10**masses, units=Msun),
-    base_emission_model_keys=['total', 'incident'],
+    base_emission_model_keys=['total', popIII_emission_model.label],
     combination_weights=weights,
     redshifts=redshifts,
     out_name='combined_basis',
     out_dir='../output/',
 )
 
+# Passing in extra analysis function to pipeline to calculate mUV. Any funciton could be passed in. 
+combined_basis.process_bases(overwrite=False, mUV=(calculate_muv, cosmo))
 
-combined_basis.process_bases(overwrite=True)
+combined_basis.create_grid(overwrite=True)
 
-combined_basis.create_grid()
 
-combined_basis.plot_galaxy_from_grid(1)
+#for i in range(0, 50000, 500):
+#    combined_basis.plot_galaxy_from_grid(i, show=False, save=True)
 
 
