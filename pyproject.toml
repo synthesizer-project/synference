@@ -121,6 +121,7 @@ dependencies = [
     "onnxruntime-training",
     "opencv-python==4.11.0.86",
     "opt-einsum==3.4.0",
+    "optuna>=4.3.0",
     "overrides==7.7.0",
     "packaging==24.2",
     "pandas==2.2.3",
