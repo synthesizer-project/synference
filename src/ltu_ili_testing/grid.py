@@ -13,8 +13,9 @@ from synthesizer.emissions import plot_spectra
 from synthesizer.emission_models.dust.emission import Greybody
 from synthesizer.grid import Grid
 from synthesizer.parametric import SFH, Stars, ZDist
-from synthesizer.instruments import Instrument, FilterCollection
+from synthesizer.instruments import Instrument, FilterCollection, Filter
 from synthesizer.particle.stars import sample_sfzh
+from synthesizer.conversions import fnu_to_lnu
 from typing import Dict, Any, List, Tuple, Union, Optional, Type
 from abc import ABC, abstractmethod
 import copy
@@ -26,8 +27,26 @@ import astropy.units as u
 from matplotlib.ticker import ScalarFormatter, FuncFormatter
 from tqdm import tqdm
 from synthesizer.pipeline import Pipeline
+import matplotlib.patheffects as PathEffects
 
 warnings.filterwarnings('ignore')
+
+def calculate_muv(galaxy, cosmo=Planck18):
+    z = galaxy.redshift
+    tophats = {
+        "MUV": {"lam_eff": 1500 *  Angstrom, "lam_fwhm": 100 * Angstrom},
+    }
+    
+    filter = FilterCollection(tophat_dict=tophats, verbose=False)
+
+    phots = {}
+
+    for key in list(galaxy.stars.spectra.keys()):
+        lnu = galaxy.stars.spectra[key].get_photo_lnu(filter).photo_lnu[0]
+        phot = fnu_to_lnu(lnu, cosmo=cosmo, redshift=z)
+        phots[key] = phot
+
+    return phots
 
 def generate_sfh_grid(
     sfh_type: Type[SFH.Common],
@@ -791,10 +810,12 @@ class GalaxyBasis:
 
     def process_galaxies(self, 
                         galaxies: List[Type[Galaxy]],
-                        out_name: str = 'output.hdf5',
+                        out_name: str = 'auto',
+                        out_dir: str = 'self',
                         n_proc: int = 4,
                         verbose: int = 1,
                         save: bool = True,
+                        **extra_analysis_functions
                         ) -> Pipeline:
 
         self.emission_model.set_per_particle(self.per_particle)
@@ -812,6 +833,17 @@ class GalaxyBasis:
             
         pipeline.add_analysis_func(lambda gal: gal.stars.initial_mass, result_key='mass')
 
+        # Add any extra analysis functions requested by the user. 
+
+        for key, params in extra_analysis_functions.items():
+            if callable(params):
+                func = params
+            else:
+                func = params[0]
+                params = params[1:]
+            
+            pipeline.add_analysis_func(func, f'supp_{key}', *params)
+
         pipeline.add_galaxies(galaxies)
         pipeline.get_spectra()
         pipeline.get_observed_spectra(self.cosmo)
@@ -822,9 +854,32 @@ class GalaxyBasis:
 
         if save:
             # Save the pipeline to a file
-            out_name = f"{self.out_dir}/{self.model_name}_{out_name}"
 
-            pipeline.write(out_name, verbose=0)
+            if out_dir == 'self':
+                out_dir = self.out_dir
+
+            if out_name == 'auto':
+                out_name = self.model_name
+
+            fullpath = os.path.join(out_dir, out_name)
+
+            pipeline.write(fullpath, verbose=0)
+
+            wav = self.grid.lam.to(Angstrom).value
+
+            # it will put the file at fullpath_0.hdf5, so we need to rename it
+            pipe_fullpath = fullpath.replace('.hdf5', f'_0.hdf5')
+            os.rename(pipe_fullpath, fullpath)
+
+            with h5py.File(fullpath, 'r+') as f:
+                # Add the varying and fixed parameters to the file
+                f.attrs['varying_param_names'] = self.varying_param_names
+                f.attrs['fixed_param_names'] = self.fixed_param_names
+
+                # Store grid wavelengths since I can't see them in the pipeline output (the filter wavelength array doesn't match)
+
+                f.create_dataset('Wavelengths', data=wav)
+                f['Wavelengths'].attrs['Units'] = 'Angstrom'
 
         return pipeline
 
@@ -861,15 +916,24 @@ class CombinedBasis:
         # Calculate the stellar masses for each basis
 
     def process_bases(self, 
+                      n_proc: int = 6,
                       overwrite: Union[bool, List[bool]] = False,
+                      **extra_analysis_functions,
                       ) -> None:
         """
         Process the bases and save the output to files.
         Parameters
         ----------
+        n_proc : int
+            Number of processes to use for the pipeline.
         overwrite : bool or list of bools
             If True, overwrite the existing files. If False, skip the files that already exist.
             If a list of bools is provided, it should have the same length as the number of bases.
+        extra_analysis_functions : dict
+            Extra analysis functions to add to the pipeline. The keys should be the names of the functions,
+            and the values should be the functions themselves, or a tuple of (function, args). The function
+            should take a Galaxy object as the first argument, and the args should be the arguments to pass to the function.
+            The function should return a single value, an array of values, or a dictionary of values (with the same keys for all galaxies).
         """
 
         
@@ -881,7 +945,7 @@ class CombinedBasis:
             
 
         for i, base in enumerate(self.bases):
-            full_out_path = f"{self.out_dir}/{self.out_name}_{base.model_name}_0.hdf5"
+            full_out_path = f"{self.out_dir}/{self.out_name}_{base.model_name}.hdf5"
 
             if os.path.exists(full_out_path) and not overwrite[i]:
                 print(f"File {full_out_path} already exists. Skipping.")
@@ -897,20 +961,13 @@ class CombinedBasis:
 
             print(f'Created {len(galaxies)} galaxies for base {base.model_name}')
             # Process the galaxies
-            pipeline = base.process_galaxies(galaxies, self.out_name, n_proc=6, verbose=1, save=False)
-            # Save the pipeline
-
-            pipeline.write(full_out_path.replace('_0', ''), verbose=0)
-
-            with h5py.File(full_out_path, 'r+') as f:
-                # Add the varying and fixed parameters to the file
-                f.attrs['varying_param_names'] = base.varying_param_names
-                f.attrs['fixed_param_names'] = base.fixed_param_names
-
-                # Store grid wavelengths since I can't see them in the pipeline output (the filter wavelength array doesn't match)
-                f.create_dataset('Wavelengths', data=base.emission_model.grid.lam.to(Angstrom).value)
-                f['Wavelengths'].attrs['Units'] = 'Angstrom'
-
+            pipeline = base.process_galaxies(galaxies,  
+                                            f"{self.out_name}_{base.model_name}.hdf5",
+                                            out_dir=self.out_dir,
+                                            n_proc=n_proc, verbose=1, save=True, 
+                                            **extra_analysis_functions
+                                            )
+           
     def load_bases(self, indexes: List[int] = None) -> dict:
         # Load the bases from the files
 
@@ -919,12 +976,13 @@ class CombinedBasis:
 
             print(f'Emission model key for base {base.model_name}: {self.base_emission_model_keys[i]}')
 
-            full_out_path = f"{self.out_dir}/{self.out_name}_{base.model_name}_0.hdf5"
+            full_out_path = f"{self.out_dir}/{self.out_name}_{base.model_name}.hdf5"
             if not os.path.exists(full_out_path):
                 raise ValueError(f"File {full_out_path} does not exist")
             
             properties = {}
-            
+            supp_properties = {}
+
             with h5py.File(full_out_path, 'r') as f:
                 
                 # Load in which parameters are varying and fixed
@@ -937,12 +995,27 @@ class CombinedBasis:
                 property_keys.remove('Stars')
 
                 for key in property_keys:
-                    properties[key] = galaxies[key][()]
-                    # get unit
-                    if hasattr(galaxies[key], 'attrs'):
-                        if 'Units' in galaxies[key].attrs:
-                            unit = galaxies[key].attrs['Units']
-                            properties[key] = unyt_array(properties[key], unit)
+                    if key.startswith('supp_'):
+                        dic = supp_properties
+                        use_key = key[5:]
+                    else:
+                        dic = properties
+                        use_key = key
+
+                    if isinstance(galaxies[key], h5py.Group):
+                        dic[use_key] = {}
+                        for subkey in galaxies[key].keys():
+                            dic[use_key][subkey] = galaxies[key][subkey][()]
+                            if hasattr(galaxies[key][subkey], 'attrs'):
+                                if 'Units' in galaxies[key][subkey].attrs:
+                                    unit = galaxies[key][subkey].attrs['Units']
+                                    dic[use_key][subkey] = unyt_array(dic[use_key][subkey], unit)
+                    else:                        
+                        dic[use_key] = galaxies[key][()]
+                        if hasattr(galaxies[key], 'attrs'):
+                            if 'Units' in galaxies[key].attrs:
+                                unit = galaxies[key].attrs['Units']
+                                dic[use_key] = unyt_array(dic[use_key], unit)
 
                 # Get the spectra
                 spec = galaxies['Stars']['Spectra']['SpectralFluxDensities']
@@ -961,8 +1034,9 @@ class CombinedBasis:
                 outputs[base.model_name] = {
                     'properties': properties,
                     'observed_spectra': observed_spectra,
-                    'wavelengths': unyt_array(f['Instruments']['Wavelengths'][()], units=f['Instruments']['Wavelengths'].attrs['Units']),
+                    'wavelengths': unyt_array(f['Wavelengths'][()], units=f['Wavelengths'].attrs['Units']),
                     'observed_photometry': phot,
+                    'supp_properties': supp_properties,
                 }
 
         self.pipeline_outputs = outputs
@@ -1018,6 +1092,7 @@ class CombinedBasis:
 
         all_outputs = []
         all_params = []
+        all_supp_params = []
 
         ignore_keys = ['redshift']
 
@@ -1030,8 +1105,28 @@ class CombinedBasis:
                 if key in rename_keys:
                     # rename the key to be the base name + parameter name
                     params[f'{base.model_name}/{key}'] = params[key]
+        
+        supp_param_keys = list(pipeline_outputs[self.bases[0].model_name]['supp_properties'].keys())
+        assert all([i in pipeline_outputs[self.bases[0].model_name]['supp_properties'] for i in supp_param_keys]), f"Not all bases have the same supplementary parameters. {supp_params} not found in {pipeline_outputs[bases[0].model_name]['supp_properties'].keys()}"
 
-        print(f"Total property names: {total_property_names}")
+
+        # Deal with any supplementary model parameters. Currently we require that all bases have the same supplementary parameters and add them 
+        supp_params = {}
+        for i, base in enumerate(self.bases):
+            supp_params[base.model_name] = {}
+            for key in supp_param_keys:
+                if isinstance(pipeline_outputs[base.model_name]['supp_properties'][key], dict):
+                    subkeys = list(pipeline_outputs[base.model_name]['supp_properties'][key].keys())
+                    # Check if the emission model key is in the subkeys
+                    if self.base_emission_model_keys[i] not in subkeys:
+                        raise ValueError(f"Emission model key {self.base_emission_model_keys[i]} not found in {subkeys}. Don't know how to deal with dictionary supplementary parameters with other keys.")
+                    value = pipeline_outputs[base.model_name]['supp_properties'][key][self.base_emission_model_keys[i]]
+                else:
+                    value = pipeline_outputs[base.model_name]['supp_properties'][key]
+                
+                supp_params[base.model_name][key] = value
+                    
+
 
         # Check if any of the bases have the same varying parameters
         all_combined_param_names = []
@@ -1049,6 +1144,7 @@ class CombinedBasis:
 
                     scaled_photometries = []
                     base_param_values = []
+                    supp_params_values = []
 
                     for i, base in enumerate(self.bases):
                         outputs = pipeline_outputs[base.model_name]
@@ -1077,18 +1173,21 @@ class CombinedBasis:
                                 base_params[param_name] = outputs['properties'][orig_param][mask]
                         
                         base_param_values.append(base_params)
+                        # Get the supplementary parameters for this base
+                        supp_params_values.append(supp_params[base.model_name])
 
                     # Calculate the total number of combinations
                     dimension = np.prod([i.shape[-1] for i in scaled_photometries])
 
                     output_array = np.zeros((scaled_photometries[0].shape[0], dimension))
                     params_array = np.zeros((len(param_columns), dimension))
+                    supp_array = np.zeros((len(supp_param_keys), dimension))
 
                     # Create all combinations of indices
                     combinations = np.meshgrid(*[np.arange(i.shape[-1]) for i in scaled_photometries], indexing='ij')
                     combinations = np.array(combinations).T.reshape(-1, len(scaled_photometries))
                     
-                    # Fill the output and parameter arrelf.out_name
+                    # Fill the output and parameter array.out_name
                     for i, combo_indices in enumerate(combinations):
                         # Add the scaled photometries for each base
                         for j, base in enumerate(self.bases):
@@ -1114,16 +1213,28 @@ class CombinedBasis:
                                     params_array[param_idx, i] = base_param_values[j][param_name][combo_indices[j]]
                                 param_idx += 1
 
+                        # Add supplementary parameters. Sum parameters from all bases
+                        for j, base in enumerate(self.bases):
+                            for k, param_name in enumerate(supp_param_keys):
+                                data = supp_params_values[j][param_name][combo_indices[j]]
+                                if isinstance(data, unyt_array):
+                                    data = data.value
+
+                                supp_array[k, i] += data
+
 
                     all_outputs.append(output_array)
                     all_params.append(params_array)
+                    all_supp_params.append(supp_array)
         
         # Combine all outputs and parameters
         combined_outputs = np.hstack(all_outputs)
         combined_params = np.hstack(all_params)
+        combined_supp_params = np.hstack(all_supp_params)
 
         print(f"Combined outputs shape: {combined_outputs.shape}")
         print(f"Combined parameters shape: {combined_params.shape}")
+        print(f"Combined supplementary parameters shape: {combined_supp_params.shape}")
         print(f"Combined parameters: {combined_params}")
         print(f"Filter codes: {filter_codes}")
 
@@ -1131,13 +1242,17 @@ class CombinedBasis:
             'photometry': combined_outputs,
             'parameters': combined_params,
             'parameter_names': param_columns,
-            'filter_codes': filter_codes
+            'filter_codes': filter_codes,
+            'supplementary_parameters': combined_supp_params,
+            'supplementary_parameter_names': supp_param_keys,
         }
 
         self.grid_photometry = combined_outputs
         self.grid_parameters = combined_params
         self.grid_parameter_names = param_columns
         self.grid_filter_codes = filter_codes
+        self.grid_supplementary_parameters = combined_supp_params
+        self.grid_supplementary_parameter_names = supp_param_keys
 
         if save:
             self.save_grid(out, out_name=out_name, overwrite=overwrite)      
@@ -1181,9 +1296,21 @@ class CombinedBasis:
             # Create a dataset for the parameter names
             f.attrs['ParameterNames'] = grid_dict['parameter_names']
             f.attrs['FilterCodes'] = grid_dict['filter_codes']
-            
+
+            # Add anything else as a dataset
+            for key, value in grid_dict.items():
+                if key not in ['photometry', 'parameters', 'parameter_names', 'filter_codes']:
+                    if isinstance(value, (np.ndarray, list)) and isinstance(value[0], str):
+                        f.attrs[key] = value
+                    else:
+                        grid_group.create_dataset(key, data=value, compression='gzip')
+                        if isinstance(value, (unyt_array, unyt_quantity)):
+                            grid_group[key].attrs['Units'] = value.units
+                
     def plot_galaxy_from_grid(self,
         index: int,
+        show: bool = True,
+        save: bool = False,
     ):
         '''
         Given an index, plot the galaxy from the grid. Open the relevant hdf5 files and load the spectra.
@@ -1204,7 +1331,7 @@ class CombinedBasis:
 
         # Get the filter codes
         filter_codes = [f'JWST/{i}' for i in self.grid_filter_codes]
-        filterset = FilterCollection(filter_codes)
+        filterset = FilterCollection(filter_codes, verbose=False)
 
         # For each basis, look at which parameters for that basis and match to the spectra.
 
@@ -1235,14 +1362,15 @@ class CombinedBasis:
                 total_mask = np.logical_and(total_mask, _i)
 
             assert np.sum(total_mask) == 1, f"Found {np.sum(total_mask)} matches for {base.model_name} with parameters {base_params}. Expected 1 match."
-            index = np.where(total_mask)[0][0]
+            j = np.where(total_mask)[0][0]
 
-            print(index, self.pipeline_outputs[base.model_name]['observed_spectra'])
             # Get the spectra for this index
-            spectra = self.pipeline_outputs[base.model_name]['observed_spectra'][index]
+            spectra = self.pipeline_outputs[base.model_name]['observed_spectra'][j]
+
+            flux_unit = spectra.units
             # get the mass of the spectra and the expected mass, and renormalise the spectra
-            mass = self.pipeline_outputs[base.model_name]['properties']['mass'][index]
-            expected_mass = params[1]
+            mass = self.pipeline_outputs[base.model_name]['properties']['mass'][j]
+            expected_mass = 10**params[1] * Msun
             scaling_factor = expected_mass / mass
             spectra = spectra * scaling_factor
             # Append the spectra to the combined spectra
@@ -1260,31 +1388,73 @@ class CombinedBasis:
         weights = params[weight_pos]
 
         # Only works for combining 2 bases at the moment
-        weights = (weights, 1-weights)
-
-        # Stack the spectra according to the combination weights
+        weights = np.array((weights[0], 1-weights[0]))
+        
+        # Stack the spectra according to the combination weights. Spectra has shape (wav, n_bases)
         combined_spectra = np.array(combined_spectra)
-        combined_spectra = combined_spectra * weights
+
+        combined_spectra = combined_spectra * weights[:, np.newaxis]
+        
         combined_spectra_summed = np.sum(combined_spectra, axis=0)
+
+        # apply redshift 
+
+        combined_spectra_summed = combined_spectra_summed 
+
         fig, ax = plt.subplots(figsize=(10, 6))
         
         photwavs = filterset.pivot_lams
 
-        ax.scatter(photwavs, photometry, label='Photometry', color='red', s=10)
-        print(np.shape(combined_spectra_summed))
-        ax.plot(wavs, combined_spectra_summed, label='Combined Spectra', color='blue')
+        ax.scatter(photwavs, photometry, label='Photometry', color='red', s=10, path_effects=[PathEffects.withStroke(linewidth=4, foreground='white')])
+
+        ax.plot(wavs * (1 + params[0]), combined_spectra_summed, label='Combined Spectra', color='blue')
 
         for i, base in enumerate(self.bases):
             # Get the spectra for this index
             spectra = combined_spectra[i]
             
-            ax.plot(wavs, spectra, label=f'{base.model_name} Spectra', color='green', alpha=0.5)
+            ax.plot(wavs *(1+params[0]), spectra, label=f'{base.model_name} Spectra', alpha=0.5, linestyle='--')
 
         ax.set_xlabel('Wavelength (AA)')
 
-        plt.show()
+        ax.set_xlim(0.8*np.min(photwavs), 1.2*np.max(photwavs))
 
-                               
+        ax.set_yscale('log')
+        ax.set_ylim(1e-2, None)
+        ax.legend()
+
+        def ab_to_jy(f):
+            return 1e9 * 10**(f/(-2.5) -8.9)  
+
+        def jy_to_ab(f):
+            f = f/1e9
+            return -2.5 * np.log10(f) + 8.9
+
+        secax = ax.secondary_yaxis('right', functions=(jy_to_ab, ab_to_jy))
+
+        secax.yaxis.set_major_formatter(ScalarFormatter())
+        secax.yaxis.set_minor_formatter(ScalarFormatter())
+        secax.set_ylabel('Flux Density [AB mag]')
+
+        ax.set_xlabel(f'Wavelength ({wavs.units})')
+        ax.set_ylabel(f'Flux Density ({flux_unit})')
+
+        # Text box with parameters and values
+
+        textstr = '\n'.join([f'{key}: {value:.2f}' for key, value in zip(self.grid_parameter_names, params)])
+        props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
+        ax.text(0.5, 0.98, f'index: {index}\n' + textstr, transform=ax.transAxes, fontsize=10,
+                verticalalignment='top', bbox=props, horizontalalignment='center')
+
+        if show:
+            plt.show()
+            
+        if save:
+            fig.savefig(f"{self.out_dir}/{self.out_name}_{index}.png", dpi=300, bbox_inches='tight')
+            plt.close(fig)
+
+        return fig
+                         
     def load_grid_from_file(self, 
                         file_path: str,
                         ) -> dict:
@@ -1314,17 +1484,11 @@ class CombinedBasis:
         
         return grid_data
 
-
-            
-        
-
-
-                
-                
-
-
 class sed_grid_generator:
     """
+
+    OBSELETE
+
     Abstract base class for generating grids of data.
     """
     
@@ -1547,7 +1711,6 @@ class sed_grid_generator:
                 min_y = min(min_y, np.nanmin(phot.photo_fnu))
                 max_y = max(max_y, np.nanmax(phot.photo_fnu))
 
-                import matplotlib.patheffects as PathEffects
                 ax[0].plot(phot.filters.pivot_lams, phot.photo_fnu, '+', color=colors[key], path_effects=[PathEffects.withStroke(linewidth=4, foreground='white')])
 
                 if not isinstance(gal, Galaxy):
@@ -1787,3 +1950,6 @@ class sed_grid_generator:
 if __name__ == "__main__":
     print("This is a module, not a script.")
 
+# TODO
+# Add saving photometry unit to the output.hdf5 file.
+# Need to use weights when combining supplemental parameters like MUV. 
