@@ -227,7 +227,7 @@ combined_basis = CombinedBasis(
     combination_weights=weights,
     redshifts=redshifts,
     out_name='combined_basis',
-    out_dir='../output/',
+    out_dir='/home/tharvey/work/output/',
 )
 
 # Passing in extra analysis function to pipeline to calculate mUV. Any funciton could be passed in. 

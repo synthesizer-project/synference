@@ -20,7 +20,7 @@ from typing import Dict, Any, List, Tuple, Union, Optional, Type
 from abc import ABC, abstractmethod
 import copy
 from scipy.stats import uniform, loguniform
-from unyt import unyt_array, unyt_quantity, erg, cm, s, Angstrom, um, Hz, m, nJy, K, Msun, Myr, yr, Unit, kg, Mpc
+from unyt import unyt_array, unyt_quantity, erg, cm, s, Angstrom, um, Hz, m, nJy, K, Msun, Myr, yr, Unit, kg, Mpc, dimensionless
 from astropy.cosmology import Planck18, Cosmology, z_at_value
 from synthesizer.emission_models.attenuation import Inoue14
 import astropy.units as u
@@ -947,6 +947,7 @@ class CombinedBasis:
         for i, base in enumerate(self.bases):
             full_out_path = f"{self.out_dir}/{self.out_name}_{base.model_name}.hdf5"
 
+            print(full_out_path)
             if os.path.exists(full_out_path) and not overwrite[i]:
                 print(f"File {full_out_path} already exists. Skipping.")
                 continue
@@ -1107,11 +1108,12 @@ class CombinedBasis:
                     params[f'{base.model_name}/{key}'] = params[key]
         
         supp_param_keys = list(pipeline_outputs[self.bases[0].model_name]['supp_properties'].keys())
-        assert all([i in pipeline_outputs[self.bases[0].model_name]['supp_properties'] for i in supp_param_keys]), f"Not all bases have the same supplementary parameters. {supp_params} not found in {pipeline_outputs[bases[0].model_name]['supp_properties'].keys()}"
+        assert all([i in pipeline_outputs[self.bases[0].model_name]['supp_properties'] for i in supp_param_keys]), f"Not all bases have the same supplementary parameters. {supp_param_keys} not found in {pipeline_outputs[self.bases[0].model_name]['supp_properties'].keys()}"
 
 
         # Deal with any supplementary model parameters. Currently we require that all bases have the same supplementary parameters and add them 
         supp_params = {}
+        supp_param_units = {}
         for i, base in enumerate(self.bases):
             supp_params[base.model_name] = {}
             for key in supp_param_keys:
@@ -1174,7 +1176,24 @@ class CombinedBasis:
                         
                         base_param_values.append(base_params)
                         # Get the supplementary parameters for this base
-                        supp_params_values.append(supp_params[base.model_name])
+                        # For any supp params that are a flux or luminosity, scale them by the scaling factor
+                        scaled_supp_params = {}
+                        for key, value in supp_params[base.model_name].items():
+                            #print(key, value)
+                            if isinstance(value, dict):
+                                scaled_supp_params[key] = {}
+                                for subkey, subvalue in value.items():
+                                    if isinstance(subvalue, unyt_array):
+                                        scaled_supp_params[key][subkey] = subvalue[mask] * scaling_factors
+                                    else:
+                                        scaled_supp_params[key][subkey] = subvalue[mask]
+                            else:
+                                if isinstance(value, unyt_array):
+                                    scaled_supp_params[key] = value[mask] * scaling_factors
+                                else:
+                                    scaled_supp_params[key] = value[mask]
+
+                        supp_params_values.append(scaled_supp_params)
 
                     # Calculate the total number of combinations
                     dimension = np.prod([i.shape[-1] for i in scaled_photometries])
@@ -1218,8 +1237,13 @@ class CombinedBasis:
                             for k, param_name in enumerate(supp_param_keys):
                                 data = supp_params_values[j][param_name][combo_indices[j]]
                                 if isinstance(data, unyt_array):
+                                    if j == 0:
+                                        supp_param_units[param_name] = str(data.units)
                                     data = data.value
-
+                                else:
+                                    if j == 0:
+                                        supp_param_units[param_name] = str(dimensionless)
+                                
                                 supp_array[k, i] += data
 
 
@@ -1227,6 +1251,7 @@ class CombinedBasis:
                     all_params.append(params_array)
                     all_supp_params.append(supp_array)
         
+        supp_param_units = [i for i in supp_param_units.values()]
         # Combine all outputs and parameters
         combined_outputs = np.hstack(all_outputs)
         combined_params = np.hstack(all_params)
@@ -1245,6 +1270,7 @@ class CombinedBasis:
             'filter_codes': filter_codes,
             'supplementary_parameters': combined_supp_params,
             'supplementary_parameter_names': supp_param_keys,
+            'supplementary_parameter_units': supp_param_units,
         }
 
         self.grid_photometry = combined_outputs
@@ -1292,20 +1318,30 @@ class CombinedBasis:
             grid_group = f.create_group('Grid')
             # Create datasets for the photometry and parameters
             grid_group.create_dataset('Photometry', data=grid_dict['photometry'], compression='gzip')
+
             grid_group.create_dataset('Parameters', data=grid_dict['parameters'], compression='gzip')
+            grid_group.create_dataset('SupplementaryParameters', data=grid_dict['supplementary_parameters'], compression='gzip')
+            #grid_group['Parameters'].attrs['Units'] = grid_dict['parameters'].units # no units stored
+
             # Create a dataset for the parameter names
             f.attrs['ParameterNames'] = grid_dict['parameter_names']
             f.attrs['FilterCodes'] = grid_dict['filter_codes']
+            f.attrs['SupplementaryParameterNames'] = grid_dict['supplementary_parameter_names']
+            f.attrs['SupplementaryParameterUnits'] = grid_dict['supplementary_parameter_units']
+            f.attrs['PhotometryUnits'] = 'nJy'
 
             # Add anything else as a dataset
             for key, value in grid_dict.items():
-                if key not in ['photometry', 'parameters', 'parameter_names', 'filter_codes']:
+                if key not in ['photometry', 'parameters', 'parameter_names', 'filter_codes',
+                               'supplementary_parameters', 'supplementary_parameter_names',
+                               'supplementary_parameter_units']:
                     if isinstance(value, (np.ndarray, list)) and isinstance(value[0], str):
                         f.attrs[key] = value
                     else:
                         grid_group.create_dataset(key, data=value, compression='gzip')
                         if isinstance(value, (unyt_array, unyt_quantity)):
                             grid_group[key].attrs['Units'] = value.units
+
                 
     def plot_galaxy_from_grid(self,
         index: int,
@@ -1842,7 +1878,6 @@ class sed_grid_generator:
 
         # Store photometry, redshift and parameters of model in HDF5 file. 
 
-        return grid
     
     def create_galaxy(self,
                         sfh: SFH,
