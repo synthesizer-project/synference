@@ -12,6 +12,7 @@ wheels/
 sbi-logs/
 plots/
 Yggdrasil/
+models/
 
 # Jupyter Notebook checkpoints
 .ipynb_checkpoints
