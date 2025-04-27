@@ -794,7 +794,7 @@ class SBI_Fitter:
                 "test_indices": test_indices,
                 "train_indices": train_indices,
                 "train_fraction": train_test_fraction,
-                "timestamp": self._get_timestamp(),
+                "timestamp": self._timestamp,
                 "prior": self._prior,
                 "feature_array": self.feature_array,
                 "parameter_array": self.fitted_parameter_array,
@@ -953,11 +953,11 @@ class SBI_Fitter:
         self.plot_posterior(
             X=X_train,
             y=y_train,
-            plot_dir=plots_dir,
+            plots_dir=plots_dir,
         )
 
         # Plot the coverage
-        self.plot_coverage(X=X_test, y=y_test, plot_dir=plots_dir)
+        self.plot_coverage(X=X_test, y=y_test, plots_dir=plots_dir)
 
     def plot_loss(self,
                   summaries: list,

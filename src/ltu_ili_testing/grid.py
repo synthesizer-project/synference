@@ -1986,5 +1986,6 @@ if __name__ == "__main__":
     print("This is a module, not a script.")
 
 # TODO
-# Add saving photometry unit to the output.hdf5 file.
-# Need to use weights when combining supplemental parameters like MUV. 
+# Add saving photometry unit to the output.hdf5 file - DONE
+# Need to use weights when combining supplemental parameters like MUV - DONE
+# Switch to using estimated MUV for normalisation, which is closer to the observed MUV
