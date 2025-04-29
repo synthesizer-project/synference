@@ -37,11 +37,10 @@ dependencies = [
     "cppheaderparser==2.7.4",
     "cufflinks==0.17.3",
     "cycler==0.12.1",
-    "cython<=3.0.0",
+    "cython",
     "debugpy==1.8.14",
     "decorator==5.2.1",
     "defusedxml==0.7.1",
-    "diffusers==0.30.0",
     "emcee>=3.1.6",
     "executing==2.2.0",
     "fastjsonschema==2.21.1",
@@ -57,7 +56,6 @@ dependencies = [
     "hjson==3.1.0",
     "httpcore==1.0.8",
     "httpx==0.28.1",
-    "huggingface-hub==0.30.2",
     "hypothesis==6.131.0",
     "idna==3.10",
     "imageio==2.37.0",
@@ -86,7 +84,6 @@ dependencies = [
     "jupyterlab-pygments==0.3.0",
     "jupyterlab-server<=2.27.3",
     "jupyterlab-widgets==3.0.14",
-    "keras-preprocessing==1.1.2",
     "kiwisolver==1.4.8",
     "lazy-loader==0.4",
     "lckr-jupyterlab-variableinspector>=3.2.4",
@@ -111,7 +108,6 @@ dependencies = [
     "notebook==7.4.0",
     "notebook-shim==0.2.4",
     "numpy==1.26.3",
-    "onnx==1.17.0",
     "opt-einsum==3.4.0",
     "overrides==7.7.0",
     "packaging==24.2",
@@ -160,9 +156,6 @@ dependencies = [
     "rfc3986-validator==0.1.1",
     "rpds-py==0.24.0",
     "s3transfer==0.11.4",
-    "safetensors==0.5.3",
-    "scikit-image==0.25.2",
-    "scikit-learn==1.6.1",
     "scipy==1.15.2",
     "seaborn==0.13.2",
     "send2trash==1.8.3",
@@ -185,7 +178,6 @@ dependencies = [
     "tornado==6.4.2",
     "tqdm==4.67.1",
     "traitlets==5.14.3",
-    "transformers==4.45.0",
     "types-python-dateutil==2.9.0.20241206",
     "typing==3.7.4.3",
     "typing-extensions==4.13.2",
@@ -219,6 +211,17 @@ sbi = [
     "bitsandbytes",
     "mpi4py",
     "triton",
+    "scikit-image==0.25.2",
+    "scikit-learn==1.6.1",
+    "keras-preprocessing==1.1.2",
+]
+
+unneeded = [
+    "transformers==4.45.0",
+    "huggingface-hub==0.30.2",
+    "diffusers==0.30.0",
+    "onnx==1.17.0",
+    "safetensors==0.5.3",
 ]
 
 tharvey-local = [
@@ -238,6 +241,8 @@ tharvey-local = [
     "mpi4py",
     "onnxruntime-training",
     "triton",
+    "scikit-image==0.25.2",
+    "scikit-learn==1.6.1",
 ]
 
 synthesizer = [
