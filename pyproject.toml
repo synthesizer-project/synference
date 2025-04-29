@@ -203,7 +203,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-sbi = {
+sbi = [
     "dask-ml>=2025.1.0",
     "lampe>=0.9.0",
     "numba==0.61.2",
@@ -219,9 +219,9 @@ sbi = {
     "bitsandbytes",
     "mpi4py",
     "triton",
-}
+]
 
-tharvey-local = {
+tharvey-local = [
     "dask-ml>=2025.1.0",
     "lampe>=0.9.0",
     "numba==0.61.2",
@@ -238,7 +238,7 @@ tharvey-local = {
     "mpi4py",
     "onnxruntime-training",
     "triton",
-}
+]
 
 [build-system]
 requires = ["hatchling"]
