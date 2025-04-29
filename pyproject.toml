@@ -245,6 +245,9 @@ tharvey-local = [
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.metadata]
+allow-direct-references = true
+
 [tool.uv.sources]
 amdsmi = { path = "../../../../opt/rocm_sdk_612/share/amd_smi" }
 bitsandbytes = { path = "../rocm_sdk_builder/src_projects/bitsandbytes/dist/bitsandbytes-0.43.2.dev0-cp311-cp311-linux_x86_64.whl" }
