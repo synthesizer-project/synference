@@ -172,7 +172,6 @@ dependencies = [
     "sortedcontainers==2.4.0",
     "soundfile==0.13.1",
     "soupsieve==2.6",
-    "synthesizer @ git+https://github.com/synthesizer-project/synthesizer",
     "soxr==0.5.0.post1",
     "stack-data==0.6.3",
     "sympy==1.13.3",
@@ -239,6 +238,10 @@ tharvey-local = [
     "mpi4py",
     "onnxruntime-training",
     "triton",
+]
+
+synthesizer = [
+    "synthesizer @ git+https://github.com/synthesizer-project/synthesizer",
 ]
 
 [build-system]
