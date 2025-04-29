@@ -9,7 +9,7 @@ from .grid import (
 try:
     from .sbi import SBI_Fitter
 except ImportError:
-    print('Depdencies for SBI not installed. Only the grid generation functions will be available.')
+    print('Dependencies for SBI not installed. Only the grid generation functions will be available.')
 
 
 __all__ = [
