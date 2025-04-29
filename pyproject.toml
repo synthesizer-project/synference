@@ -87,7 +87,6 @@ dependencies = [
     "kiwisolver==1.4.8",
     "lazy-loader==0.4",
     "lckr-jupyterlab-variableinspector>=3.2.4",
-    "leveldb",
     "librosa==0.11.0",
     "llvmlite==0.44.0",
     "lxml==5.3.2",
