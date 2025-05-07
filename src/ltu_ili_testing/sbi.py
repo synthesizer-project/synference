@@ -1,11 +1,20 @@
 from .grid import CombinedBasis
 import os
+import os, sys, time, signal, warnings
+import numpy as np
+from numpy.random import normal, uniform
+from scipy import stats
+from scipy.interpolate import interp1d
+from scipy.spatial.distance import euclidean
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 import h5py
 import numpy as np
 from unyt import unyt_array, nJy, Msun
 import re
 import operator
-from typing import List, Dict, Union
+from typing import List, Dict, Union, Iptional, Tuple
 import optuna
 import sys
 from io import StringIO
@@ -276,13 +285,77 @@ class SBI_Fitter:
         # This function should return the simulated model for the given index
         # For now, we will just return the raw photometry grid
         return self.raw_photometry_grid[index]
+
+    def _apply_depths(self,
+                    depths: unyt_array,
+                    photometry_array: np.ndarray,
+                    N_scatters: int = 5,
+                    depth_sigma: int = 5):
+        '''
+        Given a set of depths, convert to photometry unit and use as standard deviations
+        to generate a scattered photometry array of shape (m*n_scatters, n) from photometry array
+        of size (m, n)
+
+        Parameters:
+        -----------
+        depths : unyt_array
+            Array of depth values to be converted and used as standard deviations
+        photometry_array : np.ndarray
+            Input photometry array of shape (m, n)
+        N_scatters : int, default=5
+            Number of scattered versions to generate for each input row
+        depth_sigma : int, default=5
+            Divisor to scale the depths
+
+        Returns:
+        --------
+        np.ndarray
+            Scattered photometry array of shape (m*N_scatters, n)
+        '''
+        # Get input array dimensions
+        m, n = photometry_array.shape
         
+        # Verify dimensions match
+        if n != len(depths):
+            raise ValueError(f"Mismatch in dimensions: photometry_array has {n} columns but depths has {len(depths)} elements")
+        
+        # Convert depths based on units
+        if hasattr(photometry_array, 'units') and photometry_array.units == 'ABmag':
+            # Convert from AB magnitudes to microjanskys
+            depths_converted = (10**((depths-23.9)/-2.5)) * uJy
+            depths_std = depths_converted.to(self.raw_photometry_units).value / depth_sigma
+        else:
+            depths_std = depths.to(self.raw_photometry_units).value / depth_sigma
+        
+        # Pre-allocate output array with correct dimensions
+        output_arr = np.zeros((m * N_scatters, n))
+        
+        # Generate all random values at once for better performance
+        # Shape will be (n, m, N_scatters) for broadcasting
+        random_values = np.random.normal(scale=depths_std[:, np.newaxis, np.newaxis], 
+                                        size=(n, m, N_scatters))
+        
+        # Reshape and transpose to get correct dimensions for addition
+        random_values = np.transpose(random_values, (1, 2, 0))  # -> (m, N_scatters, n)
+        
+        # Add the photometry values (broadcasting)
+        scattered_values = photometry_array[:, np.newaxis, :] + random_values  # -> (m, N_scatters, n)
+        
+        # Reshape to final output shape (m*N_scatters, n)
+        output_arr = scattered_values.reshape(m * N_scatters, n)
+        
+        return output_arr
+
     def create_feature_array_from_raw_photometry(self,
                                                 normalize_method: str = 'mUV',
                                                 extra_features: list = ['redshift'],
                                                 normed_flux_units: str = 'AB',
                                                 normalization_unit: str = 'AB',
                                                 verbose: bool = True,
+                                                scatter_fluxes: Union[int, None] = None,
+                                                depths: Union[unyt_array, None] = None, 
+                                                include_errors_in_feature_array = False,
+                                                simulate_missing_fluxes = False,
                                                 ) -> np.ndarray:
         """
         Create a feature array from the raw photometry grid.
@@ -298,16 +371,39 @@ class SBI_Fitter:
                 the fluxes for each filter will be relative to the normalization filter, in the given units. The overall
                 normalization factor will be provided as well. 
             normalization_unit: The unit of the normalization factor. E.g. 'log10 nJy', 'nJy, AB', etc.
+            scatter_fluxes: Whether to scatter fluxes with Gaussian error (with scatter_fluxes variations for each row).
+            depths: Either None, or a unyt_array of length photometry. 
+            include_errors_in_feature_array: boolean, default False. CURRENTLY UNIMPLEMENTED.
+                Whether to include the RMS uncertainty in the input model. 
+                This would pass in the uncertainity as a seperate parameter. Could be either 2D, or (value, error) pairs in 1D training dataset.
+                Could also allow options to under or overestimate model uncertainity in depths. 
+            simulate_missing_fluxes:  boolean, default False. CURRENTLY UNIMPLEMENTED.
+                This would allow missing photometry for some fraction of the time, which could be marked
+                with a specific filler flag, or a seperate boolean row/column to flag missing data. 
+             
 
         Returns:
             The feature array and feature names.
         """
+
+        if include_errors_in_feature_array or simulate_missing_fluxes:
+            raise NotImplementedError
+        
         if normed_flux_units == 'AB':
             phot = -2.5 * np.log10(unyt_array(self.raw_photometry_grid, units=self.raw_photometry_units).to('uJy').value) + 23.9
             norm_func = np.subtract
         else:
             phot = unyt_array(self.raw_photometry_grid, units=self.raw_photometry_units).to(normed_flux_units).value
             norm_func = np.divide
+
+        if scatter_fluxes is not None:
+            assert depths is not None
+            assert isinstance(depths, unyt_array)
+            self.phot_depths = depths
+
+            new_phot_array = self._apply_depths(depths, photometry_array, scatter_fluxes)
+            depth_message = f'Scattering photometry {scatter_fluxes} times for each row'
+
         
         # Normalize the photometry grid
         if normalize_method is not None:
@@ -1349,6 +1445,394 @@ class FilterArithmeticParser:
         """
         tokens = self.tokenize(expression)
         return self.evaluate(tokens, filter_data)
+
+
+class TimeoutException(Exception):
+    """Exception raised when a function times out."""
+    pass
+
+
+def timeout_handler(signum, frame):
+    """Handler for alarm signal."""
+    raise TimeoutException
+
+
+signal.signal(signal.SIGALRM, timeout_handler)
+
+
+def chi2dof(mags, obsphot, obsphot_unc):
+    """
+    Calculate reduced chi-square.
+    
+    Parameters:
+    -----------
+    mags : np.ndarray
+        Model magnitudes/fluxes with shape (n_models, n_bands)
+    obsphot : np.ndarray
+        Observed photometry with shape (n_bands,)
+    obsphot_unc : np.ndarray
+        Observed photometry uncertainties with shape (n_bands,)
+        
+    Returns:
+    --------
+    np.ndarray
+        Reduced chi-square values for each model
+    """
+    chi2 = np.nansum(((mags - obsphot) / obsphot_unc) ** 2, axis=1)
+    return chi2 / np.sum(np.isfinite(obsphot))
+
+
+def toy_noise(flux, meds_sigs, stds_sigs, verbose=False, **extra):
+    """
+    Generate noise for toy model.
+    
+    Parameters:
+    -----------
+    flux : np.ndarray
+        Flux values
+    meds_sigs : callable
+        Function to calculate median uncertainty
+    stds_sigs : callable
+        Function to calculate standard deviation uncertainty
+        
+    Returns:
+    --------
+    tuple
+        (flux, median_uncertainty, standard_deviation)
+    """
+    return flux, meds_sigs(flux), np.clip(stds_sigs(flux), a_min=0.001, a_max=None)
+
+
+class MissingPhotometryHandler:
+    def __init__(self, 
+                 training_photometry,
+                 training_parameters,
+                 posterior_estimator=None,
+                 run_params=None):
+        """
+        Initialize the missing photometry handler.
+        
+        Parameters:
+        -----------
+        training_photometry : np.ndarray
+            Training set photometry with shape (n_samples, n_bands)
+        training_parameters : np.ndarray
+            Training set parameters with shape (n_samples, n_params)
+        posterior_estimator : callable, optional
+            SBI model that returns posterior for a given SED
+        run_params : dict, optional
+            Dictionary of runtime parameters
+        """
+        self.y_train = training_photometry
+        self.x_train = training_parameters
+        self.posterior_estimator = posterior_estimator
+        
+        # Default run parameters if not provided
+        self.run_params = {
+            'ini_chi2': 5.0,        # Initial chi2 threshold
+            'max_chi2': 50.0,       # Maximum chi2 threshold
+            'nmc': 100,             # Number of Monte Carlo samples
+            'nposterior': 1000,     # Number of posterior samples
+            'tmax_per_obj': 30,     # Maximum time per object in seconds
+            'tmax_all': 10,         # Maximum total time in minutes
+            'verbose': False        # Verbose output
+        }
+        
+        if run_params is not None:
+            self.run_params.update(run_params)
+    
+    def gauss_approx_missingband(self, obs):
+        """
+        Nearest neighbor approximation of missing bands using KDE.
+        
+        Parameters:
+        -----------
+        obs : dict
+            Dictionary with observed data containing:
+            - mags_sbi: observed photometry
+            - mags_unc_sbi: uncertainties
+            - missing_mask: boolean mask (True for missing bands)
+            
+        Returns:
+        --------
+        tuple
+            (list of KDEs for missing bands, success flag)
+        """
+        use_res = False
+        y_train = self.y_train
+
+        y_obs = np.copy(obs['mags_sbi'])
+        sig_obs = np.copy(obs['mags_unc_sbi'])
+        invalid_mask = np.copy(obs['missing_mask'])
+        y_obs_valid_only = y_obs[~invalid_mask]
+        valid_idx = np.where(~invalid_mask)[0]
+        not_valid_idx = np.where(invalid_mask)[0]
+
+        # Find chi-square values for training set using only observed bands
+        look_in_training = y_train[:, valid_idx]
+        chi2_nei = chi2dof(mags=look_in_training, 
+                           obsphot=y_obs[valid_idx], 
+                           obsphot_unc=sig_obs[valid_idx])
+
+        # Incrementally increase chi2 threshold until we have enough neighbors
+        _chi2_thres = self.run_params['ini_chi2']
+        use_res = True
+        
+        while _chi2_thres <= self.run_params['max_chi2']:
+            idx_chi2_selected = np.where(chi2_nei <= _chi2_thres)[0]
+            if len(idx_chi2_selected) >= 30:
+                break
+            else:
+                _chi2_thres += 5
+        
+        # If we couldn't find enough neighbors, use top 100 neighbors
+        if _chi2_thres > self.run_params['max_chi2']:
+            use_res = False
+            chi2_selected = y_train[:, valid_idx]
+            chi2_selected = chi2_selected[:100]
+            guess_ndata = y_train[:, not_valid_idx]
+            guess_ndata = guess_ndata[:100]
+            if self.run_params['verbose']:
+                print('Failed to find sufficient number of nearest neighbors!')
+                print(f'_chi2_thres {_chi2_thres} > max_chi2 {self.run_params["max_chi2"]}', len(guess_ndata))
+        else:
+            chi2_selected = y_train[:, valid_idx][idx_chi2_selected]
+            # Get distribution of the missing bands
+            guess_ndata = y_train[:, not_valid_idx][idx_chi2_selected]
+        
+        # Calculate Euclidean distances and weights
+        dists = np.linalg.norm(y_obs_valid_only - chi2_selected, axis=1)
+        neighs_weights = 1 / dists
+
+        # Create KDEs for each missing band
+        kdes = []
+        for i in range(guess_ndata.shape[1]):
+            _kde = stats.gaussian_kde(guess_ndata.T[i], 0.2, weights=neighs_weights)
+            kdes.append(_kde)
+
+        return kdes, use_res
+
+    def sbi_missingband(self, obs, noise_generator=None):
+        """
+        Process missing bands for SBI.
+        
+        Parameters:
+        -----------
+        obs : dict
+            Dictionary with observed data containing:
+            - mags_sbi: observed photometry
+            - mags_unc_sbi: uncertainties
+            - missing_mask: boolean mask (True for missing bands)
+        noise_generator : callable, optional
+            Function to generate noise for sampled fluxes
+            
+        Returns:
+        --------
+        tuple
+            (averaged posteriors, reconstructed photometry, success flag, timeout flag, count)
+        """
+        if self.run_params['verbose']:
+            print('Processing missing bands with SBI')
+
+        ave_theta = []
+
+        y_obs = np.copy(obs['mags_sbi'])
+        sig_obs = np.copy(obs['mags_unc_sbi'])
+        invalid_mask = np.copy(obs['missing_mask'])
+        
+        # Full observed vector (fluxes + uncertainties)
+        observed = np.concatenate([y_obs, sig_obs])
+        
+        # Indices for valid and invalid bands
+        valid_idx = np.where(~invalid_mask)[0]
+        not_valid_idx = np.where(invalid_mask)[0]
+        
+        st = time.time()
+
+        # Get KDEs for missing bands
+        kdes, use_res = self.gauss_approx_missingband(obs)
+
+        nbands = len(y_obs)  # Total number of bands
+        not_valid_idx_unc = not_valid_idx + nbands
+
+        all_x = []
+        cnt = 0
+        cnt_timeout = 0
+        timeout_flag = False
+        
+        # Draw Monte Carlo samples and get posteriors
+        while cnt < self.run_params['nmc']:
+            signal.alarm(self.run_params['tmax_per_obj'])  # Max time per object
+            
+            try:
+                # Create a copy of observations to fill in missing bands
+                x = np.copy(observed)
+                
+                # Sample from KDEs for each missing band
+                for j in range(len(not_valid_idx)):
+                    # Sample flux for missing band
+                    x[not_valid_idx[j]] = kdes[j].resample(size=1)[0]
+                    
+                    # Generate noise for sampled flux
+                    if noise_generator is not None:
+                        # Use provided noise generator
+                        x[not_valid_idx_unc[j]] = noise_generator(
+                            flux=x[not_valid_idx[j]],
+                            verbose=self.run_params['verbose']
+                        )[1]
+                    else:
+                        # Default noise (10% of flux)
+                        x[not_valid_idx_unc[j]] = 0.1 * x[not_valid_idx[j]]
+                
+                all_x.append(x)
+                
+                # Get posterior samples using SBI
+                if self.posterior_estimator is not None:
+                    x_tensor = torch.as_tensor(x.astype(np.float32)).to(device)
+                    noiseless_theta = self.posterior_estimator.sample(
+                        (self.run_params['nposterior'],), 
+                        x=x_tensor,
+                        show_progress_bars=False
+                    )
+                    noiseless_theta = noiseless_theta.detach().cpu().numpy()
+                    ave_theta.append(noiseless_theta)
+                
+                cnt += 1
+                if self.run_params['verbose'] and cnt % 10 == 0:
+                    print('Monte Carlo samples:', cnt)
+                
+            except TimeoutException:
+                cnt_timeout += 1
+            else:
+                signal.alarm(0)
+            
+            # Check if total time exceeded
+            et = time.time()
+            elapsed_time = et - st  # in seconds
+            if elapsed_time/60 > self.run_params['tmax_all']:
+                timeout_flag = True
+                use_res = False
+                break
+        
+        # Process results
+        all_x = np.array(all_x)
+        all_x_flux = all_x[:, :nbands]
+        all_x_unc = all_x[:, nbands:]
+        
+        # Calculate median fluxes and uncertainties
+        y_guess = np.concatenate([
+            np.median(all_x_flux, axis=0), 
+            np.median(all_x_unc, axis=0)
+        ])
+        
+        return ave_theta, y_guess, use_res, timeout_flag, cnt
+    
+    def get_average_posterior(self, ave_theta):
+        """
+        Average posterior samples.
+        
+        Parameters:
+        -----------
+        ave_theta : list
+            List of posterior samples from multiple runs
+            
+        Returns:
+        --------
+        np.ndarray
+            Averaged posterior parameters
+        """
+        if not ave_theta:
+            return None
+        
+        # Convert to numpy array if needed
+        if isinstance(ave_theta[0], torch.Tensor):
+            ave_theta = [t.detach().cpu().numpy() for t in ave_theta]
+        
+        # Concatenate all posterior samples
+        all_samples = np.concatenate(ave_theta, axis=0)
+        
+        # Calculate statistics
+        mean_params = np.mean(all_samples, axis=0)
+        median_params = np.median(all_samples, axis=0)
+        std_params = np.std(all_samples, axis=0)
+        
+        return {
+            'mean': mean_params,
+            'median': median_params,
+            'std': std_params,
+            'samples': all_samples
+        }
+    
+    def process_observation(self, obs, noise_generator=None):
+        """
+        Process a single observation with missing bands.
+        
+        Parameters:
+        -----------
+        obs : dict
+            Dictionary with observed data containing:
+            - mags_sbi: observed photometry
+            - mags_unc_sbi: uncertainties
+            - missing_mask: boolean mask (True for missing bands)
+        noise_generator : callable, optional
+            Function to generate noise for sampled fluxes
+            
+        Returns:
+        --------
+        dict
+            Dictionary with results
+        """
+        # Check if there are missing bands
+        if np.sum(obs['missing_mask']) == 0:
+            if self.run_params['verbose']:
+                print("No missing bands, using standard SBI")
+            
+            # Use standard SBI with complete data
+            if self.posterior_estimator is not None:
+                x = np.concatenate([obs['mags_sbi'], obs['mags_unc_sbi']])
+                x_tensor = torch.as_tensor(x.astype(np.float32)).to(device)
+                samples = self.posterior_estimator.sample(
+                    (self.run_params['nposterior'],), 
+                    x=x_tensor,
+                    show_progress_bars=False
+                )
+                samples = samples.detach().cpu().numpy()
+                
+                return {
+                    'posterior': {
+                        'mean': np.mean(samples, axis=0),
+                        'median': np.median(samples, axis=0),
+                        'std': np.std(samples, axis=0),
+                        'samples': samples
+                    },
+                    'reconstructed_photometry': None,
+                    'success': True,
+                    'timeout': False
+                }
+            else:
+                return {
+                    'posterior': None,
+                    'reconstructed_photometry': None,
+                    'success': False,
+                    'timeout': False
+                }
+        
+        # Process observation with missing bands
+        ave_theta, reconstructed_phot, success, timeout, count = self.sbi_missingband(
+            obs, noise_generator=noise_generator
+        )
+        
+        # Calculate average posterior
+        posterior = self.get_average_posterior(ave_theta) if ave_theta else None
+        
+        return {
+            'posterior': posterior,
+            'reconstructed_photometry': reconstructed_phot,
+            'success': success,
+            'timeout': timeout,
+            'count': count
+        }
+
 
 # TODO:
 # Fix issue with photometry range.
