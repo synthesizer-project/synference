@@ -90,10 +90,9 @@ except:
 
 # params
 
-Nmodels = 1e3
+Nmodels = 50_000
 redshift = (5, 12)
 masses = (5, 11)
-weights = (0, 1)
 max_redshift = 20 # gives maximum age of SFH at a given redshift
 cosmo = Planck18 # cosmology to use for age calculations
 
@@ -110,25 +109,16 @@ peak_age = (-1, 1) # normalized to maximum age of the universe at that redshift
 sfh_param_units = [None, None]
 
 # ---------------------------------------------------------------
-# Pop III
-
-min_age_popIII = (0.00, 30) # Myr
-sfh_timescale_popIII = (0.01, 30) # Length of Time - e.g. min_age_popIII + popIII_sfh_timescale
-
-# ---------------------------------------------------------------
 
 # Generate the grid. Could also seperate hyper-parameters for each model. 
 
 full_params = {
     'redshift': redshift,
     'masses': masses,
-    'weights': weights,
     'tau_v': tau_v,
     'log_zmet': log_zmet,
     'tau': tau,
     'peak_age': peak_age,
-    'min_age_popIII': min_age_popIII,
-    'sfh_timescale_popIII': sfh_timescale_popIII
 }
 
 # Generate the grid
@@ -149,6 +139,7 @@ grid = Grid('bpass-2.2.1-bin_chabrier03-0.1,300.0_cloudy-c23.01-sps.hdf5',
 # Metallicity 
 Z_dists = [ZDist.DeltaConstant(log10metallicity=log_z) for log_z in all_param_dict['log_zmet']]
 
+# Redshifts
 redshifts = np.array(all_param_dict['redshift'])
 
 # Pop II SFH
@@ -183,7 +174,7 @@ galaxy_params={
 sfh_name = str(sfh_type).split('.')[-1].split("'")[0]
 
 popII_basis = GalaxyBasis(
-    model_name=f'Pop_II_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}',
+    model_name=f'Pop_II_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_simple',
     redshifts=redshifts,
     grid=grid,
     emission_model=emission_model,
@@ -197,79 +188,19 @@ popII_basis = GalaxyBasis(
     build_grid=False,
 )
 
-
-# Second Population Model
-# ---------------------------------------------------------------
-
-popIII_grid = Grid('yggdrasil-1.3.3-PopIII_salpeter-10,1,500',
-                    grid_dir=grid_dir,
-                    read_lines=False, new_lam=new_wav)
-
-
-# Pop III parameters
-
-# SFH
-sfh_array = np.vstack((all_param_dict['min_age_popIII'], all_param_dict['sfh_timescale_popIII'])).T
-
-sfh_param_units = [Myr, Myr]
-popIII_sfhs, _ = generate_sfh_basis(
-    sfh_type=SFH.Constant,
-    sfh_param_names=['min_age', 'sfh_timescale'],
-    sfh_param_arrays=sfh_array,
-    redshifts=redshifts,
-    max_redshift=max_redshift,
-    cosmo=cosmo,
-    sfh_param_units=sfh_param_units,
-    calculate_min_age=False,
-    iterate_redshifts=False,
-)
-
-popIII_metal_dists = ZDist.DeltaConstant(metallicity=0)
-
-if 'incident' not in grid.available_spectra:
-    # Need a custom emission model for the Pop III grid if loading the nebular spectra. 
-    popIII_emission_model = EmissionModel(
-        label = 'Pop_III',
-        extract=popIII_grid.available_spectra[0],
-        grid=popIII_grid,
-        emitter='stellar'
-    )
-else:
-    popIII_emission_model = IncidentEmission(
-        grid=popIII_grid,
-    )
-
-popIII_basis = GalaxyBasis(
-    model_name='Pop_III',
-    redshifts=redshifts,
-    grid=popIII_grid,
-    emission_model=popIII_emission_model,
-    sfhs=popIII_sfhs,
-    cosmo=cosmo,
-    instrument=instrument,
-    metal_dists=popIII_metal_dists,
-    redshift_dependent_sfh=True,
-    build_grid=False,
-)
-
-# --------------------------------------------------------------
-# Combine the two population models
-
-weights = np.array([np.array([i, 1-i]) for i in all_param_dict['weights']])
-
-
 combined_basis = CombinedBasis(
-    bases=[popII_basis, popIII_basis],
+    bases=[popII_basis],
     total_stellar_masses=unyt_array(10**all_param_dict['masses'], units=Msun),
-    base_emission_model_keys=['total', popIII_emission_model.label],
-    combination_weights=weights,
+    base_emission_model_keys=['total'],
+    combination_weights=None,
     redshifts=redshifts,
-    out_name='LHC_sampled',
+    out_name='BPASS_Chab_LogNorm_5_z_12_phot_grid',
     out_dir=out_dir,
     draw_parameter_combinations=False, # Since we have already drawn the parameters, we don't need to combine them again.
 )
 
 # Passing in extra analysis function to pipeline to calculate mUV. Any funciton could be passed in. 
-combined_basis.process_bases(overwrite=False, mUV=(calculate_muv, cosmo), n_proc=n_proc)
+combined_basis.process_bases(overwrite=True, mUV=(calculate_muv, cosmo), n_proc=n_proc)
 
-combined_basis.create_grid(overwrite=True, out_name='combined_basis_LHC')
+# Create grid - kinda overkill for a single case, but it does work.
+combined_basis.create_grid(overwrite=True)

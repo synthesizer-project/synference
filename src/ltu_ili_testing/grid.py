@@ -4,6 +4,7 @@ import h5py
 import scipy.stats
 import warnings
 import numpy as np
+from datetime import datetime
 import matplotlib.pyplot as plt
 import synthesizer
 from synthesizer.parametric import Galaxy
@@ -15,7 +16,7 @@ from synthesizer.grid import Grid
 from synthesizer.parametric import SFH, Stars, ZDist
 from synthesizer.instruments import Instrument, FilterCollection, Filter
 from synthesizer.particle.stars import sample_sfzh
-from synthesizer.conversions import fnu_to_lnu
+from synthesizer.conversions import fnu_to_lnu, lnu_to_fnu
 from typing import Dict, Any, List, Tuple, Union, Optional, Type
 from abc import ABC, abstractmethod
 import copy
@@ -44,7 +45,7 @@ def calculate_muv(galaxy, cosmo=Planck18):
 
     for key in list(galaxy.stars.spectra.keys()):
         lnu = galaxy.stars.spectra[key].get_photo_lnu(filter).photo_lnu[0]
-        phot = fnu_to_lnu(lnu, cosmo=cosmo, redshift=z)
+        phot = lnu_to_fnu(lnu, cosmo=cosmo, redshift=z)
         phots[key] = phot
 
     return phots
@@ -388,7 +389,6 @@ def load_hypercube_from_npy(file_path: str):
     
     return hypercube.astype(np.float32)
 
-
 def generate_sfh_basis(
         sfh_type: Type[SFH.Common],
         sfh_param_names: List[str],
@@ -486,12 +486,19 @@ def generate_sfh_basis(
                 sfh_params = {
                     sfh_param_names[l]: row_params[l] for l in range(len(sfh_param_names))
                 }
+
+                if 'sfh_timescale' in sfh_param_names:
+                    sfh_params['max_age'] = sfh_params['min_age'] + sfh_params['sfh_timescale']
+                    sfh_params.pop('sfh_timescale')
+
+
                 # Add max_age parameter
                 if 'max_age' in sfh_param_names:
                     sfh_params['max_age'] = min(max_ages[i]  * Myr, sfh_params['max_age'])
                 else:
                     sfh_params['max_age'] = max_ages[i] * Myr
                 # Create and append SFH instance
+
                 sfh = sfh_type(**sfh_params)
                 sfh.redshift = redshift
                 sfhs.append(sfh)
@@ -524,7 +531,10 @@ def generate_sfh_basis(
             }
 
             # remove _norm from parameter names
-        
+            if 'sfh_timescale' in sfh_param_names:
+                sfh_params['max_age'] = sfh_params['min_age'] + sfh_params['sfh_timescale']
+                sfh_params.pop('sfh_timescale')
+
             # Add max_age parameter
             if 'max_age' in sfh_param_names:
                 sfh_params['max_age'] = min(max_ages[i]  * Myr, sfh_params['max_age'])
@@ -854,18 +864,19 @@ class GalaxyBasis:
                 varying_param_names.remove(param)
             
         # Sanity check all varying parameters combinations on self.galaxies are unique
-
+        print('Checking parameters are unique.')
         hashes = []
         for gal in self.galaxies:
-            hash_i = 0
-            for key in varying_param_names:
-                if key in gal.all_params:
-                    if isinstance(gal.all_params[key], unyt_array) or isinstance(gal.all_params[key], unyt_quantity):
-                        hash_i += hash(float(gal.all_params[key].value))
-                    else:
-                        hash_i += hash(gal.all_params[key])
+            relevant_params = {key: gal.all_params[key] for key in varying_param_names 
+                    if key in gal.all_params}
+            # Calculate hash for each parameter and sum them
+            hash_i = sum(
+                hash(float(param.value)) if isinstance(param, (unyt_array, unyt_quantity)) else hash(param)
+                for param in relevant_params.values()
+            )
             hashes.append(hash_i)
-        if len(hashes) != len(np.unique(hashes)):
+
+        if len(hashes) != len(set(hashes)):
             raise ValueError("Varying parameters are not unique across galaxies. Check your input parameters.")
 
         self.varying_param_names = varying_param_names
@@ -875,6 +886,8 @@ class GalaxyBasis:
 
         for key in to_remove:
             all_parameters.pop(key)
+
+        print('Finished creating galaxies.')
 
         return self.galaxies
     
@@ -1030,10 +1043,16 @@ class GalaxyBasis:
                         n_proc: int = 4,
                         verbose: int = 1,
                         save: bool = True,
+                        emission_model_keys=None,
                         **extra_analysis_functions
                         ) -> Pipeline:
 
         self.emission_model.set_per_particle(self.per_particle)
+
+        if emission_model_keys is not None:
+            self.emission_model.save_spectra(emission_model_keys)
+
+        print("Creating pipeline.")
 
         pipeline = Pipeline(
             emission_model=self.emission_model,
@@ -1048,6 +1067,8 @@ class GalaxyBasis:
             
         pipeline.add_analysis_func(lambda gal: gal.stars.initial_mass, result_key='mass')
 
+        print('Added analysis functions to pipeline.')
+
         # Add any extra analysis functions requested by the user. 
 
         for key, params in extra_analysis_functions.items():
@@ -1060,13 +1081,16 @@ class GalaxyBasis:
             pipeline.add_analysis_func(func, f'supp_{key}', *params)
 
         pipeline.add_galaxies(galaxies)
-        pipeline.get_spectra()
+        #pipeline.get_spectra() # Switch off so they aren't saved
         pipeline.get_observed_spectra(self.cosmo)
-        pipeline.get_photometry_luminosities()
+
+        #pipeline.get_photometry_luminosities() # Switch off so they aren't saved
         pipeline.get_photometry_fluxes()
 
-        pipeline.run()
 
+        print(f'Running pipeline at {datetime.now()} for {len(galaxies)} galaxies')
+        pipeline.run()
+        print(f'Finished running pipeline at {datetime.now()} for {len(galaxies)} galaxies')
         if save:
             # Save the pipeline to a file
 
@@ -1095,6 +1119,8 @@ class GalaxyBasis:
 
                 f.create_dataset('Wavelengths', data=wav)
                 f['Wavelengths'].attrs['Units'] = 'Angstrom'
+            
+            print(f'Written pipeline to disk at {fullpath}.')
 
         return pipeline
 
@@ -1121,6 +1147,11 @@ class CombinedBasis:
         self.base_mass = base_mass
         self.base_emission_model_keys = base_emission_model_keys
         self.draw_parameter_combinations = draw_parameter_combinations
+
+        if self.combination_weights is None:
+            assert len(self.bases) == 1
+            self.combination_weights = [1.] * len(redshifts)
+
 
         # stellar mass just scales the basis SED. So computing spectra/photometry for each mass/combination is just a weighted sum of the basis SEDs.
         # We can just compute the basis SEDs for a single mass, and then scale them by the combination weights.
@@ -1161,7 +1192,7 @@ class CombinedBasis:
             
 
         for i, base in enumerate(self.bases):
-            full_out_path = f"{self.out_dir}/{self.out_name}_{base.model_name}.hdf5"
+            full_out_path = f"{self.out_dir}/{base.model_name}.hdf5"
 
             if os.path.exists(full_out_path) and not overwrite[i]:
                 print(f"File {full_out_path} already exists. Skipping.")
@@ -1181,10 +1212,11 @@ class CombinedBasis:
             print(f'Created {len(galaxies)} galaxies for base {base.model_name}')
             # Process the galaxies
             pipeline = base.process_galaxies(galaxies,  
-                                            f"{self.out_name}_{base.model_name}.hdf5",
+                                            f"{base.model_name}.hdf5",
                                             out_dir=self.out_dir,
                                             n_proc=n_proc, verbose=verbose, save=True, 
-                                            **extra_analysis_functions
+                                            emission_model_keys=self.base_emission_model_keys[i],
+                                            **extra_analysis_functions,
                                             )
            
     def load_bases(self, indexes: List[int] = None) -> dict:
@@ -1195,7 +1227,7 @@ class CombinedBasis:
 
             print(f'Emission model key for base {base.model_name}: {self.base_emission_model_keys[i]}')
 
-            full_out_path = f"{self.out_dir}/{self.out_name}_{base.model_name}.hdf5"
+            full_out_path = f"{self.out_dir}/{base.model_name}.hdf5"
             if not os.path.exists(full_out_path):
                 raise ValueError(f"File {full_out_path} does not exist")
             
@@ -1265,7 +1297,7 @@ class CombinedBasis:
     def create_grid(self, 
                 override_instrument: Union[Instrument, None] = None,
                 save: bool = True,
-                out_name: str = 'output.hdf5',
+                overload_out_name: str = '',
                 overwrite: bool = False,
                 ) -> dict:    
         """
@@ -1275,7 +1307,7 @@ class CombinedBasis:
         """
 
         if not self.draw_parameter_combinations:
-            return self.create_full_grid(override_instrument, overwrite=overwrite, save=save, out_name=out_name)
+            return self.create_full_grid(override_instrument, overwrite=overwrite, save=save, overload_out_name=overload_out_name)
         
 
         if os.path.exists(f"{self.out_dir}/{out_name}") and not overwrite:
@@ -1358,7 +1390,11 @@ class CombinedBasis:
             all_combined_param_names.extend(value)
         
         # Add our standard parameters that are always included
-        param_columns = ['redshift', 'log_mass', 'weight_fraction']
+        param_columns = ['redshift', 'log_mass']
+
+        if len(self.bases) > 1:
+            param_columns.append('weight_fraction')
+
         param_columns.extend(all_combined_param_names)
 
         for redshift in tqdm(self.redshifts):
@@ -1444,9 +1480,10 @@ class CombinedBasis:
                         params_array[param_idx, i] = np.log10(total_mass.value)
                         param_idx += 1
                         
-                        params_array[param_idx, i] = combination[0]  # assuming this is weight fraction
-                        param_idx += 1
-                        
+                        if len(self.bases) > 1:
+                            params_array[param_idx, i] = combination[0]  # assuming this is weight fraction
+                            param_idx += 1
+                            
                         # Add all varying parameters from each base
                         for j, base in enumerate(self.bases):
                             for param_name in total_property_names[base.model_name]:
@@ -1479,11 +1516,11 @@ class CombinedBasis:
         combined_params = np.hstack(all_params)
         combined_supp_params = np.hstack(all_supp_params)
 
-        print(f"Combined outputs shape: {combined_outputs.shape}")
+        '''print(f"Combined outputs shape: {combined_outputs.shape}")
         print(f"Combined parameters shape: {combined_params.shape}")
         print(f"Combined supplementary parameters shape: {combined_supp_params.shape}")
         print(f"Combined parameters: {combined_params}")
-        print(f"Filter codes: {filter_codes}")
+        print(f"Filter codes: {filter_codes}")'''
 
         out = {
             'photometry': combined_outputs,
@@ -1507,8 +1544,9 @@ class CombinedBasis:
 
     def save_grid(self,
                   grid_dict: dict, # E.g. output from create_grid
-                  out_name: str = 'grid.hdf5',
+                  overload_out_name: str = '',
                   overwrite: bool = False,
+                  grid_params_to_save=['model_name'],
                   ) -> None:
         
         """
@@ -1525,6 +1563,14 @@ class CombinedBasis:
         # Check if the output directory exists, if not create it
         if not os.path.exists(self.out_dir):
             os.makedirs(self.out_dir)
+
+        if overload_out_name != '':
+            out_name = overload_out_name
+        else:
+            out_name = self.out_name
+
+        if not out_name.endswith('.hdf5'):
+            out_name = f'{out_name}.hdf5'
         # Create the full output path
         full_out_path = os.path.join(self.out_dir, out_name)
         # Check if the file already exists
@@ -1551,6 +1597,18 @@ class CombinedBasis:
             f.attrs['SupplementaryParameterNames'] = grid_dict['supplementary_parameter_names']
             f.attrs['SupplementaryParameterUnits'] = grid_dict['supplementary_parameter_units']
             f.attrs['PhotometryUnits'] = 'nJy'
+
+            for param in grid_params_to_save:
+                out = []
+                for base in self.bases:
+                    out.append(str(getattr(base, param)))
+                f.attrs[param] = out
+            
+            # Add a timestamp
+
+            f.attrs['Grids'] = [base.grid.grid_name for base in self.bases]
+
+            f.attrs['CreationDT'] = datetime.now().strftime("%Y%m%d_%H%M%S")
 
             # Add anything else as a dataset
             for key, value in grid_dict.items():
@@ -1744,7 +1802,7 @@ class CombinedBasis:
     def create_full_grid(self,
                 override_instrument: Union[Instrument, None] = None,
                 save: bool = True,
-                out_name: str = 'output.hdf5',
+                overload_out_name: str = '',
                 overwrite: bool = False,
                 ) -> None:
         '''
@@ -1805,7 +1863,11 @@ class CombinedBasis:
             all_combined_param_names.extend(value)
         
         # Add our standard parameters that are always included
-        param_columns = ['redshift', 'log_mass', 'weight_fraction']
+        param_columns = ['redshift', 'log_mass']
+
+        if len(self.bases) > 1:
+            param_columns.append('weight_fraction')
+
         param_columns.extend(all_combined_param_names)
 
         # set supplementary parameters
@@ -1847,7 +1909,11 @@ class CombinedBasis:
                     raise ValueError(f"No galaxies found for redshift {redshift} in base {base.model_name}. Check your redshift array.")
 
                 # Calculate the scaling factor for each base
-                scaling_factors = mass_weights[i] / mass
+
+                if combination == 1.0:
+                    scaling_factors = [1.0]
+                else:
+                    scaling_factors = mass_weights[i] / mass
 
                 base_photometry = np.array([pipeline_outputs[base.model_name]['observed_photometry'][filter_code][mask] for filter_code in filter_codes], dtype=np.float32)
 
@@ -1914,8 +1980,9 @@ class CombinedBasis:
                 params_array[param_idx, i] = np.log10(total_mass.value)
                 param_idx += 1
                 
-                params_array[param_idx, i] = combination[0]  # assuming this is weight fraction
-                param_idx += 1
+                if len(self.bases) > 1:
+                    params_array[param_idx, i] = combination[0]  # assuming this is weight fraction
+                    param_idx += 1
                 
                 # Add all varying parameters from each base
                 for j, base in enumerate(self.bases):
@@ -1973,7 +2040,7 @@ class CombinedBasis:
         self.grid_supplementary_parameter_names = supp_param_keys
 
         if save:
-            self.save_grid(out, out_name=out_name, overwrite=overwrite) 
+            self.save_grid(out, overload_out_name=overload_out_name, overwrite=overwrite) 
 
     
 
@@ -1985,4 +2052,4 @@ if __name__ == "__main__":
 # Need to use weights when combining supplemental parameters like MUV - DONE
 # Switch to using estimated MUV for normalisation, which is closer to the observed MUV
 # Make weight fraction clearer as to which base it is for.
-# Use Latin Hypercube sampling for the grid generation
+# Use Latin Hypercube sampling for the grid generation DONE

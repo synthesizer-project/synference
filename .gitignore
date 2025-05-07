@@ -13,6 +13,7 @@ sbi-logs/
 plots/
 Yggdrasil/
 models/
+scripts/filters/
 
 # Jupyter Notebook checkpoints
 .ipynb_checkpoints
