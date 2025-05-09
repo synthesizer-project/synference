@@ -188,19 +188,24 @@ popII_basis = GalaxyBasis(
     build_grid=False,
 )
 
+# This will plot some of the SEDs as an example.
+# for i in range(30):
+#    popII_basis.plot_random_galaxy(out_dir='/home/tharvey/work/ltu-ili_testing/plots',
+#                                    masses=10**all_param_dict['masses'])
+
 combined_basis = CombinedBasis(
     bases=[popII_basis],
     total_stellar_masses=unyt_array(10**all_param_dict['masses'], units=Msun),
     base_emission_model_keys=['total'],
     combination_weights=None,
     redshifts=redshifts,
-    out_name='BPASS_Chab_LogNorm_5_z_12_phot_grid',
+    out_name='BPASS_Chab_LogNorm_5_z_12_phot_grid2',
     out_dir=out_dir,
     draw_parameter_combinations=False, # Since we have already drawn the parameters, we don't need to combine them again.
 )
 
 # Passing in extra analysis function to pipeline to calculate mUV. Any funciton could be passed in. 
-combined_basis.process_bases(overwrite=True, mUV=(calculate_muv, cosmo), n_proc=n_proc)
+combined_basis.process_bases(overwrite=False, mUV=(calculate_muv, cosmo), n_proc=n_proc)
 
 # Create grid - kinda overkill for a single case, but it does work.
 combined_basis.create_grid(overwrite=True)
