@@ -693,6 +693,8 @@ class GalaxyBasis:
         self.stellar_masses = stellar_masses
         self.redshift_dependent_sfh = redshift_dependent_sfh
         self.params_to_ignore = params_to_ignore
+        self.build_grid = build_grid
+
         self.galaxies = []
 
         if isinstance(self.metal_dists, ZDist.Common):
@@ -912,7 +914,7 @@ class GalaxyBasis:
             **galaxy_kwargs, # most parameters want to be on the emitter
         )
 
-        # Define the number of stellar particles we want
+        # Define the number of stellar particles
         n = stellar_mass.size if isinstance(stellar_mass, unyt_array) else 1
         
 
@@ -1124,6 +1126,214 @@ class GalaxyBasis:
 
         return pipeline
 
+    def plot_random_galaxy(self, masses, **kwargs):
+        """
+        Plot a random galaxy from the list of galaxies.
+        """
+
+        if not self.build_grid:
+            idx = np.random.randint(0, len(self.redshifts))
+            mass = masses[idx]
+            return self.plot_galaxy(idx, stellar_mass=mass*Msun, **kwargs)
+
+    def plot_galaxy(self,
+                    idx,
+                    save: bool = True,
+                    stellar_mass: unyt_quantity = 1e9*Msun,
+                    emission_model_keys: List[str] = ['total'],
+                    out_dir='./'
+                    ):
+        """
+        Plot the galaxy with the given index.
+        """
+        if not self.build_grid and len(self.galaxies) == 0:
+            galaxy_params = {}
+            for param in self.galaxy_params.keys():
+                if isinstance(self.galaxy_params[param], dict):
+                    galaxy_params[param] = self.process_priors(self.galaxy_params[param])
+                elif isinstance(self.galaxy_params[param], (list, np.ndarray)):
+                    galaxy_params[param] = self.galaxy_params[param][idx]
+                else:
+                    galaxy_params[param] = self.galaxy_params[param]
+
+            # Get idx's from requirements and build galaxy directly
+            galaxy = self.create_galaxy(sfh=self.sfhs[idx],
+                                        redshift=self.redshifts[idx],
+                                        metal_dist=self.metal_dists[idx],
+                                        base_mass=stellar_mass,
+                                        **galaxy_params)
+        else:
+            if idx >= len(self.galaxies):
+                raise ValueError(f"Index {idx} out of range for galaxies.")
+
+            galaxy = self.galaxies[idx]
+
+        # Generate spectra
+
+        galaxy.stars.get_spectra(self.emission_model)
+        galaxy.get_observed_spectra(cosmo=self.cosmo, igm=Inoue14)
+
+        fig, ax = plt.subplots(1, 2, figsize=(10, 5), layout='constrained') 
+        
+        plot_dict = {key: galaxy.stars.spectra[key] for key in emission_model_keys}
+        
+        colors = {key: plt.cm.viridis(i/len(emission_model_keys)) for i, key in enumerate(plot_dict.keys())}
+        
+        plot_spectra(
+            plot_dict,
+            show=False,
+            fig=fig,
+            ax = ax[0],
+            x_units=um,
+            quantity_to_plot='fnu',
+            draw_legend=False,
+        )
+
+        # change color of line with label key to the color of the key
+
+        for line in ax[0].lines:
+            label = line.get_label()
+            test_colors = [i.title() for i in colors.keys()]
+            if label in test_colors:
+                pos = test_colors.index(label)
+                label = list(colors.keys())[pos]
+                line.set_color(colors[label])
+                line.set_linewidth(1.5)
+                line.set_label(label)
+
+        ax[0].set_yscale('log')
+
+        def custom_xticks(x, pos):
+            if x == 0:
+                return '0'
+            else:
+                return f'{x/1e4:.1f}'
+
+        ax[0].xaxis.set_major_formatter(FuncFormatter(custom_xticks))
+
+        min_x, max_x = 1e10 * um, 0 * um
+        min_y, max_y = 1e10 * nJy, 0 * nJy
+
+        text_gal = {}
+        for emission_model in emission_model_keys:
+
+            sed = galaxy.stars.spectra[emission_model]
+
+            # Plot photometry
+            phot = sed.get_photo_fnu(filters=self.instrument.filters)
+
+            min_x = min(min_x, np.nanmin(phot.filters.pivot_lams))
+            max_x = max(max_x, np.nanmax(phot.filters.pivot_lams))
+            min_y = min(min_y, np.nanmin(phot.photo_fnu))
+            max_y = max(max_y, np.nanmax(phot.photo_fnu))
+
+            ax[0].plot(phot.filters.pivot_lams, phot.photo_fnu, '+', color=colors[emission_model], path_effects=[PathEffects.withStroke(linewidth=4, foreground='white')])
+
+            # Get the redshift
+            redshift = galaxy.redshift
+
+            # Get the SFH
+            stars_sfh = galaxy.stars.get_sfh()
+            stars_sfh = stars_sfh / np.diff(10**(self.grid.log10age), prepend=0) / yr
+            t, sfh = galaxy.stars.sf_hist_func.calculate_sfh()
+
+            ax[1].plot(10**(self.grid.log10age-6), stars_sfh, label=f'{emission_model} SFH', color=colors[emission_model])
+            ax[1].plot(t/1e6, sfh/np.max(sfh) * np.max(stars_sfh), label=f'Requested {emission_model} SFH', color=colors[emission_model], linestyle='--')
+
+            mass = galaxy.stars.initial_mass
+            if mass == 0:
+                text_gal[emission_model] = f'{emission_model}     \nNo stars'
+            else:
+                age = galaxy.stars.calculate_mean_age()
+                zmet = galaxy.stars.calculate_mean_metallicity()
+
+                text_gal[emission_model] = f'{emission_model}     \nAge {age.to(Myr):.0f}\n$\log_{{10}}$Z: {np.log10(zmet.value):.2f}\nM$_\star$: {np.log10(mass):.1f} M$_\odot$'
+
+        ax[0].legend(loc='upper right', fontsize=6, ncols=3)
+        # Set the x-axis limits
+        if max_y > 1 * nJy:
+            min_y = max(min_y, 1 * nJy)
+        ax[0].set_xlim(0.9*min_x, 1.1*max_x)
+        ax[0].set_ylim(0.9*min_y, 2*max_y)       
+
+        textstr = '\n'.join((
+            r'$z = %.2f$' % (redshift),
+        ))
+
+        textstr += '\n' + '\n'.join(text_gal.values())
+
+        # add galaxy params
+
+        textstr += '\n' + '\n'.join([f'{key}: {value:.2f}' for key, value in galaxy_params.items()])
+
+        # these are matplotlib.patch.Patch properties
+        props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
+        # place a text box in upper left in axes coords
+        ax[1].text(0.95, 0.72, textstr, transform=ax[1].transAxes, fontsize=12, horizontalalignment='right',
+                verticalalignment='top', bbox=props)
+
+        # add a secondary axis with AB magnitudes
+
+        # 31.4
+
+        def ab_to_jy(f):
+            return 1e9 * 10**(f/(-2.5) -8.9)  
+
+        def jy_to_ab(f):
+            f = f/1e9
+            return -2.5 * np.log10(f) + 8.9
+
+        secax = ax[0].secondary_yaxis('right', functions=(jy_to_ab, ab_to_jy))
+        # set scalar formatter
+
+        max_age = self.cosmo.age(redshift) - self.cosmo.age(20)
+        max_age = max_age.to(u.Myr).value 
+
+        ax[1].set_xlim(0, 1.05*max_age)
+
+        secax.yaxis.set_major_formatter(ScalarFormatter())
+        secax.yaxis.set_minor_formatter(ScalarFormatter())
+        secax.set_ylabel('Flux Density [AB mag]')
+
+        ax[1].set_xlabel('Time [Myr]')
+        ax[1].set_ylabel('SFH [M$_\odot$ yr$^{-1}$]')
+        #ax[1].set_yscale('log')
+        ax[1].legend()
+
+        self.tmp_redshift = redshift    
+        self.tmp_time_unit = u.Myr
+        secax = ax[1].secondary_xaxis("top", functions=(self._time_convert, self._z_convert))
+        secax.set_xlabel("Redshift")
+
+        # Put a vertical line at maximum redshift
+
+        secax.set_xticks([6, 7, 8, 10, 12, 14, 15, 20])
+
+        if save:
+            fig.savefig(f'{out_dir}/{self.model_name}_{idx}.png', dpi=300)
+            plt.close(fig)
+
+        return fig
+
+    def _time_convert(self, lookback_time):
+        time_unit = getattr(self, 'tmp_time_unit', u.yr)
+        lookback_time = lookback_time * time_unit
+        return z_at_value(
+            self.cosmo.lookback_time,
+            self.cosmo.lookback_time(self.tmp_redshift) + lookback_time,
+        ).value
+
+    def _z_convert(self, z):
+        if type(z) in [list, np.ndarray] and len(z) == 0:
+            return np.array([])
+        
+        time_unit = getattr(self, 'tmp_time_unit', u.yr)
+        
+        return (
+            self.cosmo.lookback_time(z) - self.cosmo.lookback_time(self.tmp_redshift)
+        ).to(time_unit).value
+
+
 class CombinedBasis:
     def __init__(self, 
                 bases: List[Type[GalaxyBasis]],
@@ -1133,7 +1343,7 @@ class CombinedBasis:
                 combination_weights: np.ndarray,
                 out_name: str ='combined_basis',
                 out_dir: str ='../output/',
-                base_mass: unyt_array =1e9 * Msun,
+                base_mass: unyt_array = 1e9 * Msun,
                 draw_parameter_combinations: bool = True,
                 ) -> None:
         
@@ -1909,11 +2119,12 @@ class CombinedBasis:
                     raise ValueError(f"No galaxies found for redshift {redshift} in base {base.model_name}. Check your redshift array.")
 
                 # Calculate the scaling factor for each base
-
                 if combination == 1.0:
-                    scaling_factors = [1.0]
+                    scaling_factors = mass_weights / mass
                 else:
                     scaling_factors = mass_weights[i] / mass
+
+                print(f"Scaling factors: {scaling_factors}")
 
                 base_photometry = np.array([pipeline_outputs[base.model_name]['observed_photometry'][filter_code][mask] for filter_code in filter_codes], dtype=np.float32)
 
@@ -1955,6 +2166,7 @@ class CombinedBasis:
 
             # Calculate the total number of combinations
             dimension = np.prod([i.shape[-1] for i in scaled_photometries])
+            print(f"Dimension: {dimension}")
 
             output_array = np.zeros((scaled_photometries[0].shape[0], dimension))
             params_array = np.zeros((len(param_columns), dimension))

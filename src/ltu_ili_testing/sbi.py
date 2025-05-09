@@ -7,6 +7,7 @@ from scipy import stats
 from scipy.interpolate import interp1d
 from scipy.spatial.distance import euclidean
 import torch
+import glob
 import torch.nn as nn
 import torch.nn.functional as F
 import h5py
@@ -14,7 +15,7 @@ import numpy as np
 from unyt import unyt_array, nJy, Msun
 import re
 import operator
-from typing import List, Dict, Union, Iptional, Tuple
+from typing import List, Dict, Union, Optional, Tuple
 import optuna
 import sys
 from io import StringIO
@@ -23,6 +24,7 @@ import matplotlib.pyplot as plt
 from joblib import dump, load
 import json
 from datetime import datetime
+from astropy.visualization import hist
 
 import torch
 import torch.nn as nn
@@ -38,12 +40,12 @@ from sklearn.preprocessing import StandardScaler
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-verbose = False
+verbose = True
 if verbose:
     print('Device:', device)
     print("Pytorch version: " + torch.__version__)
     print("ROCM HIP version: " + torch.version.hip)
-    print("CUDA version: " + torch.version.cuda)
+    #print("CUDA version: " + torch.version.cuda)
 torch.cuda.set_device(f'{device}:0')
 
 # get path of this file
@@ -154,6 +156,7 @@ class SBI_Fitter:
         # See self.update_parameter_array() for more details.
         self.fitted_parameter_array = parameter_array
         self.fitted_parameter_names = parameter_names
+        self.simple_fitted_parameter_names = [i.split('/')[-1] for i in parameter_names]
 
         # Feature array and names
         self.feature_array = feature_array
@@ -195,6 +198,8 @@ class SBI_Fitter:
 
     def update_parameter_array(self,
                                parameters_to_remove: list = [],
+                               delete_rows=[],
+                               n_scatters: int = 1,
                                ) -> None:
         '''
         Removes any parameter in self.provided_feature_parameters from the parameter array and parameter names
@@ -206,11 +211,23 @@ class SBI_Fitter:
                 index = list(self.parameter_names).index(param)
                 self.fitted_parameter_array = np.delete(self.parameter_array, index, axis=1)
                 self.fitted_parameter_names = np.delete(self.parameter_names, index)
+                self.simple_fitted_parameter_names = np.delete(self.simple_fitted_parameter_names, index)
+
+
+        # Remove any rows in delete_rows
+        if len(delete_rows) > 0:
+            self.fitted_parameter_array = np.delete(self.fitted_parameter_array, delete_rows, axis=0)
+
+        # Now duplicate the parameter array n_scatters times. E.g. if it was [[1], [2], [3]] and n_scatters is 3, it should be [[1], [1], [1], [2], [2], [2], [3], [3], [3]]
+        if n_scatters > 1:
+            self.fitted_parameter_array = np.repeat(self.fitted_parameter_array, n_scatters, axis=0)
+
 
     @classmethod
     def init_from_hdf5(cls, 
                        model_name: str,
                        hdf5_path: str,
+                       return_output=False,
                        ):
 
         """
@@ -227,6 +244,9 @@ class SBI_Fitter:
         # Training data if unnormalized and not setup as correct features yet. 
 
         output = load_grid_from_hdf5(hdf5_path)
+
+        if return_output:
+            return output
 
         raw_photometry_grid = output['photometry']
         raw_photometry_names = output['filter_codes']
@@ -310,14 +330,14 @@ class SBI_Fitter:
         Returns:
         --------
         np.ndarray
-            Scattered photometry array of shape (m*N_scatters, n)
+            Scattered photometry array of shape (m, n_scatters*n)
         '''
         # Get input array dimensions
         m, n = photometry_array.shape
         
         # Verify dimensions match
-        if n != len(depths):
-            raise ValueError(f"Mismatch in dimensions: photometry_array has {n} columns but depths has {len(depths)} elements")
+        if m != len(depths):
+            raise ValueError(f"Mismatch in dimensions: photometry_array has {m} columns but depths has {len(depths)} elements")
         
         # Convert depths based on units
         if hasattr(photometry_array, 'units') and photometry_array.units == 'ABmag':
@@ -328,22 +348,19 @@ class SBI_Fitter:
             depths_std = depths.to(self.raw_photometry_units).value / depth_sigma
         
         # Pre-allocate output array with correct dimensions
-        output_arr = np.zeros((m * N_scatters, n))
+        output_arr = np.zeros((m, N_scatters * n))
         
         # Generate all random values at once for better performance
-        # Shape will be (n, m, N_scatters) for broadcasting
-        random_values = np.random.normal(scale=depths_std[:, np.newaxis, np.newaxis], 
-                                        size=(n, m, N_scatters))
-        
-        # Reshape and transpose to get correct dimensions for addition
-        random_values = np.transpose(random_values, (1, 2, 0))  # -> (m, N_scatters, n)
-        
-        # Add the photometry values (broadcasting)
-        scattered_values = photometry_array[:, np.newaxis, :] + random_values  # -> (m, N_scatters, n)
-        
-        # Reshape to final output shape (m*N_scatters, n)
-        output_arr = scattered_values.reshape(m * N_scatters, n)
-        
+        random_values = np.random.normal(loc=0, scale=depths_std[:, None], size=(m, N_scatters * n))
+        # Reshape the random values to match the output array
+        random_values = random_values.reshape(m, N_scatters, n)
+        # Repeat the photometry array for each scatter
+        photometry_repeated = np.repeat(photometry_array[:, None, :], N_scatters, axis=1)
+        # Add the random values to the repeated photometry array
+        output_arr = photometry_repeated + random_values
+        # Reshape the output array to have the correct dimensions
+        output_arr = output_arr.reshape(m, N_scatters * n)
+
         return output_arr
 
     def create_feature_array_from_raw_photometry(self,
@@ -380,7 +397,7 @@ class SBI_Fitter:
             simulate_missing_fluxes:  boolean, default False. CURRENTLY UNIMPLEMENTED.
                 This would allow missing photometry for some fraction of the time, which could be marked
                 with a specific filler flag, or a seperate boolean row/column to flag missing data. 
-             
+            TODO: How should normalization work with the scattering?
 
         Returns:
             The feature array and feature names.
@@ -401,10 +418,10 @@ class SBI_Fitter:
             assert isinstance(depths, unyt_array)
             self.phot_depths = depths
 
-            new_phot_array = self._apply_depths(depths, photometry_array, scatter_fluxes)
-            depth_message = f'Scattering photometry {scatter_fluxes} times for each row'
+            phot = self._apply_depths(depths, phot, scatter_fluxes)
+            print(f'Scattering photometry {scatter_fluxes} times for each row')
 
-        
+        delete_rows = []
         # Normalize the photometry grid
         if normalize_method is not None:
             if normalize_method in self.raw_photometry_names:
@@ -443,7 +460,8 @@ class SBI_Fitter:
                 norm_index = list(self.supplementary_parameter_names).index(normalize_method)
                 norm_unit = self.supplementary_parameter_units[norm_index]
                 normalization_factor = self.supplementary_parameters[norm_index, :]
-
+                # count where normalzation is 0
+               
                 assert normalization_factor.shape[0] == self.raw_photometry_grid.shape[1], "Normalization factor should have the same shape as the photometry grid."
                 assert norm_unit == self.raw_photometry_units, "Normalization factor should have the same units as the photometry grid."
                 
@@ -475,6 +493,7 @@ class SBI_Fitter:
         else:
             normed_photometry = self.raw_photometry_grid
             normalization_factor_converted = np.ones(normed_photometry.shape[1])
+            normalization_factor = normalization_factor_converted
             raw_photometry_names = np.array(self.raw_photometry_names)
 
             # Convert the photometry to the desired units
@@ -483,7 +502,13 @@ class SBI_Fitter:
                 normed_photometry = -2.5 * np.log10(unyt_array(normed_photometry, units=self.raw_photometry_units).to('uJy').value) + 23.9
             else:
                 normed_photometry = unyt_array(normed_photometry, units=self.raw_photometry_units).to(normed_flux_units).value
-    
+
+        if np.sum(normalization_factor == 0.0) > 0:
+            # delete these indexes from the photometry 
+            print(f'Warning: Normalization factor is 0.0 for {np.sum(normalization_factor == 0.0)} rows. These will be deleted.')
+            delete_rows.extend(np.where(normalization_factor == 0.0)[0].tolist())
+
+
         if normed_flux_units == 'AB':
             # very small fluxes can blow up here and go to infinity. Set a maximum difference of some large amount - say 50
             # If not normalized, set minmum flux to 50 AB.
@@ -535,6 +560,10 @@ class SBI_Fitter:
                     # Add the feature name
                     feature_names[len(raw_photometry_names) + i] = feature
 
+
+        # Remove any rows in delete_rows
+        if len(delete_rows) > 0:
+            feature_array = np.delete(feature_array, delete_rows, axis=1)
         
         assert '' not in feature_names, "Feature names should not be empty. Please check the extra features."
 
@@ -554,7 +583,7 @@ class SBI_Fitter:
                 print(f'{feature_name}: {np.min(feature_array[pos]):.3f} - {np.max(feature_array[pos]):.3f} {self.feature_units[pos]}')
             print('---------------------------------------------')
 
-        self.update_parameter_array()
+        self.update_parameter_array(delete_rows=delete_rows)
 
         return feature_array, feature_names
 
@@ -622,6 +651,15 @@ class SBI_Fitter:
         
         low = np.array(low)
         high = np.array(high)
+
+        # Print prior ranges
+        if verbose:
+            print('---------------------------------------------')
+            print('Prior ranges:')
+            print('---------------------------------------------')
+            for i, param in enumerate(self.fitted_parameter_names):
+                print(f'{param}: {low[i]:.2f} - {high[i]:.2f}')
+            print('---------------------------------------------')
 
         low = torch.tensor(low, dtype=torch.float32, device=self.device)
         high = torch.tensor(high, dtype=torch.float32, device=self.device)
@@ -735,7 +773,7 @@ class SBI_Fitter:
         if name_append == 'timestamp':
             name_append = f'_{self._timestamp}'
         
-        if os.path.exists(f'{out_dir}/{self.name}{name_append}_single_sbi_params.pkl') and save_model:
+        if os.path.exists(f'{out_dir}/{self.name}{name_append}_params.pkl') and save_model:
             print('Model with same name already exists. Please change the name of this model or delete the existing one.')
             return None
 
@@ -743,6 +781,13 @@ class SBI_Fitter:
             train_indices, test_indices = self.split_dataset(train_fraction=train_test_fraction, random_seed=random_seed)
 
         # Prepare data
+
+        start_time = datetime.now()
+
+        assert len(train_indices) > 0, "Training indices should not be empty."
+        assert len(test_indices) > 0, "Test indices should not be empty."
+
+        assert self.feature_array.shape[0] == self.fitted_parameter_array.shape[0], "Feature array and parameter array should have the same number of samples."
 
         X_train = self.feature_array[train_indices]
         y_train = self.fitted_parameter_array[train_indices]
@@ -897,11 +942,16 @@ class SBI_Fitter:
             }
             dump(param_dict, f"{out_dir}/{self.name}{name_append}_params.pkl", compress=3)
         
+        end_time = datetime.now()   
+
+        elapsed_time = end_time - start_time
+        print(f'Time to train model(s): {elapsed_time}')
+
         if plot:
             self.plot_diagnostics(X_train=X_scaled, y_train=y_scaled, 
                                   X_test=X_test,
                                   y_test=y_test,
-                                  plots_dir=out_dir)
+                                  plots_dir=f'{out_dir}/plots/')
 
         return posteriors, stats
 
@@ -1079,10 +1129,39 @@ class SBI_Fitter:
         ax.set_ylabel('Log probability')
         ax.legend()
 
-        if not os.path.exists(f'{plots_dir}/{self.name}'):
-            os.makedirs(f'{plots_dir}/{self.name}')
-
         fig.savefig(f'{plots_dir}/loss.png', dpi=300)
+
+    def plot_histogram_parameter_array(self,
+        bins='knuth',
+        plots_dir: str = f'{code_path}/models/name/plots/',
+        seperate_test_train=False,
+        ):
+        '''Plot histogram of each parameter using astropy.visualization.hist'''
+
+        fig, axes = plt.subplots(1, len(self.fitted_parameter_names), figsize=(15, 5))
+        for i, param in enumerate(self.simple_fitted_parameter_names):
+            axes[i].set_title(param)
+            axes[i].set_xlabel('Value')
+            axes[i].set_ylabel('Count')
+            if seperate_test_train:
+                hist(self._y_train[:, i], ax=axes[i], bins=bins, label='Train')
+                hist(self._y_test[:, i], ax=axes[i], bins=bins, label='Test')
+                axes[i].legend()
+            else:
+                hist(self.fitted_parameter_array[:, i], ax=axes[i], bins=bins)
+
+
+        plt.tight_layout()
+
+        plots_dir = plots_dir.replace('name', self.name)
+
+        if not os.path.exists(plots_dir):
+            os.makedirs(plots_dir)
+
+        print('saving', f'{plots_dir}/param_histogram.png')
+        fig.savefig(f'{plots_dir}/param_histogram.png', dpi=300)
+
+        return fig
 
     def plot_posterior(self,
                     ind: int = 'random',
@@ -1118,9 +1197,10 @@ class SBI_Fitter:
         # use ltu-ili's built-in validation metrics to plot the posterior for this point
         metric = PlotSinglePosterior(
             num_samples=num_samples, sample_method=sample_method,
-            labels=self.fitted_parameter_names,
+            labels=self.simple_fitted_parameter_names,
             out_dir=plots_dir,
         )
+       
         fig = metric(
             posterior=self.posteriors,
             x_obs = X[ind], theta_fid=y[ind],
@@ -1226,7 +1306,7 @@ class SBI_Fitter:
 
         metric = PosteriorCoverage(
             num_samples=num_samples, sample_method=sample_method, 
-            labels=self.fitted_parameter_names,
+            labels=self.simple_fitted_parameter_names,
             plot_list = plot_list,
             out_dir=plots_dir,
         )
@@ -1290,8 +1370,18 @@ class SBI_Fitter:
         """
         Load the model from a pickle file.
         Args:
-            model_file: Path to the pickle file.
+            model_file: Path to the pickle file (or folder if only one model stored in the folder).
         """
+
+        if os.path.isdir(model_file):
+            files = glob.glob(os.path.join(model_file, '*_posterior.pkl'))
+            if len(files) == 0:
+                raise ValueError(f"No parameter files found in {model_file}.")
+            elif len(files) > 1:
+                raise ValueError(f"Multiple parameter files found in {model_file}. Please specify a single file.")
+            model_file = files[0]
+
+
         with open(model_file, 'rb') as f:
             posteriors = load(f)
         #
@@ -1310,7 +1400,43 @@ class SBI_Fitter:
         if set_self:
             self.posteriors = posteriors
 
-        return posteriors, stats
+        params = model_file.replace('posterior.pkl', 'params.pkl')
+        if os.path.exists(params):
+            with open(params, 'rb') as f:
+                params = load(f)
+
+            if set_self:
+
+                # Set attributes of class again.
+                self.fitted_parameter_names = params['fitted_parameter_names']
+                self.simple_fitted_parameter_names = [i.split('/')[-1] for i in self.fitted_parameter_names]
+                self.fitted_parameter_array = params['parameter_array']
+                print(params['parameter_array'].shape)
+                self.feature_names = params['feature_names']
+                self.feature_array = params['feature_array']
+                self.parameter_array = params['parameter_array']
+
+                self._train_args = params['train_args']
+                self._prior = params['prior']
+                
+                self._ensemble_model_types = params['ensemble_model_types']
+                self._ensemble_model_args = params['ensemble_model_args']
+                self._train_indices = params['train_indices']
+                self._test_indices = params['test_indices']
+
+                self._train_fraction = params['train_fraction']
+
+                self._X_test = self.feature_array[self._test_indices]
+                self._y_test = self.fitted_parameter_array[self._test_indices]
+                self._X_train = self.feature_array[self._train_indices]
+                self._y_train = self.fitted_parameter_array[self._train_indices]
+
+                
+        else:
+            print(f"Warning: No parameter file found for {model_file}.")
+            params = None
+
+        return posteriors, stats, params
 
     @property
     def _timestamp(self):
