@@ -7,7 +7,7 @@ from .grid import (
 )
 
 try:
-    from .sbi import SBI_Fitter
+    from .sbi import SBI_Fitter, MissingPhotometryHandler
 except ImportError as e:
     print(e)
     print('Dependencies for SBI not installed. Only the grid generation functions will be available.')
@@ -24,4 +24,5 @@ __all__ = [
     "CombinedBasis",
     "calculate_muv",
     "SBI_Fitter",
+    "MissingPhotometryHandler",
 ]
