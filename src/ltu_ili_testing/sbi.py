@@ -15,8 +15,10 @@ import numpy as np
 from unyt import unyt_array, nJy, Msun
 import re
 import operator
+from tqdm import tqdm
 from typing import List, Dict, Union, Optional, Tuple
 import optuna
+from optuna.trial import TrialState
 import sys
 from io import StringIO
 from contextlib import redirect_stdout
@@ -588,9 +590,10 @@ class SBI_Fitter:
         return feature_array, feature_names
 
     def split_dataset(self,
-                      train_fraction: float = 0.8,
-                        random_seed: int = None,
-                        ) -> tuple:
+                    train_fraction: float = 0.8,
+                    random_seed: int = None,
+                    verbose: bool = True,
+                    ) -> tuple:
         """
         Split the dataset into training and testing sets.
         Args:
@@ -607,7 +610,8 @@ class SBI_Fitter:
         
         num_samples = self.feature_array.shape[0]
 
-        print(f"Splitting dataset with {num_samples} samples into training and testing sets with {train_fraction:.2f} train fraction.")
+        if verbose:
+            print(f"Splitting dataset with {num_samples} samples into training and testing sets with {train_fraction:.2f} train fraction.")
         indices = np.arange(num_samples)
         np.random.shuffle(indices)
         train_size = int(num_samples * train_fraction)
@@ -618,6 +622,7 @@ class SBI_Fitter:
     def create_priors(self,
                       override_prior_ranges: dict = {},
                       prior = ili.utils.Uniform,
+                      verbose: bool = True,
                       ):
         
         """
@@ -626,6 +631,7 @@ class SBI_Fitter:
         Args:
             override_prior_ranges: A dictionary containing the prior ranges for the parameters.
             prior: The prior distribution to be used.
+            verbose: Whether to print the prior ranges.
         Returns:
             A prior object. 
 
@@ -670,15 +676,39 @@ class SBI_Fitter:
         return param_prior
 
     def optimize_sbi(self,
-                    suggested_hyperparameters: dict,
-                    fixed_hyperparameters: dict = None,
+                    study_name: str,
+                    suggested_hyperparameters: dict = {
+                        "learning_rate": [1e-6, 1e-3],
+                        "hidden_features": [12, 200],
+                        "num_components": [2, 16],
+                        "training_batch_size": [32, 128],
+                        "num_transforms": [1, 4],
+                        "stop_after_epochs": [10, 30],
+                        "clip_max_norm": [0.1, 5.0],
+                        "validation_fraction": [0.1, 0.3],
+                    },
+                    fixed_hyperparameters: dict = {'n_nets': 1, 'model_type': 'mdn'},
                     n_trials: int = 100,
                     n_jobs: int = 1,
                     random_seed: int = None,
+                    verbose: bool = False,
+                    out_dir: str = f'{code_path}/models/',
                     ) -> None:
         '''
         Use Optuna to optimize the SBI model hyperparameters.
-        
+
+        Possible hyperparameters to optimize:
+        - n_nets: Number of networks to use in the ensemble.
+        - model_type: Type of model to use. Either 'mdn' or 'maf'.
+        - hidden_features: Number of hidden features in the neural network.
+        - num_components: Number of components in the mixture density network.
+        - num_transforms: Number of transforms in the masked autoregressive flow.
+        - training_batch_size: Batch size for training.
+        - learning_rate: Learning rate for the optimizer.
+        - validation_fraction: Fraction of the training set to use for validation.
+        - stop_after_epochs: Number of epochs without improvement before stopping.
+        - clip_max_norm: Maximum norm for gradient clipping.
+
         '''
         
         if not self.has_features:
@@ -689,20 +719,118 @@ class SBI_Fitter:
         
         if self.fitted_parameter_names is None:
             raise ValueError("Parameter names not created. Please create the parameter names first.")
+
+        study = optuna.create_study(
+            study_name=study_name,
+            direction='maximize',
+        )
+
+        self._train_indices, self._test_indices = self.split_dataset(
+            random_seed=random_seed,
+            verbose=verbose,
+        )
+
+
+        def objective_func(trial):
+            ''' Setup function here to use shared parameters.'''
+
+            return self.run_evaluate_sbi(
+                trial=trial,
+                train_indices=self._train_indices,
+                test_indices=self._test_indices,
+                suggested_hyperparameters=suggested_hyperparameters,
+                verbose=verbose,
+                **fixed_hyperparameters,
+            )
+
+
+        study.optimize(objective_func, n_trials=n_trials,
+                       n_jobs=n_jobs, show_progress_bar=True)
+
+        pruned_trials = study.get_trials(deepcopy=False, states=[TrialState.PRUNED])
+        complete_trials = study.get_trials(deepcopy=False, states=[TrialState.COMPLETE])
+        
+
+        print("Study statistics: ")
+        print("  Number of finished trials: ", len(study.trials))
+        print("  Number of pruned trials: ", len(pruned_trials))
+        print("  Number of complete trials: ", len(complete_trials))
+
+        print("Best trial:")
+        trial = study.best_trial
+
+        print("  Value: ", trial.value)
+
+        print("  Params: ")
+        for key, value in trial.params.items():
+            print("    {}: {}".format(key, value))
+
+        output = {
+            'study': study,
+            'best_trial': trial,
+        }
+
+        # Save the study to a file
+        study_path = os.path.join(out_dir, f'{study_name}_optuna_study_{self._timestamp}.pkl')
+        dump(study, study_path, compress=3)
         
     def run_evaluate_sbi(self,
+                        trial: optuna.Trial,
                         train_indices: np.ndarray,
                         test_indices: np.ndarray,
-                        **arguments
+                        suggested_hyperparameters: dict,
+                        verbose: bool = False,
+                        **fixed_hyperparameters,
                         ) -> tuple:
+
+        '''
+
+        Objective function to run the SBI training and evaluation.
+
+        '''
         
+        parameters = {}
+
+        for key, value in suggested_hyperparameters.items():
+            if type(value) == list:
+                assert len(value) == 2 or isinstance(value[0], str), f"Value for {key} should be a list of length 2 or list of strings. Got {value}"
+                if isinstance(value[0], str):
+                    parameters[key] = trial.suggest_categorical(key, value)
+                else:
+                    if isinstance(value[0], int):
+                        parameters[key] = trial.suggest_int(key, value[0], value[1])
+                    elif isinstance(value[0], float):
+                        # Check if small 
+                        if np.max(value)/np.min(value) > 100:
+                            log = True
+                        else:
+                            log = False
+                        parameters[key] = trial.suggest_float(key, value[0], value[1], log=log)
+
+        parameters.update(fixed_hyperparameters)
+
         posterior, stats = self.run_single_sbi(
             train_indices=train_indices,
             test_indices=test_indices,
-            set_self = False,
+            set_self=False,
+            save_model=False,
             plot=False,
-            **arguments
+            verbose=verbose,
+            **parameters,
         )
+
+        X_test = self.feature_array[test_indices]
+        y_test = self.fitted_parameter_array[test_indices]
+
+        # Do the evaluation
+        score = np.mean(self.log_prob(X_test, y_test, posterior))
+
+        # Continue with the PIT calculation and adjust the score
+        pit = self.calculate_PIT(X_test, y_test, num_samples=5000, posteriors=posterior)
+        dpit_max = np.max(np.abs(pit - np.linspace(0, 1, len(pit))))
+        score += - 0.5 * np.log(dpit_max)
+
+        return score
               
     def run_single_sbi(self,
                 train_test_fraction: float = 0.8,
@@ -778,7 +906,7 @@ class SBI_Fitter:
             return None
 
         if train_indices is None:
-            train_indices, test_indices = self.split_dataset(train_fraction=train_test_fraction, random_seed=random_seed)
+            train_indices, test_indices = self.split_dataset(train_fraction=train_test_fraction, random_seed=random_seed, verbose=verbose)
 
         # Prepare data
 
@@ -824,7 +952,7 @@ class SBI_Fitter:
             prior = ili.utils.Uniform(low=prior_low, high=prior_high)
         elif prior_method == 'ili':
             # Create the prior using the parameter array
-            prior = self.create_priors()
+            prior = self.create_priors(verbose=verbose, override_prior_ranges={})
             if set_self:
                 self._prior = prior
             X_scaled = X_train
@@ -1225,7 +1353,8 @@ class SBI_Fitter:
     def calculate_PIT(self,
                     X: np.ndarray,
                     y: np.ndarray,
-                    num_samples: int = 1000) -> np.ndarray:
+                    num_samples: int = 1000,
+                    posteriors: object = None) -> np.ndarray:
         """
         Calculate the probability integral transform (PIT) for the samples
         produced by the regressor.
@@ -1243,13 +1372,11 @@ class SBI_Fitter:
             The PIT values.
         """
 
-        samples = self.sample_posterior(X, y, num_samples=num_samples)
-
-        ytf = self.transform_target(y)
+        samples = self.sample_posterior(X, y, num_samples=num_samples, posteriors=posteriors)
 
         pit = np.empty(len(y))
         for i in range(len(y)):
-            pit[i] = np.mean(samples[i] < ytf[i])
+            pit[i] = np.mean(samples[i] < y[i])
 
         pit = np.sort(pit)
         pit /= pit[-1]
@@ -1259,14 +1386,19 @@ class SBI_Fitter:
     def log_prob(self,
                     X: np.ndarray,
                     y: np.ndarray,
+                    posteriors: object = None,
+                    verbose=True,
                 ) -> np.ndarray:
         
-        lp = np.empty((len(X), len(self.fitted_parameter_names)))
+        lp = np.empty((len(X)))
 
-        for i in range(len(X)):
+        if posteriors is None:
+            posteriors = self.posteriors
+
+        for i in tqdm(range(len(X)), disable=not verbose, desc='Log prob'):
             x = torch.tensor([X[i]], dtype=torch.float32, device=self.device)
             theta = torch.tensor([y[i]], dtype=torch.float32, device=self.device)
-            lp[i, :] = self._posterior.log_prob(x=x, theta=theta,
+            lp[i] = posteriors.log_prob(x=x, theta=theta,
                                              norm_posterior=True)
             
         return lp
@@ -1411,7 +1543,6 @@ class SBI_Fitter:
                 self.fitted_parameter_names = params['fitted_parameter_names']
                 self.simple_fitted_parameter_names = [i.split('/')[-1] for i in self.fitted_parameter_names]
                 self.fitted_parameter_array = params['parameter_array']
-                print(params['parameter_array'].shape)
                 self.feature_names = params['feature_names']
                 self.feature_array = params['feature_array']
                 self.parameter_array = params['parameter_array']
@@ -1583,8 +1714,6 @@ def timeout_handler(signum, frame):
     raise TimeoutException
 
 
-signal.signal(signal.SIGALRM, timeout_handler)
-
 
 def chi2dof(mags, obsphot, obsphot_unc):
     """
@@ -1667,6 +1796,28 @@ class MissingPhotometryHandler:
         if run_params is not None:
             self.run_params.update(run_params)
     
+    @classmethod
+    def init_from_sbi_fitter(cls, sbi_fitter, **run_params):
+        """
+        Initialize from a fitted SBI model.
+        
+        Parameters:
+        -----------
+        sbi_fitter : object
+            Fitted SBI model object
+            
+        Returns:
+        --------
+        MissingPhotometryHandler
+            Instance of the handler
+        """
+        return cls(
+            training_photometry=sbi_fitter.feature_array,
+            training_parameters=sbi_fitter.fitted_parameter_array,
+            posterior_estimator=sbi_fitter.posteriors,
+            run_params=run_params,
+        )
+
     def gauss_approx_missingband(self, obs):
         """
         Nearest neighbor approximation of missing bands using KDE.
@@ -1728,6 +1879,10 @@ class MissingPhotometryHandler:
         
         # Calculate Euclidean distances and weights
         dists = np.linalg.norm(y_obs_valid_only - chi2_selected, axis=1)
+
+        # Handle a distance of 0
+        dists[dists == 0] = 1e-10
+
         neighs_weights = 1 / dists
 
         # Create KDEs for each missing band
@@ -1767,7 +1922,8 @@ class MissingPhotometryHandler:
         invalid_mask = np.copy(obs['missing_mask'])
         
         # Full observed vector (fluxes + uncertainties)
-        observed = np.concatenate([y_obs, sig_obs])
+        # observed = np.concatenate([y_obs, sig_obs])
+        observed = y_obs
         
         # Indices for valid and invalid bands
         valid_idx = np.where(~invalid_mask)[0]
@@ -1788,7 +1944,7 @@ class MissingPhotometryHandler:
         
         # Draw Monte Carlo samples and get posteriors
         while cnt < self.run_params['nmc']:
-            signal.alarm(self.run_params['tmax_per_obj'])  # Max time per object
+            #signal.alarm(self.run_params['tmax_per_obj'])  # Max time per object
             
             try:
                 # Create a copy of observations to fill in missing bands
@@ -1799,6 +1955,8 @@ class MissingPhotometryHandler:
                     # Sample flux for missing band
                     x[not_valid_idx[j]] = kdes[j].resample(size=1)[0]
                     
+                    '''
+                    # This code would handle if model had uncertainties. 
                     # Generate noise for sampled flux
                     if noise_generator is not None:
                         # Use provided noise generator
@@ -1809,7 +1967,9 @@ class MissingPhotometryHandler:
                     else:
                         # Default noise (10% of flux)
                         x[not_valid_idx_unc[j]] = 0.1 * x[not_valid_idx[j]]
-                
+                    '''
+
+
                 all_x.append(x)
                 
                 # Get posterior samples using SBI
@@ -1829,8 +1989,8 @@ class MissingPhotometryHandler:
                 
             except TimeoutException:
                 cnt_timeout += 1
-            else:
-                signal.alarm(0)
+            #else:
+            #    signal.alarm(0)
             
             # Check if total time exceeded
             et = time.time()
@@ -1846,12 +2006,14 @@ class MissingPhotometryHandler:
         all_x_unc = all_x[:, nbands:]
         
         # Calculate median fluxes and uncertainties
-        y_guess = np.concatenate([
+        '''y_guess = np.concatenate([
             np.median(all_x_flux, axis=0), 
             np.median(all_x_unc, axis=0)
-        ])
+        ])'''
+        y_guess = np.median(all_x_flux, axis=0)
+        y_filled_dist = all_x_flux[:, not_valid_idx]
         
-        return ave_theta, y_guess, use_res, timeout_flag, cnt
+        return ave_theta, y_guess, use_res, timeout_flag, cnt, y_filled_dist
     
     def get_average_posterior(self, ave_theta):
         """
@@ -1915,7 +2077,9 @@ class MissingPhotometryHandler:
             
             # Use standard SBI with complete data
             if self.posterior_estimator is not None:
-                x = np.concatenate([obs['mags_sbi'], obs['mags_unc_sbi']])
+                #x = np.concatenate([obs['mags_sbi'], obs['mags_unc_sbi']])
+                x = obs['mags_sbi']
+
                 x_tensor = torch.as_tensor(x.astype(np.float32)).to(device)
                 samples = self.posterior_estimator.sample(
                     (self.run_params['nposterior'],), 
@@ -1944,7 +2108,7 @@ class MissingPhotometryHandler:
                 }
         
         # Process observation with missing bands
-        ave_theta, reconstructed_phot, success, timeout, count = self.sbi_missingband(
+        ave_theta, reconstructed_phot, success, timeout, count, missing_dist = self.sbi_missingband(
             obs, noise_generator=noise_generator
         )
         
@@ -1954,6 +2118,7 @@ class MissingPhotometryHandler:
         return {
             'posterior': posterior,
             'reconstructed_photometry': reconstructed_phot,
+            'missing_photometry_dist': missing_dist,
             'success': success,
             'timeout': timeout,
             'count': count
