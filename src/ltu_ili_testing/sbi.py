@@ -32,8 +32,8 @@ import torch
 import torch.nn as nn
 
 import ili
-from ili.dataloaders import NumpyLoader
-from ili.inference import InferenceRunner
+from ili.dataloaders import NumpyLoader, SBISimulator
+from ili.inference import InferenceRunner, SBIRunnerSequential
 from ili.validation.metrics import PlotSinglePosterior, PosteriorCoverage, PosteriorSamples
 from ili.validation.runner import ValidationRunner
 from sklearn.model_selection import train_test_split
@@ -123,11 +123,12 @@ class SBI_Fitter:
 
     def __init__(self,
                 name: str,
-                raw_photometry_grid: np.ndarray,
-                raw_photometry_names: list,
-                parameter_array: np.ndarray,
                 parameter_names: list,
+                raw_photometry_names: list,
+                raw_photometry_grid: np.ndarray = None,
+                parameter_array: np.ndarray = None,
                 raw_photometry_units: list = nJy,
+                simulator: callable = None,
                 feature_array: np.ndarray = None,
                 feature_names: list = None,
                 feature_units: list = None,
@@ -153,6 +154,11 @@ class SBI_Fitter:
         self.raw_photometry_names = raw_photometry_names
         self.parameter_array = parameter_array
         self.parameter_names = parameter_names
+
+        self.simulator = simulator
+        self.has_simulator = simulator is not None
+
+        assert (self.simulator is not None) or (self.raw_photometry_grid is not None), "Either a simulator or raw photometry grid must be provided."
         
         # This allows you to subset the parameters to fit if you want to marginalize over some parameters.
         # See self.update_parameter_array() for more details.
@@ -294,20 +300,6 @@ class SBI_Fitter:
         # Needs to load the training data and parameters from the basis
         pass
 
-    def simulator(self, index: int) -> np.ndarray:
-        """
-        Simulate the model for a given index.
-
-        Args:
-            index: The index of the model to be simulated.
-
-        Returns:
-            The simulated model.
-        """
-        # This function should return the simulated model for the given index
-        # For now, we will just return the raw photometry grid
-        return self.raw_photometry_grid[index]
-
     def _apply_depths(self,
                     depths: unyt_array,
                     photometry_array: np.ndarray,
@@ -375,6 +367,8 @@ class SBI_Fitter:
                                                 depths: Union[unyt_array, None] = None, 
                                                 include_errors_in_feature_array = False,
                                                 simulate_missing_fluxes = False,
+                                                override_phot_grid: np.ndarray = None,
+                                                override_phot_grid_units: str = None,
                                                 ) -> np.ndarray:
         """
         Create a feature array from the raw photometry grid.
@@ -399,6 +393,7 @@ class SBI_Fitter:
             simulate_missing_fluxes:  boolean, default False. CURRENTLY UNIMPLEMENTED.
                 This would allow missing photometry for some fraction of the time, which could be marked
                 with a specific filler flag, or a seperate boolean row/column to flag missing data. 
+            
             TODO: How should normalization work with the scattering?
 
         Returns:
@@ -407,12 +402,20 @@ class SBI_Fitter:
 
         if include_errors_in_feature_array or simulate_missing_fluxes:
             raise NotImplementedError
+
+        if override_phot_grid is not None:
+            phot_grid = override_phot_grid
+            raw_photometry_units = override_phot_grid_units
+        else:
+            phot_grid = self.raw_photometry_grid
+            raw_photometry_units = self.raw_photometry_units
+
         
         if normed_flux_units == 'AB':
-            phot = -2.5 * np.log10(unyt_array(self.raw_photometry_grid, units=self.raw_photometry_units).to('uJy').value) + 23.9
+            phot = -2.5 * np.log10(unyt_array(override_phot_grid, units=raw_photometry_units).to('uJy').value) + 23.9
             norm_func = np.subtract
         else:
-            phot = unyt_array(self.raw_photometry_grid, units=self.raw_photometry_units).to(normed_flux_units).value
+            phot = unyt_array(override_phot_grid, units=raw_photometry_units).to(normed_flux_units).value
             norm_func = np.divide
 
         if scatter_fluxes is not None:
@@ -430,7 +433,7 @@ class SBI_Fitter:
                 norm_index = list(self.raw_photometry_names).index(normalize_method)
 
                 normalization_factor = phot[norm_index, :]
-                norm_factor_original = self.raw_photometry_grid[norm_index, :]
+                norm_factor_original = override_phot_grid[norm_index, :]
                 
                 # Create a copy of the raw photometry names for consistent reference
                 raw_photometry_names = np.array(self.raw_photometry_names)
@@ -449,9 +452,9 @@ class SBI_Fitter:
                     normalization_unit_cleaned = normalization_unit
 
                 if normalization_unit_cleaned == 'AB':
-                    normalization_factor_converted = -2.5 * np.log10(unyt_array(norm_factor_original, units=self.raw_photometry_units).to('uJy').value) + 23.9
+                    normalization_factor_converted = -2.5 * np.log10(unyt_array(norm_factor_original, units=raw_photometry_units).to('uJy').value) + 23.9
                 else:
-                    normalization_factor_converted = unyt_array(norm_factor_original, units=self.raw_photometry_units).to(normalization_unit_cleaned).value
+                    normalization_factor_converted = unyt_array(norm_factor_original, units=raw_photometry_units).to(normalization_unit_cleaned).value
                 
                 if log:
                     normalization_factor_converted = np.log10(normalization_factor_converted)
@@ -464,8 +467,8 @@ class SBI_Fitter:
                 normalization_factor = self.supplementary_parameters[norm_index, :]
                 # count where normalzation is 0
                
-                assert normalization_factor.shape[0] == self.raw_photometry_grid.shape[1], "Normalization factor should have the same shape as the photometry grid."
-                assert norm_unit == self.raw_photometry_units, "Normalization factor should have the same units as the photometry grid."
+                assert normalization_factor.shape[0] == override_phot_grid.shape[1], "Normalization factor should have the same shape as the photometry grid."
+                assert norm_unit == raw_photometry_units, "Normalization factor should have the same units as the photometry grid."
                 
                 if normed_flux_units == 'AB':
                     normalization_factor_use = -2.5 * np.log10(unyt_array(normalization_factor, units=norm_unit).to('uJy').value) + 23.9
@@ -493,7 +496,7 @@ class SBI_Fitter:
             else:
                 raise NotImplementedError("Normalization method not implemented. Please use a filter name for normalization.")
         else:
-            normed_photometry = self.raw_photometry_grid
+            normed_photometry = override_phot_grid
             normalization_factor_converted = np.ones(normed_photometry.shape[1])
             normalization_factor = normalization_factor_converted
             raw_photometry_names = np.array(self.raw_photometry_names)
@@ -501,9 +504,9 @@ class SBI_Fitter:
             # Convert the photometry to the desired units
 
             if normed_flux_units == 'AB':
-                normed_photometry = -2.5 * np.log10(unyt_array(normed_photometry, units=self.raw_photometry_units).to('uJy').value) + 23.9
+                normed_photometry = -2.5 * np.log10(unyt_array(normed_photometry, units=raw_photometry_units).to('uJy').value) + 23.9
             else:
-                normed_photometry = unyt_array(normed_photometry, units=self.raw_photometry_units).to(normed_flux_units).value
+                normed_photometry = unyt_array(normed_photometry, units=raw_photometry_units).to(normed_flux_units).value
 
         if np.sum(normalization_factor == 0.0) > 0:
             # delete these indexes from the photometry 
@@ -522,7 +525,7 @@ class SBI_Fitter:
         # Photometry + extra features + normalization factor
         feature_array = np.zeros((
             len(raw_photometry_names) + len(extra_features) + 1,
-            self.raw_photometry_grid.shape[1]
+            override_phot_grid.shape[1]
         ))
 
 
@@ -636,14 +639,18 @@ class SBI_Fitter:
             A prior object. 
 
         """
-        if not self.has_features:
-            raise ValueError("Feature array not created. Please create the feature array first.")
+        if not self.has_features and not self.has_simulator:
+            raise ValueError("Feature array not created and no simulator. Please create the feature array first.")
         
-        if self.fitted_parameter_array is None:
+        if self.fitted_parameter_array is None and not self.has_simulator:
             raise ValueError("Parameter grid not created. Please create the parameter grid first.")
-        if self.fitted_parameter_names is None:
+        if self.fitted_parameter_names is None and not self.has_simulator:
             raise ValueError("Parameter names not created. Please create the parameter names first.")
         
+
+        if len(override_prior_ranges) < len(self.fitted_parameter_names) and self.fitted_parameter_array is None:
+            raise ValueError(f'Not enough prior ranges provided for online training. {len(override_prior_ranges)} provided, {len(self.fitted_parameter_names)} expected.')
+           
         # Create the priors for the parameters
         low = []
         high = []
@@ -711,13 +718,13 @@ class SBI_Fitter:
 
         '''
         
-        if not self.has_features:
-            raise ValueError("Feature array not created. Please create the feature array first.")
+        if not self.has_features and not self.has_simulator:
+            raise ValueError("Feature array not created and no simulator. Please create the feature array first.")
         
-        if self.fitted_parameter_array is None:
+        if self.fitted_parameter_array is None and not self.has_simulator:
             raise ValueError("Parameter grid not created. Please create the parameter grid first.")
         
-        if self.fitted_parameter_names is None:
+        if self.fitted_parameter_names is None and not self.has_simulator:
             raise ValueError("Parameter names not created. Please create the parameter names first.")
 
         study = optuna.create_study(
@@ -725,10 +732,18 @@ class SBI_Fitter:
             direction='maximize',
         )
 
-        self._train_indices, self._test_indices = self.split_dataset(
-            random_seed=random_seed,
-            verbose=verbose,
-        )
+        if self.has_features:
+            self._train_indices, self._test_indices = self.split_dataset(
+                random_seed=random_seed,
+                verbose=verbose,
+            )
+            train_indices = self._train_indices 
+            test_indices = self._test_indices
+
+            X_test, y_test = None, None
+        else:
+            X_test, y_test = self.generate_pairs_from_simulator(5000)
+            train_indices, test_indices = None, None
 
 
         def objective_func(trial):
@@ -736,8 +751,10 @@ class SBI_Fitter:
 
             return self.run_evaluate_sbi(
                 trial=trial,
-                train_indices=self._train_indices,
-                test_indices=self._test_indices,
+                train_indices=train_indices,
+                test_indices=test_indices,
+                X_test=X_test,
+                y_test=y_test,
                 suggested_hyperparameters=suggested_hyperparameters,
                 verbose=verbose,
                 **fixed_hyperparameters,
@@ -776,10 +793,12 @@ class SBI_Fitter:
         
     def run_evaluate_sbi(self,
                         trial: optuna.Trial,
-                        train_indices: np.ndarray,
-                        test_indices: np.ndarray,
                         suggested_hyperparameters: dict,
                         verbose: bool = False,
+                        train_indices: np.ndarray = None,
+                        test_indices: np.ndarray = None,
+                        X_test: np.ndarray = None,
+                        y_test: np.ndarray = None,
                         **fixed_hyperparameters,
                         ) -> tuple:
 
@@ -819,8 +838,10 @@ class SBI_Fitter:
             **parameters,
         )
 
-        X_test = self.feature_array[test_indices]
-        y_test = self.fitted_parameter_array[test_indices]
+        if X_test is None:
+            X_test = self.feature_array[test_indices]
+        if y_test is None:
+            y_test = self.fitted_parameter_array[test_indices]
 
         # Do the evaluation
         score = np.mean(self.log_prob(X_test, y_test, posterior))
@@ -858,6 +879,12 @@ class SBI_Fitter:
                 feature_scalar = StandardScaler,
                 target_scalar = StandardScaler,
                 set_self: bool = True,
+                learning_type: str = 'offline',
+                simulator: callable = None,
+                num_simulations=500,
+                num_online_rounds=5,
+                initial_training_from_grid: bool = False,
+                override_prior_ranges: dict = {},
                 ) -> tuple:
         """
         Run a single SBI training instance.
@@ -883,21 +910,23 @@ class SBI_Fitter:
             plot: Whether to plot the diagnostics.
             name_append: Append to the model name.
             set_self: Whether to set the self object with the trained model.
+            learning_type: Type of learning. Either 'offline' or 'online'.
+                If 'online', you need to provide a function which takes in model arguments
+                and returns a torch.Tensor of shape (1, *data.shape)
+            simulator: Function to simulate the data. This is only used if learning_type is 'online'.
+            num_simulations: Number of simulations to run in each call if learning_type is 'online'.
+            num_online_rounds: Number of rounds to run in online learning.
+            initial_training_from_grid: Whether to use the initial training from the grid when
+                learning_type is 'online'. Reduces number of calls to the simulator.
+            override_prior_ranges: Dictionary of prior ranges to override the default ranges.
 
         Returns:
             A tuple containing the posterior distribution and training statistics.
         """
-        if not self.has_features:
-            raise ValueError("Feature array not created. Please create the feature array first.")
-        
-        if self.fitted_parameter_array is None:
-            raise ValueError("Parameter grid not created. Please create the parameter grid first.")
-        
+
+        assert learning_type in ['offline', 'online'], "Learning type should be either 'offline' or 'online'."
         out_dir = os.path.join(os.path.abspath(out_dir), self.name)
 
-        if self.fitted_parameter_names is None:
-            raise ValueError("Parameter names not created. Please create the parameter names first.")
-        
         if name_append == 'timestamp':
             name_append = f'_{self._timestamp}'
         
@@ -905,60 +934,131 @@ class SBI_Fitter:
             print('Model with same name already exists. Please change the name of this model or delete the existing one.')
             return None
 
-        if train_indices is None:
-            train_indices, test_indices = self.split_dataset(train_fraction=train_test_fraction, random_seed=random_seed, verbose=verbose)
-
-        # Prepare data
-
+        if simulator is not None:
+            self.has_simulator = True
+        
         start_time = datetime.now()
 
-        assert len(train_indices) > 0, "Training indices should not be empty."
-        assert len(test_indices) > 0, "Test indices should not be empty."
-
-        assert self.feature_array.shape[0] == self.fitted_parameter_array.shape[0], "Feature array and parameter array should have the same number of samples."
-
-        X_train = self.feature_array[train_indices]
-        y_train = self.fitted_parameter_array[train_indices]
-
-        X_test = self.feature_array[test_indices]
-        y_test = self.fitted_parameter_array[test_indices]
-
-        if set_self:
-            self._X_train = X_train
-            self._y_train = y_train
-            self._train_indices = train_indices
-            self._test_indices = test_indices
-            self._train_fraction = train_test_fraction
-            self._X_test = X_test
-            self._y_test = y_test
-
-        if prior_method == 'manual':
-            # Scale features and targets
-            self._feature_scalar = feature_scalar()
-            self._target_scalar = target_scalar()
-            X_scaler = self._create_feature_scaler(X_train)
-            y_scaler = self._create_target_scaler(y_train)
-
-            X_scaled = X_scaler.transform(X_train)
-            y_scaled = y_scaler.transform(y_train)
+        if learning_type == 'offline' or initial_training_from_grid:
+            if not self.has_features:
+                raise ValueError("Feature array not created. Please create the feature array first.")
             
-            # Setup prior based on scaled targets
-            y_std = np.std(y_scaled, axis=0)
-            y_min = np.min(y_scaled, axis=0)
-            y_max = np.max(y_scaled, axis=0)
+            if self.fitted_parameter_array is None:
+                raise ValueError("Parameter grid not created. Please create the parameter grid first.")
             
-            prior_low = torch.tensor(y_min - 3 * y_std, dtype=torch.float32, device=self.device)
-            prior_high = torch.tensor(y_max + 3 * y_std, dtype=torch.float32, device=self.device)
-            prior = ili.utils.Uniform(low=prior_low, high=prior_high)
-        elif prior_method == 'ili':
-            # Create the prior using the parameter array
-            prior = self.create_priors(verbose=verbose, override_prior_ranges={})
+            if self.fitted_parameter_names is None:
+                raise ValueError("Parameter names not created. Please create the parameter names first.")
+                
+            if train_indices is None:
+                train_indices, test_indices = self.split_dataset(train_fraction=train_test_fraction, random_seed=random_seed, verbose=verbose)
+
+            # Prepare data
+
+            assert len(train_indices) > 0, "Training indices should not be empty."
+            assert len(test_indices) > 0, "Test indices should not be empty."
+
+            assert self.feature_array.shape[0] == self.fitted_parameter_array.shape[0], "Feature array and parameter array should have the same number of samples."
+
+            X_train = self.feature_array[train_indices]
+            y_train = self.fitted_parameter_array[train_indices]
+
+            X_test = self.feature_array[test_indices]
+            y_test = self.fitted_parameter_array[test_indices]
+
             if set_self:
-                self._prior = prior
-            X_scaled = X_train
-            y_scaled = y_train
+                self._X_train = X_train
+                self._y_train = y_train
+                self._train_indices = train_indices
+                self._test_indices = test_indices
+                self._train_fraction = train_test_fraction
+                self._X_test = X_test
+                self._y_test = y_test
+
+            if prior_method == 'manual':
+                # Scale features and targets
+                self._feature_scalar = feature_scalar()
+                self._target_scalar = target_scalar()
+                X_scaler = self._create_feature_scaler(X_train)
+                y_scaler = self._create_target_scaler(y_train)
+
+                X_scaled = X_scaler.transform(X_train)
+                y_scaled = y_scaler.transform(y_train)
+                
+                # Setup prior based on scaled targets
+                y_std = np.std(y_scaled, axis=0)
+                y_min = np.min(y_scaled, axis=0)
+                y_max = np.max(y_scaled, axis=0)
+                
+                prior_low = torch.tensor(y_min - 3 * y_std, dtype=torch.float32, device=self.device)
+                prior_high = torch.tensor(y_max + 3 * y_std, dtype=torch.float32, device=self.device)
+                prior = ili.utils.Uniform(low=prior_low, high=prior_high)
+            elif prior_method == 'ili':
+                # Create the prior using the parameter array
+                prior = self.create_priors(verbose=verbose, override_prior_ranges=override_prior_ranges)
+                
+                X_scaled = X_train
+                y_scaled = y_train
+            else:
+                raise ValueError("Invalid prior method. Use 'manual' or 'ili'.")
+
+            
+            # Create data loader
+            loader = NumpyLoader(X_scaled, y_scaled)
         else:
-            raise ValueError("Invalid prior method. Use 'manual' or 'ili'.")
+            prior = self.create_priors(verbose=verbose, override_prior_ranges=override_prior_ranges)
+    
+        if learning_type == 'online':
+
+            assert engine in ['SNPE', 'SNLE', 'SNRE'], "Engine should be either 'SNPE', 'SNLE' or 'SNRE'. for online learning."
+            
+            # Do online learning
+            if simulator is None:
+                simulator = self.simulator
+
+            assert callable(simulator), "Simulator function must be provided for online learning."
+            assert num_simulations > 0, "Number of simulations must be greater than 0."
+
+            if not os.path.exists(f'{out_dir}/online/'):
+                    os.makedirs(f'{out_dir}/online/')
+
+            if initial_training_from_grid:
+                # Save already created data to .npy files
+                
+                np.save(f'{out_dir}/online/xobs.npy', self.feature_array[train_indices])
+                np.save(f'{out_dir}/online/theta.npy', self.fitted_parameter_array[test_indices])
+            else:
+                samples = prior.sample_n(1)
+                print
+                phot = []
+                for i in range(len(samples)):
+                    p = simulator(samples[i]).cpu().numpy()
+                    phot.append(p)
+
+                phot = np.array(phot)
+
+                phot = np.squeeze(phot) 
+
+                # shape phot to be (num_simulations, num_features)
+                #phot = phot.reshape(num_simulations, -1)#[np.newaxis, :]
+
+                theta = samples.cpu().numpy()#[np.newaxis, :]
+
+                np.save(f'{out_dir}/online/xobs.npy', phot)
+                np.save(f'{out_dir}/online/thetafid.npy', theta)
+
+            # Need to have option for intial training using saved data. 
+
+            loader = SBISimulator(
+                in_dir=f'{out_dir}/online/',
+                xobs_file=f'xobs.npy', 
+                thetafid_file=f'thetafid.npy',
+                num_simulations=num_simulations,
+                save_simulated=True,
+                x_file=f'x.npy',# if initial_training_from_grid else None,
+                theta_file=f'theta.npy', #, if initial_training_from_grid else None,
+                simulator=simulator,
+            )
+
         
         nets = []
         ensemble_model_types = []
@@ -998,7 +1098,9 @@ class SBI_Fitter:
             "stop_after_epochs": stop_after_epochs,
             "clip_max_norm": clip_max_norm
         }
-        
+
+        if learning_type == 'online':
+            train_args["num_round"] = num_online_rounds
        
         # Set up trainer
         trainer = InferenceRunner.load(
@@ -1009,12 +1111,8 @@ class SBI_Fitter:
             train_args=train_args,
             out_dir=out_dir if save_model else None,
             name=f"{self.name}{name_append}_",
-            
             device=self.device,
         )
-        
-        # Create data loader
-        loader = NumpyLoader(X_scaled, y_scaled)
         
         # Train the model
         try:
@@ -1030,14 +1128,22 @@ class SBI_Fitter:
             raise RuntimeError(f"Error during SBI training: {str(e)}")
         
         if set_self:
+            self._prior = prior
+            self._loader = loader
             self.posteriors = posteriors
             self.stats = stats
             self._train_args = train_args
             self._ensemble_model_types = ensemble_model_types
             self._ensemble_model_args = ensemble_model_args
-            self._train_indices = train_indices
-            self._test_indices = test_indices
-            self._train_fraction = train_test_fraction
+            if learning_type == 'online' or initial_training_from_grid:
+                self._simulator = simulator
+                self._num_simulations = num_simulations
+                self._num_online_rounds = num_online_rounds
+                self._initial_training_from_grid = initial_training_from_grid
+            else:
+                self._train_indices = train_indices
+                self._test_indices = test_indices
+                self._train_fraction = train_test_fraction
 
         '''
         # Test the model if test indices are provided
@@ -1053,6 +1159,8 @@ class SBI_Fitter:
         # Save the params with the model if needed
         if save_model:
             param_dict = {
+                "engine": engine,
+                "learning_type": learning_type,
                 "ensemble_model_types": ensemble_model_types,
                 "ensemble_model_args": ensemble_model_args,
                 "n_nets": n_nets,
@@ -1060,14 +1168,24 @@ class SBI_Fitter:
                 "fitted_parameter_names": self.fitted_parameter_names,
                 "train_args": train_args,
                 "stats": stats,
-                "test_indices": test_indices,
-                "train_indices": train_indices,
-                "train_fraction": train_test_fraction,
                 "timestamp": self._timestamp,
                 "prior": self._prior,
-                "feature_array": self.feature_array,
-                "parameter_array": self.fitted_parameter_array,
+               
             }
+
+            if learning_type == 'online' or initial_training_from_grid:
+                param_dict["simulator"] = simulator
+                param_dict["num_simulations"] = num_simulations
+                param_dict["num_online_rounds"] = num_online_rounds
+                param_dict["initial_training_from_grid"] = initial_training_from_grid
+
+            elif learning_type == 'offline':
+                param_dict["train_fraction"]: train_test_fraction
+                param_dict["test_indices"]: test_indices
+                param_dict["train_indices"]: train_indices
+                param_dict["feature_array"]: self.feature_array
+                param_dict["parameter_array"]: self.fitted_parameter_array
+
             dump(param_dict, f"{out_dir}/{self.name}{name_append}_params.pkl", compress=3)
         
         end_time = datetime.now()   
@@ -1076,10 +1194,14 @@ class SBI_Fitter:
         print(f'Time to train model(s): {elapsed_time}')
 
         if plot:
-            self.plot_diagnostics(X_train=X_scaled, y_train=y_scaled, 
-                                  X_test=X_test,
-                                  y_test=y_test,
-                                  plots_dir=f'{out_dir}/plots/')
+
+            if learning_type == 'offline':
+                self.plot_diagnostics(X_train=X_scaled, y_train=y_scaled, 
+                                    X_test=X_test,
+                                    y_test=y_test,
+                                    plots_dir=f'{out_dir}/plots/')
+            else:
+                print('No plots for online learning yet.')
 
         return posteriors, stats
 
@@ -1234,12 +1356,18 @@ class SBI_Fitter:
         self.plot_coverage(X=X_test, y=y_test, plots_dir=plots_dir)
 
     def plot_loss(self,
-                  summaries: list,
+                  summaries: list = 'self',
                   plots_dir: str = f'{code_path}/models/name/plots/',
                   ) -> None:
         """
         Plot the loss of the SBI model.
         """
+
+        if summaries == 'self':
+            if hasattr(self, 'stats'):
+                summaries = self.stats
+            else:
+                raise ValueError("No summaries found. Please provide the summaries.")
 
         plots_dir = plots_dir.replace('name', self.name)
 
@@ -1460,12 +1588,26 @@ class SBI_Fitter:
 
     def run_validation_from_file(self,
                         validation_file: str,
-                        plot_dirs: str = f'{code_path}/plots/',
+                        plots_dir: str = f'{code_path}/models/name/plots/',
+                        metrics: list = ["coverage", "histogram", "predictions", "tarp", "logprob"],
                         ) -> None:
         """
         Run the validation from a file.
         """
         posterior = ValidationRunner.load_posterior_sbi(validation_file)
+
+        plots_dir = plots_dir.replace('name', self.name)
+        if not os.path.exists(plots_dir):
+            os.makedirs(plots_dir)
+
+        runner = ValidationRunner(
+            posterior=posterior,
+            metrics=metrics,
+            out_dir=plots_dir,
+            name=f'{self.name}_validation_',
+        )
+
+        runner(self._loader)
 
     @property
     def validation_log_probs(self):
@@ -1576,8 +1718,32 @@ class SBI_Fitter:
         """
         return datetime.now().strftime("%Y%m%d_%H%M%S")
 
+    def generate_pairs_from_simulator(self, n_samples=1000):
+        """
+        Generate pairs of data from the simulator.
+        """
+        if not self.has_simulator:
+            raise ValueError("No simulator found. Please provide a simulator.")
+        
+        if self.simulator is None:
+            raise ValueError("No simulator found. Please provide a simulator.")
 
+        if self._prior is None:
+            raise ValueError("No prior found. Please provide a prior.")
 
+        samples = self._prior.sample_n(1000)
+
+        phot = []
+        for i in range(len(samples)):
+            p = self.simulator(samples[i]).cpu().numpy()
+            phot.append(p)
+        phot = np.array(phot)
+        phot = np.squeeze(phot)
+
+        # shape phot to be (num_simulations, num_features)
+        # X, y
+        return phot, samples.cpu().numpy()
+        
 
 
 class FilterArithmeticParser:

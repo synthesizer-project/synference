@@ -1,6 +1,7 @@
 import sys
 import os
 import h5py
+import inspect
 import scipy.stats
 import warnings
 import numpy as np
@@ -21,7 +22,7 @@ from typing import Dict, Any, List, Tuple, Union, Optional, Type
 from abc import ABC, abstractmethod
 import copy
 from scipy.stats import uniform, loguniform
-from unyt import unyt_array, unyt_quantity, erg, cm, s, Angstrom, um, Hz, m, nJy, K, Msun, Myr, yr, Unit, kg, Mpc, dimensionless
+from unyt import unyt_array, unyt_quantity, erg, cm, s, Angstrom, um, Hz, m, nJy, K, Msun, Myr, yr, Unit, kg, Mpc, dimensionless, Jy, uJy
 from astropy.cosmology import Planck18, Cosmology, z_at_value
 from synthesizer.emission_models.attenuation import Inoue14
 import astropy.units as u
@@ -2254,7 +2255,392 @@ class CombinedBasis:
         if save:
             self.save_grid(out, overload_out_name=overload_out_name, overwrite=overwrite) 
 
+
+class GalaxySimulator(object):
+    '''
+    Photometry Simulator class. Initialize with required model,
+    then take an array or dictionary of parameters and return a dictionary of photometry.
+    A seperate function will handle normalization and scaling of the photometry.
+
+    '''
+
+
+    def __init__(self,
+                sfh_model:Type[SFH.Common],
+                zdist_model:Type[ZDist.Common],
+                grid: Grid,
+                instrument: Instrument,
+                emission_model: EmissionModel,
+                emission_model_key: str,
+                emitter_params: dict = {'stellar': [], 'galaxy':[]},
+                cosmo: Cosmology = Planck18,
+                param_order: Union[None, list] = None,
+                param_units: dict = {},
+                param_transforms: dict[callable] = {},
+                out_flux_unit: str = 'nJy',
+                required_keys = ['redshift', 'log_mass'],
+                extra_functions: List[callable] = None,
+                normalize_method: str = None,
+                output_type: str = 'photo_fnu',
+                depths: Union[np.ndarray, unyt_array] = None, 
+                depth_sigma: int = 5,
+                ) -> None:
+
+        """
+        Parameters
+
+        ----------
+
+        sfh_model : Type[SFH.Common]
+            SFH model to use. Must be a subclass of SFH.Common.
+        zdist_model : Type[ZDist.Common]
+            ZDist model to use. Must be a subclass of ZDist.Common.
+        grid : Grid
+            Grid object to use. Must be a subclass of Grid.
+        instrument : Instrument
+            Instrument object to use for photometry/spectra. Must be a subclass of Instrument.
+        emission_model : EmissionModel
+            Emission model to use. Must be a subclass of EmissionModel.
+        emission_model_key : str
+            Emission model key to use e.g. 'total', 'intrinsic'.
+        emitter_params : dict
+            Dictionary of parameters to pass to the emitter. Keys are 'stellar' and 'galaxy'.
+        cosmo : Cosmology = Planck18
+            Cosmology object to use. Must be a subclass of Cosmology.
+        param_order : Union[None, list] = None
+            Order of parameters to use. If None, will use the order of the keys in the params dictionary.
+        param_units : dict
+            Dictionary of parameter units to use. Keys are the parameter names and values are the units.
+        param_transforms : dict
+            Dictionary of parameter transforms to use. Keys are the parameter names and values are the transforms functions.
+            Can be used to fit say Av when model requires tau_v, or for unit conversion etc.
+        out_flux_unit : str
+            Output flux unit to use. Default is 'nJy'. Can be 'ABmag', 'Jy', 'nJy', 'uJy', 'mJy'.
+        required_keys : list
+            List of required keys to use. Default is ['redshift', 'log_mass']. Typically this can be ignored.
+        extra_functions : List[callable]
+            List of extra functions to call after the simulation.
+            Inputs to each function are determined by the function signature and can be any of the following:
+            galaxy, spec, fluxes, sed, stars, emission_model, cosmo.
+            The output of each function is appended to an array and returned in the output tuple.
+        normalize_method : str
+            Normalization method to use. If None, no normalization is applied. Only works on photo_fnu currently.
+            Currently can be either the name of a filter, or a callable function with the same rules as extra_functions.
+        output_type : str
+            Output type to use. Default is 'photo_fnu'. Can be 'photo_fnu', 'photo_lnu', 'fnu', 'lnu'.
+        depths : Union[np.ndarray, unyt_array] = None
+            Depths to use for the photometry. If None, no depths are applied. Default is None.
+        depth_sigma : int
+            Sigma to use for the depths. Default is 5. This is used to calculate the 1 sigma error in nJy.
+            If depths is None, this is ignored.
+
+        """
+        
+        assert isinstance(grid, Grid), f"Grid must be a subclass of Grid. Got {type(grid)} instead."
+        self.grid = grid
+        
+        assert isinstance(instrument, Instrument), f"Instrument must be a subclass of Instrument. Got {type(instrument)} instead."
+        assert isinstance(emission_model, EmissionModel), f"Emission model must be a subclass of EmissionModel. Got {type(emission_model)} instead."
+
+        self.emission_model = emission_model
+        self.emission_model_key = emission_model_key
+        self.instrument = instrument
+        self.cosmo = cosmo
+        self.param_order = param_order
+        self.param_units = param_units
+        self.param_transforms = param_transforms
+        self.out_flux_unit = out_flux_unit
+        self.required_keys = required_keys
+        self.extra_functions = extra_functions
+        self.normalize_method = normalize_method
+
+        if depths is not None: assert len(depths) == len(instrument.filters.filter_codes), f"Depths array length {len(depths)} does not match number of filters {len(instrument.filters.filter_codes)}. Cannot create photometry."
+        self.depths = depths
+        self.depth_sigma = depth_sigma
+        
+        assert output_type in ['photo_fnu', 'photo_lnu', 'fnu', 'lnu'], f"Output type {output_type} not recognised. Must be one of ['photo_fnu', 'photo_lnu', 'fnu', 'lnu']"
+        self.output_type = output_type
+
+        self.sfh_model = sfh_model
+        sig = inspect.signature(sfh_model).parameters
+        
+        self.sfh_params = []
+        self.optional_sfh_params = []
+
+        for key in sig.keys():
+            if sig[key].default != inspect._empty:
+                self.optional_sfh_params.append(key)
+            else:
+                self.sfh_params.append(key)
+                
+
+        self.zdist_model = zdist_model
+        
+        sig = inspect.signature(zdist_model).parameters
+        self.zdist_params = []
+        self.optional_zdist_params = []
+        for key in sig.keys():
+            if sig[key].default != inspect._empty:
+                self.optional_zdist_params.append(key)
+            else:
+                self.zdist_params.append(key)
+
+        self.emitter_params = emitter_params
+        self.emission_model.save_spectra(emission_model_key)
+
+
+        self.total_possible_keys = self.sfh_params + self.zdist_params + self.optional_sfh_params + self.optional_zdist_params + required_keys
+
+    def simulate(self, params):
+
+        params = copy.deepcopy(params)
+
+        if not isinstance(params, dict):
+            assert len(params) == len(self.param_order), f"Parameter array length {len(params)} does not match parameter order length {len(self.param_order)}. Cannot create photometry."
+            params = {i:j for i, j in zip(self.param_order, params)}
+
+        
+        for key in self.required_keys:
+            if key not in params:
+                raise ValueError(f"Missing required parameter {key}. Cannot create photometry.")
+
+        mass = 10**params['log_mass'] * Msun
+
+        # Check if we have sfh_params and zdist_params
+
+        for key in params:
+            if key in self.param_units:
+                params[key] = params[key] * self.param_units[key]
+
+        for key in self.param_transforms:
+            if key in params:
+                params[key] = self.param_transforms[key](params[key])
+
+
+        sfh = self.sfh_model(**{i: params[i] for i in self.sfh_params}, 
+                              **{i: params[i] for i in self.optional_sfh_params if i in params})
+        zdist = self.zdist_model(**{i: params[i] for i in self.zdist_params},
+                                    **{i: params[i] for i in self.optional_zdist_params if i in params})
+
+        # Get param names which aren't in the sfh or zdist models or the required keys
+        param_names = [i for i in params.keys() if i not in self.total_possible_keys]
+
+        # Check if any param names named here are in emitter param dictionry lusts
+        
+        found_params = []
+        for key in param_names:
+            found = False
+            for param in self.emitter_params:
+                if key in self.emitter_params[param]:
+                    found = True
+                    break
+            if not found:
+                raise ValueError(f"Parameter {key} not found in emitter params. Cannot create photometry.")
+        
+            else:
+                found_params.append(key)
+
+        # Check we understand all the parameters
+
+        assert len(found_params) == len(self.emitter_params), f"Found {len(found_params)} parameters but expected {len(self.emitter_params)}. Cannot create photometry."
+
+        stellar_keys = {}
+        if 'stellar' in self.emitter_params:
+            for key in found_params:
+                stellar_keys[key] = params[key]
+
+
+        stars = Stars(
+            log10ages=self.grid.log10ages,
+            metallicities=self.grid.metallicity,
+            sf_hist=sfh,
+            metal_dist=zdist,
+            initial_mass=mass,
+            **stellar_keys,
+        )
+
+        galaxy_keys = {}
+        if 'galaxy' in self.emitter_params:
+            for key in found_params:
+                galaxy_keys[key] = params[key]
+
+        galaxy = Galaxy(
+            stars=stars,
+            redshift = params['redshift'],
+            **galaxy_keys,
+        )
+
+        # Get the spectra for the galaxy
+        spec = galaxy.stars.get_spectra(self.emission_model)
+
+        if self.output_type == 'lnu':
+            fluxes = spec.lnu
+
+        elif self.output_type == 'photo_lnu':
+            fluxes = galaxy.stars.spectra[self.emission_model_key].get_photo_lnu(self.instrument.filters)
+            fluxes = fluxes.photo_lnu
+
+        elif self.output_type in ['fnu', 'photo_fnu']:
+            # Apply IGM and distance
+            galaxy.get_observed_spectra(self.cosmo)
+
+            if self.output_type == 'photo_fnu':
+                fluxes = galaxy.stars.spectra[self.emission_model_key].get_photo_fnu(self.instrument.filters)
+                fluxes = fluxes.photo_fnu
+            else:
+                fluxes = galaxy.stars.spectra[self.emission_model_key].fnu
+
+        if self.out_flux_unit == 'ABmag':
+            fluxes = -2.5 * np.log10(fluxes.to(Jy).value) + 8.9
+        else:
+            fluxes = fluxes.to(self.out_flux_unit).value
+
+        def inspect_func(func, locals):
+            parameters = inspect.signature(func).parameters
+            inputs = {}
+            possible_inputs = ['galaxy', 'spec', 'fluxes', 'sed', 'stars', 'emission_model', 'cosmo']
+            for key in parameters:
+                if key in possible_inputs:
+                    if hasattr(self, key):
+                        inputs[key] = getattr(self, key)
+                    else:
+                        inputs[key] = locals[key]
+                else:
+                    inputs[key] = params[key]
+            return inputs
+
+        if self.extra_functions is not None:
+            # possible arguments are galaxy, spec, fluxes, sed, stars, emission_model, cosmo
+            
+            output = []
+            for func in self.extra_functions:
+                if isinstance(func, tuple):
+                    func, args = func
+                    output.append(func(galaxy, *args))
+                else:
+                    inputs = inspect_func(func, locals())
+                    output.append(func(**inputs))
+
+        
+        fluxes = self._scatter(fluxes, flux_units=self.out_flux_unit)
+
+        if self.normalize_method is not None:
+            if callable(self.normalize_method):
+                args = inspect_func(self.normalize_method, locals())
+                norm = self.normalize_method(**args)
+                if isinstance(norm, dict):
+                    if self.emission_model_key in norm:
+                        norm = norm[self.emission_model_key]
+            else:
+                norm = self.normalize_method
+
+            fluxes = self._normalize(fluxes, method=norm, norm_unit=self.out_flux_unit)
+
+        return fluxes
+
+    def _normalize(self, fluxes, method=None, norm_unit='ABmag', add_norm_pos=-1):
+        if method is None:
+            return fluxes
+
+        if norm_unit == 'ABmag':
+            func = np.subtract
+        else:
+            func = np.divide
+
+        if isinstance(method, str):
+            if method in self.instrument.filters.filter_codes:
+                # Get position of filter in filter codes
+                filter_pos = self.instrument.filters.filter_codes.index(method)
+                norm = fluxes[filter_pos]
+                fluxes = func(fluxes, norm)
+            else:
+                raise ValueError(f"Filter {method} not found in filter codes. Cannot normalize photometry.")
+        elif isinstance(method, (unyt_array, unyt_quantity)):
+            if norm_unit == 'ABmag':
+                # Convert to ABmag
+                method = -2.5 * np.log10(method.to(Jy).value) + 8.9
+
+            norm = method
+            fluxes = func(fluxes, norm)
+        elif callable(method):
+            norm = method(fluxes)
+            fluxes = func(fluxes, norm)
+
+        if add_norm_pos is not None:
+            # Insert the normalization value at this position, increasing the size of the array
+            if add_norm_pos == -1:
+                fluxes = np.append(fluxes, norm)
+            else:
+                fluxes = np.insert(fluxes, add_norm_pos, norm)
+
+        return fluxes
+
+    def _scatter(self,
+                fluxes: np.ndarray,
+                flux_units: str = 'nJy',
+            ):
+        '''
+        Given a set of depths, convert to photometry unit and use as standard deviations
+        to generate a scattered photometry array of shape (m*n_scatters, n) from photometry array
+        '''
+
+        depths = self.depths
+
+        if depths is None:
+            return fluxes
+
+        depths = np.array(depths)
+
+        m = fluxes.shape
+
+        if type(fluxes) == unyt_array:
+            assert fluxes.units == flux_units, f"Fluxes units {fluxes.units} do not match flux units {flux_units}. Cannot scatter photometry."
+        
+        if flux_units == 'ABmag':
+            fluxes = (10**((fluxes-23.9)/-2.5)) * uJy
     
+        # Convert depths based on units
+        if self.out_flux_unit == 'ABmag' and not hasattr(depths, 'unit'):
+            # Convert from AB magnitudes to microjanskys
+            depths_converted = (10**((depths-23.9)/-2.5)) * uJy
+            depths_std = depths_converted.to(uJy).value / self.depth_sigma
+        else:
+            depths_std = depths.to(self.out_flux_unit).value / self.depth_sigma
+        # Pre-allocate output array with correct dimensions
+        output_arr = np.zeros(m)
+        
+        # Generate all random values at once for better performance
+        random_values = np.random.normal(loc=0, scale=depths_std, size=(m)) * uJy
+        # Add the random values to the fluxes        
+        output_arr = fluxes + random_values
+
+        
+        if flux_units == 'ABmag':
+            # Convert back to AB magnitudes
+            output_arr = -2.5 * np.log10(output_arr.to(Jy).value) + 8.9
+
+        return output_arr
+
+    def __call__(self, params):
+        return self.simulate(params)
+
+    def __repr__(self):
+        return f"PhotometrySimulator({self.sfh_model}, {self.zdist_model}, {self.grid}, {self.instrument}, {self.emission_model}, {self.emission_model_key})"
+
+    def __str__(self):
+        return f"PhotometrySimulator({self.sfh_model}, {self.zdist_model}, {self.grid}, {self.instrument}, {self.emission_model}, {self.emission_model_key})"
+
+    
+
+
+
+
+                
+
+
+    
+
+
 
 if __name__ == "__main__":
     print("This is a module, not a script.")
