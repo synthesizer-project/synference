@@ -38,16 +38,22 @@ from ili.validation.metrics import PlotSinglePosterior, PosteriorCoverage, Poste
 from ili.validation.runner import ValidationRunner
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
+from ili.utils.samplers import (EmceeSampler, PyroSampler,
+                            DirectSampler, VISampler)
 
+from .grid import GalaxySimulator
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 verbose = True
 if verbose:
-    print('Device:', device)
-    print("Pytorch version: " + torch.__version__)
-    print("ROCM HIP version: " + torch.version.hip)
-    #print("CUDA version: " + torch.version.cuda)
+    try:
+        print('Device:', device)
+        print("Pytorch version: " + torch.__version__)
+        print("ROCM HIP version: " + torch.version.hip)
+        print("CUDA version: " + torch.version.cuda)
+    except:
+        pass
 torch.cuda.set_device(f'{device}:0')
 
 # get path of this file
@@ -213,22 +219,21 @@ class SBI_Fitter:
         Removes any parameter in self.provided_feature_parameters from the parameter array and parameter names
         ''' 
 
-        for param in self.provided_feature_parameters + parameters_to_remove:
+        params = np.unique(self.provided_feature_parameters + parameters_to_remove)
+        for param in params:
             if param in self.parameter_names:
-                print(f"Removing parameter {param} from parameter array and names.")
                 index = list(self.parameter_names).index(param)
                 self.fitted_parameter_array = np.delete(self.parameter_array, index, axis=1)
                 self.fitted_parameter_names = np.delete(self.parameter_names, index)
-                self.simple_fitted_parameter_names = np.delete(self.simple_fitted_parameter_names, index)
-
-
-        # Remove any rows in delete_rows
-        if len(delete_rows) > 0:
-            self.fitted_parameter_array = np.delete(self.fitted_parameter_array, delete_rows, axis=0)
+                self.simple_fitted_parameter_names = [i.split('/')[-1] for i in self.fitted_parameter_names]
 
         # Now duplicate the parameter array n_scatters times. E.g. if it was [[1], [2], [3]] and n_scatters is 3, it should be [[1], [1], [1], [2], [2], [2], [3], [3], [3]]
         if n_scatters > 1:
             self.fitted_parameter_array = np.repeat(self.fitted_parameter_array, n_scatters, axis=0)
+
+        # Remove any rows in delete_rows
+        if len(delete_rows) > 0:
+            self.fitted_parameter_array = np.delete(self.fitted_parameter_array, delete_rows, axis=0)
 
 
     @classmethod
@@ -304,7 +309,10 @@ class SBI_Fitter:
                     depths: unyt_array,
                     photometry_array: np.ndarray,
                     N_scatters: int = 5,
-                    depth_sigma: int = 5):
+                    depth_sigma: int = 5,
+                    return_errors: bool = False,
+                    phot_flux_units: str = 'AB',
+                    ):
         '''
         Given a set of depths, convert to photometry unit and use as standard deviations
         to generate a scattered photometry array of shape (m*n_scatters, n) from photometry array
@@ -320,6 +328,8 @@ class SBI_Fitter:
             Number of scattered versions to generate for each input row
         depth_sigma : int, default=5
             Divisor to scale the depths
+        return_errors : bool, default=False
+            If True, return the errors as well
 
         Returns:
         --------
@@ -333,27 +343,24 @@ class SBI_Fitter:
         if m != len(depths):
             raise ValueError(f"Mismatch in dimensions: photometry_array has {m} columns but depths has {len(depths)} elements")
         
-        # Convert depths based on units
-        if hasattr(photometry_array, 'units') and photometry_array.units == 'ABmag':
-            # Convert from AB magnitudes to microjanskys
-            depths_converted = (10**((depths-23.9)/-2.5)) * uJy
-            depths_std = depths_converted.to(self.raw_photometry_units).value / depth_sigma
-        else:
-            depths_std = depths.to(self.raw_photometry_units).value / depth_sigma
-        
+        # Convert depths to the correct units
+        depths_std = depths.to(photometry_array.units).value / depth_sigma
+    
         # Pre-allocate output array with correct dimensions
         output_arr = np.zeros((m, N_scatters * n))
         
         # Generate all random values at once for better performance
-        random_values = np.random.normal(loc=0, scale=depths_std[:, None], size=(m, N_scatters * n))
-        # Reshape the random values to match the output array
-        random_values = random_values.reshape(m, N_scatters, n)
+        random_values = np.random.normal(loc=0, scale=depths_std[:, np.newaxis], size=(m, N_scatters * n)) * photometry_array.units
         # Repeat the photometry array for each scatter
-        photometry_repeated = np.repeat(photometry_array[:, None, :], N_scatters, axis=1)
-        # Add the random values to the repeated photometry array
+        photometry_repeated = np.repeat(photometry_array, N_scatters, axis=1)
+        # Add the random values to the repeated photometry
         output_arr = photometry_repeated + random_values
-        # Reshape the output array to have the correct dimensions
-        output_arr = output_arr.reshape(m, N_scatters * n)
+
+        if return_errors:
+            # Get errors for each row in the output array
+            # E.g. n*N_scatters copies of the depth errors
+            depth_errors = np.repeat(depths_std[:, np.newaxis], N_scatters*n, axis=1) * photometry_array.units
+            return output_arr, depth_errors
 
         return output_arr
 
@@ -363,12 +370,14 @@ class SBI_Fitter:
                                                 normed_flux_units: str = 'AB',
                                                 normalization_unit: str = 'AB',
                                                 verbose: bool = True,
-                                                scatter_fluxes: Union[int, None] = None,
+                                                scatter_fluxes: Union[int, bool] = False,
                                                 depths: Union[unyt_array, None] = None, 
                                                 include_errors_in_feature_array = False,
                                                 simulate_missing_fluxes = False,
                                                 override_phot_grid: np.ndarray = None,
                                                 override_phot_grid_units: str = None,
+                                                norm_mag_limit: float = 50.0,
+                                                remove_nan_inf: bool = True,
                                                 ) -> np.ndarray:
         """
         Create a feature array from the raw photometry grid.
@@ -393,14 +402,18 @@ class SBI_Fitter:
             simulate_missing_fluxes:  boolean, default False. CURRENTLY UNIMPLEMENTED.
                 This would allow missing photometry for some fraction of the time, which could be marked
                 with a specific filler flag, or a seperate boolean row/column to flag missing data. 
-            
+            norm_mag_limit: The maximum magnitude limit for the normalized fluxes.
+                This is used to set a maximum difference of some large amount - say 50 magnitudes.
+            remove_nan_inf: boolean, default True.
+                Whether to remove any rows with NaN or Inf values in the feature array.
+
             TODO: How should normalization work with the scattering?
 
         Returns:
             The feature array and feature names.
         """
 
-        if include_errors_in_feature_array or simulate_missing_fluxes:
+        if simulate_missing_fluxes:
             raise NotImplementedError
 
         if override_phot_grid is not None:
@@ -410,21 +423,34 @@ class SBI_Fitter:
             phot_grid = self.raw_photometry_grid
             raw_photometry_units = self.raw_photometry_units
 
-        
-        if normed_flux_units == 'AB':
-            phot = -2.5 * np.log10(unyt_array(override_phot_grid, units=raw_photometry_units).to('uJy').value) + 23.9
-            norm_func = np.subtract
-        else:
-            phot = unyt_array(override_phot_grid, units=raw_photometry_units).to(normed_flux_units).value
-            norm_func = np.divide
+        phot = unyt_array(phot_grid, units=raw_photometry_units)
 
-        if scatter_fluxes is not None:
+        if scatter_fluxes:
             assert depths is not None
             assert isinstance(depths, unyt_array)
+            assert isinstance(phot, unyt_array)
             self.phot_depths = depths
-
-            phot = self._apply_depths(depths, phot, scatter_fluxes)
+            # Need to get units right here! 
+            phot, depth_errors = self._apply_depths(depths, phot, scatter_fluxes, return_errors=True)
             print(f'Scattering photometry {scatter_fluxes} times for each row')
+        else:
+            depth_errors = None
+        
+        if normed_flux_units == 'AB':
+            if depth_errors is not None:
+                depth_errors = np.log10(1+np.abs(depth_errors.to('uJy').value/phot.to('uJy').value)) # Technically this is the upper error
+            phot_mag = -2.5 * np.log10(phot.to('uJy').value) + 23.9
+            # Any negative fluxes, just set to the limit
+            phot_mag[phot.to('uJy').value < 0] = norm_mag_limit
+            phot = phot_mag
+            norm_func = np.subtract
+            
+        else:
+            phot = phot.to(normed_flux_units).value
+            if depth_errors is not None:
+                depth_errors = depth_errors.to(normed_flux_units).value
+            
+            norm_func = np.divide
 
         delete_rows = []
         # Normalize the photometry grid
@@ -433,12 +459,14 @@ class SBI_Fitter:
                 norm_index = list(self.raw_photometry_names).index(normalize_method)
 
                 normalization_factor = phot[norm_index, :]
-                norm_factor_original = override_phot_grid[norm_index, :]
+                norm_factor_original = phot_grid[norm_index, :]
                 
                 # Create a copy of the raw photometry names for consistent reference
                 raw_photometry_names = np.array(self.raw_photometry_names)
                 raw_photometry_names = np.delete(raw_photometry_names, norm_index)
                 phot = np.delete(phot, norm_index, axis=0)
+                if scatter_fluxes:
+                    depth_errors = np.delete(depth_errors, norm_index, axis=0)
 
                 # Create normalized photometry while preserving the original shape
                 normed_photometry = norm_func(phot, normalization_factor)
@@ -467,7 +495,7 @@ class SBI_Fitter:
                 normalization_factor = self.supplementary_parameters[norm_index, :]
                 # count where normalzation is 0
                
-                assert normalization_factor.shape[0] == override_phot_grid.shape[1], "Normalization factor should have the same shape as the photometry grid."
+                assert normalization_factor.shape[0] == phot_grid.shape[1], "Normalization factor should have the same shape as the photometry grid."
                 assert norm_unit == raw_photometry_units, "Normalization factor should have the same units as the photometry grid."
                 
                 if normed_flux_units == 'AB':
@@ -475,6 +503,10 @@ class SBI_Fitter:
                 else:
                     normalization_factor_use = normalization_factor
 
+                # If have copied the photometry, need to copy the normalization factor as well
+                if scatter_fluxes:
+                    normalization_factor_use = np.repeat(normalization_factor_use, scatter_fluxes, axis=0)
+                    normalization_factor = np.repeat(normalization_factor, scatter_fluxes, axis=0)
 
                 normed_photometry = norm_func(phot, normalization_factor_use)
 
@@ -496,18 +528,24 @@ class SBI_Fitter:
             else:
                 raise NotImplementedError("Normalization method not implemented. Please use a filter name for normalization.")
         else:
-            normed_photometry = override_phot_grid
+            normed_photometry = phot
             normalization_factor_converted = np.ones(normed_photometry.shape[1])
             normalization_factor = normalization_factor_converted
             raw_photometry_names = np.array(self.raw_photometry_names)
 
             # Convert the photometry to the desired units
 
-            if normed_flux_units == 'AB':
-                normed_photometry = -2.5 * np.log10(unyt_array(normed_photometry, units=raw_photometry_units).to('uJy').value) + 23.9
-            else:
-                normed_photometry = unyt_array(normed_photometry, units=raw_photometry_units).to(normed_flux_units).value
+        if depth_errors is not None:
+            # Will have errors on the end of the photometry array. Add names (unc_*)
+            # and units (uncertainty) to the end of the feature names and units.
+            error_names = [f'unc_{name}' for name in raw_photometry_names]
+            error_units = [normed_flux_units] * len(error_names)
+        else:
+            error_names = []
+            error_units = []
 
+        print(error_names)
+           
         if np.sum(normalization_factor == 0.0) > 0:
             # delete these indexes from the photometry 
             print(f'Warning: Normalization factor is 0.0 for {np.sum(normalization_factor == 0.0)} rows. These will be deleted.')
@@ -518,23 +556,38 @@ class SBI_Fitter:
             # very small fluxes can blow up here and go to infinity. Set a maximum difference of some large amount - say 50
             # If not normalized, set minmum flux to 50 AB.
             # If normalized to some AB, set minimum normalized flux to 50 (e.g. norm value + 50).
-            normed_photometry[normed_photometry > 50] = 50
+            normed_photometry[normed_photometry > norm_mag_limit] = norm_mag_limit
 
+        if remove_nan_inf:
+            # any row with a nan or inf in the feature array will be deleted
+            mask = ~np.isfinite(normed_photometry)
+            row_mask = np.sum(mask, axis=0) > 0
+            delete_rows.extend(np.where(row_mask)[0].tolist())
+            print(f'Warning: Deleting {np.sum(row_mask)} rows with NaN or Inf values in the feature array.')
 
+        norm = 1 if normalize_method is not None else 0
+
+        length = normed_photometry.shape[1]
         # Create the feature array
         # Photometry + extra features + normalization factor
         feature_array = np.zeros((
-            len(raw_photometry_names) + len(extra_features) + 1,
-            override_phot_grid.shape[1]
+            len(raw_photometry_names) + len(extra_features) + norm + include_errors_in_feature_array*len(error_names),
+            length,
         ))
-
 
         # Fill the feature array with the normalized photometry
         feature_array[:len(raw_photometry_names), :] = normed_photometry
-        
-        # Add the normalization factor as the last column
-        feature_array[-1, :] = normalization_factor_converted
-        
+
+        if depth_errors is not None and include_errors_in_feature_array:
+            # Add the errors to the feature array
+            # Errors will be almost the last thing. Work out the starting index given total length of feature array
+            start_index = len(raw_photometry_names) 
+            feature_array[start_index:start_index + len(error_names), :] = depth_errors
+
+        if normalize_method is not None:
+            # Add the normalization factor as the last column
+            feature_array[-1, :] = normalization_factor_converted
+
         # Create the feature names
         nfeatures = feature_array.shape[0]
         feature_names = [''] * nfeatures
@@ -542,29 +595,40 @@ class SBI_Fitter:
         # Add filter names
         for i in range(len(raw_photometry_names)):
             feature_names[i] = raw_photometry_names[i]
+
+        if depth_errors is not None and include_errors_in_feature_array:
+            # Add the error names
+            for i in range(len(error_names)):
+                feature_names[len(raw_photometry_names) + i] = error_names[i]
         
-        # Add the normalization factor name
-        feature_names[-1] = f'norm_{normalize_method}_{normalization_unit}'
-        
-        # Process extra features if any
+        if normalize_method is not None:
+            # Add the normalization factor name
+            feature_names[-1] = f'norm_{normalize_method}_{normalization_unit}'
+
+        # Process extra features if any. Currently extra features don't have uncertainties.
         if len(extra_features) > 0:
             parser = FilterArithmeticParser()
             for i, feature in enumerate(extra_features):
-
+                # pos is first '' in feature_names
+                pos = np.where(np.array(feature_names) == '')[0][0]
                 if feature in self.parameter_names:
-                    self.provided_feature_parameters.append(feature)
+                    if feature not in self.provided_feature_parameters:
+                        self.provided_feature_parameters.append(feature)
                     index = list(self.parameter_names).index(feature)
-                    feature_array[len(raw_photometry_names) + i, :] = self.parameter_array[:, index]
-                    feature_names[len(raw_photometry_names) + i] = feature
+                    arr = self.parameter_array[:, index]
+                    if scatter_fluxes:
+                        arr = np.repeat(arr, scatter_fluxes, axis=0)
+
+                    feature_array[pos, :] = arr
+                    feature_names[pos] = feature
                 else:  
                     # Parse the feature expression
                     tokens = parser.tokenize(feature)
                     value = parser.evaluate(tokens, dict(zip(raw_photometry_names, normed_photometry.T)))
-                    feature_array[len(raw_photometry_names) + i, :] = value
+                    feature_array[pos, :] = value
 
                     # Add the feature name
-                    feature_names[len(raw_photometry_names) + i] = feature
-
+                    feature_names[pos] = feature
 
         # Remove any rows in delete_rows
         if len(delete_rows) > 0:
@@ -574,8 +638,10 @@ class SBI_Fitter:
 
         self.feature_array = feature_array.astype(np.float32).T
         self.feature_names = feature_names
-        self.feature_units = [normed_flux_units] * len(raw_photometry_names) + [None] * len(extra_features) + [normalization_unit]
+        self.feature_units = [normed_flux_units] * len(raw_photometry_names) + error_units + [None] * len(extra_features) + [normalization_unit]
         self.has_features = True
+
+
 
         if verbose:
             print('---------------------------------------------')
@@ -588,7 +654,9 @@ class SBI_Fitter:
                 print(f'{feature_name}: {np.min(feature_array[pos]):.3f} - {np.max(feature_array[pos]):.3f} {self.feature_units[pos]}')
             print('---------------------------------------------')
 
-        self.update_parameter_array(delete_rows=delete_rows)
+        self.update_parameter_array(delete_rows=delete_rows, n_scatters=scatter_fluxes)
+
+        print(np.any(np.isnan(self.feature_array)))
 
         return feature_array, feature_names
 
@@ -885,13 +953,20 @@ class SBI_Fitter:
                 num_online_rounds=5,
                 initial_training_from_grid: bool = False,
                 override_prior_ranges: dict = {},
+                online_training_xobs: np.ndarray = None,
                 ) -> tuple:
         """
         Run a single SBI training instance.
 
         Args:
+            train_test_fraction: Fraction of the dataset to be used for training.
+            random_seed: Random seed for reproducibility.
+            backend: Backend to use for training. Either 'sbi', 'lampe', or 'pydelfi'. Pydelfi cannot 
+            be installed in the same environment as it requires a different Python version.
+            engine: Engine to use for training. Either 'NPE', 'NLE', 'NRE' or the sequential variants (SNPE, SNLE, SNRE).
             train_indices: Indices of the training set.
             test_indices: Indices of the test set. If None, no test set is used.
+            n_nets: Number of networks to use in the ensemble.
             model_type: Type of model to use. Either 'mdn' or 'maf'.
             hidden_features: Number of hidden features in the neural network.
             num_components: Number of components in the mixture density network.
@@ -899,6 +974,8 @@ class SBI_Fitter:
             training_batch_size: Batch size for training.
             learning_rate: Learning rate for the optimizer.
             validation_fraction: Fraction of the training set to use for validation.
+                    This validation is used to prevent over-fitting - training is stopped if the validation loss
+                    does not improve for stop_after_epochs epochs for this fraction of the training set.
             stop_after_epochs: Number of epochs without improvement before stopping.
             clip_max_norm: Maximum norm for gradient clipping.
             save_model: Whether to save the trained model.
@@ -917,9 +994,9 @@ class SBI_Fitter:
             num_simulations: Number of simulations to run in each call if learning_type is 'online'.
             num_online_rounds: Number of rounds to run in online learning.
             initial_training_from_grid: Whether to use the initial training from the grid when
-                learning_type is 'online'. Reduces number of calls to the simulator.
+                learning_type is 'online'. Reduces number of calls to the simulator. WARNING! BROKEN.
             override_prior_ranges: Dictionary of prior ranges to override the default ranges.
-
+            online_training_xobs: A single input observation to condition on for online training.
         Returns:
             A tuple containing the posterior distribution and training statistics.
         """
@@ -1023,28 +1100,32 @@ class SBI_Fitter:
 
             if initial_training_from_grid:
                 # Save already created data to .npy files
-                
                 np.save(f'{out_dir}/online/xobs.npy', self.feature_array[train_indices])
                 np.save(f'{out_dir}/online/theta.npy', self.fitted_parameter_array[test_indices])
             else:
-                samples = prior.sample_n(1)
-                print
-                phot = []
-                for i in range(len(samples)):
-                    p = simulator(samples[i]).cpu().numpy()
-                    phot.append(p)
+                if online_training_xobs is not None:
+                    xobs = np.squeeze(online_training_xobs)
+                    print(f'Using provided xobs for online training: {xobs.shape}')
+                    np.save(f'{out_dir}/online/xobs.npy', xobs)
 
-                phot = np.array(phot)
+                else:
+                    print(f'Drawing random photometry from prior to conditon on. Results probably won\'t generalize well.')
+                    samples = prior.sample_n(1)
+                    phot = []
+                    for i in range(len(samples)):
+                        p = simulator(samples[i]).cpu().numpy()
+                        phot.append(p)
 
-                phot = np.squeeze(phot) 
+                    phot = np.array(phot)
+                    phot = np.squeeze(phot) 
+                    # shape phot to be (num_simulations, num_features)
+                    #phot = phot.reshape(num_simulations, -1)#[np.newaxis, :]
 
-                # shape phot to be (num_simulations, num_features)
-                #phot = phot.reshape(num_simulations, -1)#[np.newaxis, :]
+                    theta = samples.cpu().numpy()#[np.newaxis, :]
 
-                theta = samples.cpu().numpy()#[np.newaxis, :]
+                    np.save(f'{out_dir}/online/xobs.npy', phot)
+                    np.save(f'{out_dir}/online/thetafid.npy', theta)
 
-                np.save(f'{out_dir}/online/xobs.npy', phot)
-                np.save(f'{out_dir}/online/thetafid.npy', theta)
 
             # Need to have option for intial training using saved data. 
 
@@ -1074,17 +1155,23 @@ class SBI_Fitter:
                     "hidden_features": hidden_features[i] if isinstance(hidden_features, list) else hidden_features,
                     "num_components": num_components[i] if isinstance(num_components, list) else num_components,
                 }
-            elif model_type in ['maf', 'nsf', 'made']:
+            elif model_type in ['maf', 'nsf', 'made', 'ncsf', 'cnf', 'gf', 'sospf', 'naf', 'unaf']:
                 model_args = {
                     "hidden_features": hidden_features[i] if isinstance(hidden_features, list) else hidden_features,
                     "num_transforms": num_transforms[i] if isinstance(num_transforms, list) else num_transforms,
                 }
+            elif model_type in ['linear']:
+                model_args = {}
+            elif model_type in ['mlp', 'resnet']:
+                model_args = {
+                    "hidden_features": hidden_features[i] if isinstance(hidden_features, list) else hidden_features,
+                }
             else:
-                raise ValueError(f"Unknown model type: {model_type}. Use 'mdn' or 'maf'.")
+                raise ValueError(f"Unknown model type: {model_type}. Options include: sbi = mdn, maf, nsf, made, linear, mlp, resnet. lampe = mdn, maf, nsf, ncsf, cnf, nice, sospf, gf, naf. pydelfi: mdn, maf.")
             
 
             # Create neural network
-            net = self._create_network(model_type, model_args, engine=eng)
+            net = self._create_network(model_type, model_args, engine=eng, backend=backend, verbose=verbose, device=device)
             nets.append(net)
             ensemble_model_types.append(model_type)
             ensemble_model_args.append(model_args)
@@ -1178,6 +1265,7 @@ class SBI_Fitter:
                 param_dict["num_simulations"] = num_simulations
                 param_dict["num_online_rounds"] = num_online_rounds
                 param_dict["initial_training_from_grid"] = initial_training_from_grid
+                param_dict['online_training_xobs'] = online_training_xobs
 
             elif learning_type == 'offline':
                 param_dict["train_fraction"]: train_test_fraction
@@ -1234,28 +1322,265 @@ class SBI_Fitter:
         scaler.fit(y)
         return scaler
 
-    def _create_network(self, model_type: str, model_args: dict, engine='NPE') -> nn.Module:
+    def _create_network(self, 
+                model_type: str,
+                model_args: dict, 
+                engine: str = 'NPE',
+                backend: str = 'sbi',
+                verbose: bool = False,
+                embedding_net: torch.nn.Module = torch.nn.Identity, 
+                device: str = 'cpu') -> nn.Module:
         """
         Create a neural network for the SBI model.
         
         Args:
             model_type: Type of model to use. Either 'mdn' or 'maf'.
             model_args: Arguments for the model.
+            engine: Engine to use for training. Either 'NPE', 'NLE', 'NRE' or the sequential variants (SNPE, SNLE, SNRE).
+            backend: Backend to use for training. Either 'sbi', 'lampe', or 'pydelfi'.
+            verbose: Whether to print verbose output.
+            device: Device to use for training. Either 'cpu' or 'cuda'.
             
         Returns:
             A neural network.
         """
         # Import the necessary function from ili
-    
-        return ili.utils.load_nde_sbi(
+
+        backend_args = {}
+        if backend == 'sbi':
+            net = ili.utils.load_nde_sbi
+        elif backend == 'lampe':
+            net = ili.utils.load_nde_lampe
+            backend_args['device'] = device
+        elif backend == 'pydelfi':
+            net = ili.utils.load_nde_pydelfi
+        else:
+            raise ValueError("Invalid backend. Use 'sbi', 'lampe' or 'pydelfi'.")
+
+        if verbose:
+            # print summary of network
+            print(f"Creating {model_type} network with {engine} engine and {backend} backend.")
+            for key, value in model_args.items():
+                print(f"     {key}: {value}")
+        
+        return net(
             engine=engine, 
             model=model_type, 
+            #embedding_net=embedding_net,
+            **backend_args,
             **model_args
         )
+
+    def recover_SED(self,
+                    X_test: np.ndarray,
+                    n_samples=1000,
+                    sample_method: str = 'direct',
+                    sample_kwargs: dict = {},
+                    posteriors=None,
+                    simulator: callable = None,
+                    prior: object = None,
+                    plot: bool = True,
+                    marginalized_parameters: Dict[str, callable] = None,
+                    phot_unit='AB',
+                    true_parameters=[],
+                    plot_name=None,
+                    plots_dir=f'{code_path}/models/name/plots/',
+    ):
+        if posteriors is None:
+            posteriors = self.posteriors
+
+        if simulator is None:
+            if not hasattr(self, '_simulator'):
+                raise ValueError("Simulator must be provided or set in the object.")
+            simulator = self._simulator
+
+        if prior is None:
+            if not hasattr(self, '_prior'):
+                raise ValueError("Prior must be provided or set in the object.")
+            prior = self._prior
+
+        
+        plots_dir = plots_dir.replace('name', self.name)
+
+        # Draw samples, run through simulator, 
+
+        samples = self.sample_posterior(
+            X_test=[X_test],
+            sample_method=sample_method,
+            num_samples=n_samples,
+            posteriors=posteriors,
+            sample_kwargs=sample_kwargs,
+        )
+
+        # Run through simulator
+        # Check if simulator is callable
+        if not callable(simulator):
+            raise ValueError("Simulator must be a callable function.")
+        
+        fnu_draws = []
+        phot_fnu_draws = []
+        wav_draws = []
+        sfh = []
+        counter = 0
+        if isinstance(simulator, GalaxySimulator):
+            simulator.output_type = ['photo_fnu', 'fnu', 'sfh']
+            for i in range(n_samples):
+                params = {self.simple_fitted_parameter_names[j]: samples[i, j] for j in range(len(self.fitted_parameter_names))}
+                for parameter in marginalized_parameters.keys():
+                    params[parameter] = marginalized_parameters[parameter](params)
+
+                output = simulator(params)
+                if i == 0:
+                    phot_wav = output['photo_wav']
+                    filters= output['filters']
+                wav_draws.append(output['fnu_wav'])
+                fnu_draws.append(output['fnu'])
+                phot_fnu_draws.append(output['photo_fnu'])
+                sfh.append(output['sfh'])
+                if np.isnan(output['sfh']).any():
+                    counter += 1
+        else:
+            raise ValueError("Simulator must be a GalaxySimulator object.")
+        
+        fnu_draws = np.array(fnu_draws)
+        phot_fnu_draws = np.array(phot_fnu_draws)
+        wav_draws = np.array(wav_draws)
+        sfh = np.array(sfh)
+        print(f"Number of NaN SFH: {counter}")
+        # get the redshift draws
+        
+        fnu_quantiles = np.quantile(fnu_draws, [0.16, 0.5, 0.84], axis=0)
+        phot_fnu_quantiles = np.quantile(phot_fnu_draws, [0.16, 0.5, 0.84], axis=0)
+        sfh_quantiles = np.nanquantile(sfh, [0.16, 0.5, 0.84], axis=0)
+        wav = np.mean(wav_draws, axis=0)
+        plot_sfh = True
+        if plot:   
+            fig = plt.Figure(figsize=(8, 6), dpi=200, constrained_layout=True)
+            # use GridSpec to have top plot full width and len(self.fitted_parameter names columns) below
+            gridspec = fig.add_gridspec(2, len(self.fitted_parameter_names), height_ratios=[1, 0.6])
+            ax = fig.add_subplot(gridspec[0, :])
+            
+            if plot_sfh:
+                # inset axes for SFH inside ax
+                inset_ax = fig.add_axes([0.72, 0.58, 0.25, 0.25])
+                # plot the SFH
+                # temp
+                time = output['sfh_time']
+                inset_ax.plot(time, sfh_quantiles[1], label='Median SFH', color='purple')
+                inset_ax.fill_between(time, sfh_quantiles[0], sfh_quantiles[2], alpha=0.5, label='68% CI SFH', color='purple')
+                # Don't let the time go beyond 0
+                inset_ax.set_xlim(0, 1000)
+                inset_ax.set_xlabel('Time (Myr)')
+                inset_ax.set_ylabel(r'M$_{\odot} \rm \ yr^{-1}$')
+
+            ax.plot(wav, fnu_quantiles[1], label='Median SED', color='purple', zorder=7, lw=2)
+            ax.fill_between(wav, fnu_quantiles[0], fnu_quantiles[2], alpha=0.5, label='68% CI SED', color='purple', zorder=7)
+            for f, lam in zip(fnu_draws, wav_draws):
+                ax.plot(lam, f, color='violet', alpha=0.05, lw=0.3, zorder=5)
+
+            ax.set_xlabel('Wavelength (Angstrom)')
+            ax.set_ylabel('Flux Density (AB mag')
+
+            # Try and match filters names to feature names and plot the photometry we have been given
+            filter_codes = [i.split('/')[-1] for i in filters.filter_codes]
+
+            if true_parameters is not None:
+                # make dict
+                true_parameters_dict = {self.simple_fitted_parameter_names[j]: true_parameters[j] for j in range(len(self.fitted_parameter_names))}
+                for parameter in marginalized_parameters.keys():
+                    true_parameters_dict[parameter] = marginalized_parameters[parameter](true_parameters_dict)
+
+                true_sed_output = simulator(true_parameters_dict)
+                true_sed = true_sed_output['fnu']
+                ax.plot(wav, true_sed, label='True SED', color='orange', lw=1, zorder=11)
+                if plot_sfh:
+                    true_sfh = true_sed_output['sfh']
+                    inset_ax.plot(time, true_sfh, label='True SFH', color='orange')
+                    
+            
+            # Match indexes of the filters to the feature names
+            # Now plot the photometry we have been given (X_test).
+            # TODO; Deal with the fact that this could be normalized
+            labelled = False
+            phots = []
+            for pos, filter in enumerate(filter_codes):
+                if filter in self.feature_names:
+                    if f'unc_{filter}' in self.feature_names:
+                        # Get the index of the filter
+                        index = self.feature_names.index(f'unc_{filter}')
+                        phot_unc = X_test[index]
+                    else:
+                        phot_unc = 0
+                    index = self.feature_names.index(filter)
+                    phot = X_test[index]
+                    if phot_unc == 0:
+                        ax.scatter(phot_wav[pos], phot, label='Input Phot.' if not labelled else '', marker='o', color='black', zorder=12, s=10)
+                    else:
+                        ax.errorbar(phot_wav[pos], phot, yerr=phot_unc, label='Input Phot.' if not labelled else '',
+                                    marker='o', color='black', zorder=12, markersize=5, linestyle='None')
+                    labelled = True
+                    phots.append(phot)
+                
+                # Plot the photometry we have drawn from the posterior
+            
+                phot = phot_fnu_quantiles[1][pos]
+                
+                phot_lower=phot_fnu_quantiles[0][pos]-phot
+                phot_upper=phot-phot_fnu_quantiles[2][pos]
+
+                if phot_unit != 'AB':
+                    err = [[phot_upper], [phot_lower]]
+                else:
+                    err = [[phot_lower], [phot_upper]]
+                err = np.abs(err)
+                ax.errorbar(phot_wav[pos], phot, yerr=err, label='Posterior Phot.' if pos ==0 else '',
+                            marker='s', color='purple', zorder=9, markersize=5, linestyle='None')
+
+                
+            # Set min and max of the x axis based on observed photomery
+
+            min_x, max_x = filters.get_non_zero_lam_lims()
+
+            phots = np.array(phots)
+            max_phot = 1.01*np.nanmax(phots[phots < 35])
+
+            ax.set_xlim(min_x, max_x)
+            fnu_lam_mask = (wav > min_x) & (wav < max_x)
+            max_f = min(1.01*np.nanmax(fnu_quantiles[2][fnu_lam_mask]), max_phot)
+            min_f = 0.99*np.nanmin(fnu_quantiles[0][fnu_lam_mask])
+
+            ax.set_ylim(min_f, max_f)
+            ax.legend(fontsize=8, loc='upper left')
+            
+            # If AB mag, flip y axis
+            if phot_unit == 'AB':
+                ax.invert_yaxis()
+                ax.set_ylabel('Flux Density (AB mag)')
+            
+            # Add a row of axis underneath and plot histograms of parameters
+            for i, param in enumerate(self.simple_fitted_parameter_names):
+                ax = fig.add_subplot(gridspec[1, i])
+                ax.hist(samples[:, i], bins=50, density=False, alpha=0.9, color='purple')
+                ax.set_xlabel(param)
+                ax.set_yticks([])
+                if len(true_parameters) > 0:
+                    ax.axvline(true_parameters[i], color='black', linestyle='--', label='True')
+            
+            if plot_name is None:
+                plot_name = f'{self.name}_SED_{self._timestamp}.png'
+            fig.savefig(os.path.join(plots_dir, plot_name), dpi=200)
+
+            return fig
+
+        else:
+            return fnu_quantiles, wav, phot_fnu_draws, phot_wav
+
+
     
     def sample_posterior(self,
-                         X_test: np.ndarray,
-                         y_test: np.ndarray,
+                         X_test: np.ndarray = None,
+                         sample_method: str = 'direct',
+                         sample_kwargs: dict = {},
                          posteriors: object = None,
                          num_samples: int = 1000,
     ) -> np.ndarray:
@@ -1263,16 +1588,49 @@ class SBI_Fitter:
         if posteriors is None:
             posteriors = self.posteriors
 
+        if X_test is None:
+            if hasattr(self, '_X_test'):
+                X_test = self._X_test
+            else:
+                raise ValueError("X_test must be provided or set in the object.")
+        
+        if sample_method == 'direct':
+            sampler = DirectSampler
+        elif sample_method in ['emcee', 'mcmc']:
+            sampler = EmceeSampler
+        elif sample_method == 'pyro':
+            sampler = PyroSampler
+        elif sample_method == 'vi':
+            sampler = VISampler
+        else:
+            raise ValueError("Invalid sample method. Use 'direct', 'emcee'/'mcmc', 'pyro' or 'vi'.")
 
+        sampler = sampler(
+            posteriors,
+            **sample_kwargs
+        )
+
+        # if length 1, or only has one dimension, just return this directly
+        if len(X_test) == 1 or np.ndim(X_test) == 1:
+            return sampler.sample(nsteps=num_samples, x=X_test, progress=True)
+
+
+        test_sample = sampler.sample(nsteps=num_samples, x=X_test[0], progress=True)
+        shape = test_sample.shape
+        
         # Draw samples from the posterior
-        samples = np.zeros((len(X_test), num_samples, y_test.shape[1]))
+        samples = np.zeros((len(X_test), num_samples, shape[1]))
         for i in range(len(X_test)):
+            x = X_test[i]
+            '''
             x = torch.tensor(X_test[i], dtype=torch.float32, device=self.device)
             posterior_samples = posteriors.sample(
                 x=x, 
                 sample_shape=(num_samples,),
                 show_progress_bars=False
             ).cpu().numpy()
+            '''
+            posterior_samples = sampler.sample(nsteps=num_samples, x=x, progress=False)
             samples[i] = posterior_samples
 
         return samples
@@ -1426,6 +1784,7 @@ class SBI_Fitter:
                     seed: int = None,
                     num_samples: int = 1000,
                     sample_method: str = 'direct',
+                    sample_kwargs: dict = {},
                     plots_dir: str = f'{code_path}/models/name/plots/',
                     plot_kwargs=dict(fill=True),
                     **kwargs: dict,
@@ -1455,6 +1814,7 @@ class SBI_Fitter:
             num_samples=num_samples, sample_method=sample_method,
             labels=self.simple_fitted_parameter_names,
             out_dir=plots_dir,
+            **sample_kwargs,
         )
        
         fig = metric(
@@ -1538,13 +1898,15 @@ class SBI_Fitter:
         pass
     
     def plot_coverage(self,
-                    X: np.ndarray,
-                    y: np.ndarray,
+                    X: np.ndarray = None,
+                    y: np.ndarray = None,
                     posteriors: Union[str, int] = 'total',
                     num_samples: int = 1000,
                     sample_method: str = 'direct',
+                    sample_kwargs: dict = {},
                     plot_list = ["coverage", "histogram", "predictions", "tarp", "logprob"],
                     plots_dir: str = f'{code_path}/models/name/plots/',
+                    n_test_draws: int = 1000,
                       ) -> None:
 
         """
@@ -1557,7 +1919,15 @@ class SBI_Fitter:
             sample_method: Method to sample from the posterior. Either 'direct' or 'rejection'.
             plot_list: List of plots to create. 
             plot_dir: Directory to save the plots.
+            n_test_draws: Number of prior/posterior draws to use for the coverage plot.
         """
+
+        if X is None or y is None:
+            if hasattr(self, '_X_test') and hasattr(self, '_y_test') and self._X_test is not None and self._y_test is not None:
+                X = self._X_test
+                y = self._y_test
+            else:
+                X, y = self.generate_pairs_from_simulator(n_test_draws)
 
         plots_dir = plots_dir.replace('name', self.name)
 
@@ -1569,6 +1939,7 @@ class SBI_Fitter:
             labels=self.simple_fitted_parameter_names,
             plot_list = plot_list,
             out_dir=plots_dir,
+            **sample_kwargs,
         )
 
         fig = None
@@ -1684,27 +2055,41 @@ class SBI_Fitter:
                 # Set attributes of class again.
                 self.fitted_parameter_names = params['fitted_parameter_names']
                 self.simple_fitted_parameter_names = [i.split('/')[-1] for i in self.fitted_parameter_names]
-                self.fitted_parameter_array = params['parameter_array']
+                learning_type = params.get('learning_type', 'offline')
                 self.feature_names = params['feature_names']
-                self.feature_array = params['feature_array']
-                self.parameter_array = params['parameter_array']
+
+                if learning_type == 'offline':
+                    self.fitted_parameter_array = params['parameter_array']
+                    self.feature_array = params['feature_array']
+                    self.parameter_array = params['parameter_array']
+                    self._train_indices = params['train_indices']
+                    self._test_indices = params['test_indices']
+                    self._train_fraction = params['train_fraction']     
+                    self._X_test = self.feature_array[self._test_indices]
+                    self._y_test = self.fitted_parameter_array[self._test_indices]
+                    self._X_train = self.feature_array[self._train_indices]
+                    self._y_train = self.fitted_parameter_array[self._train_indices]
+                else:
+                    self._X_test = None
+                    self._y_test = None
+                    self._X_train = None
+                    self._y_train = None
+                    self._train_indices = None
+                    self._test_indices = None
+
+
+                    self.simulator = params['simulator']
+
+                    self._num_simulations = params['num_simulations']
+                    self._num_online_rounds = params['num_online_rounds']
+                    self._initial_training_from_grid = params['initial_training_from_grid']
 
                 self._train_args = params['train_args']
                 self._prior = params['prior']
                 
                 self._ensemble_model_types = params['ensemble_model_types']
                 self._ensemble_model_args = params['ensemble_model_args']
-                self._train_indices = params['train_indices']
-                self._test_indices = params['test_indices']
-
-                self._train_fraction = params['train_fraction']
-
-                self._X_test = self.feature_array[self._test_indices]
-                self._y_test = self.fitted_parameter_array[self._test_indices]
-                self._X_train = self.feature_array[self._train_indices]
-                self._y_train = self.fitted_parameter_array[self._train_indices]
-
-                
+          
         else:
             print(f"Warning: No parameter file found for {model_file}.")
             params = None
@@ -1731,7 +2116,7 @@ class SBI_Fitter:
         if self._prior is None:
             raise ValueError("No prior found. Please provide a prior.")
 
-        samples = self._prior.sample_n(1000)
+        samples = self._prior.sample_n(n_samples)
 
         phot = []
         for i in range(len(samples)):
@@ -1744,7 +2129,6 @@ class SBI_Fitter:
         # X, y
         return phot, samples.cpu().numpy()
         
-
 
 class FilterArithmeticParser:
     """
@@ -2291,13 +2675,38 @@ class MissingPhotometryHandler:
         }
 
 
+class ModelComparison:
+    """
+    Class for model comparison using e.g. Evidence Networks or Harmonic Evidence.
+    """
+
+    def __init__(self, 
+                model1: SBI_Fitter, 
+                model2: SBI_Fitter, 
+                data: np.ndarray,
+                ):
+        """
+        Initialize the model comparison class.
+        
+        Args:
+            model1: First model to compare.
+            model2: Second model to compare.
+            data: Data to use for comparison.
+        """
+        self.model1 = model1
+        self.model2 = model2
+        self.data = data
+        
+
+
 # TODO:
 # Fix issue with photometry range.
 # Add more validation metrics. Consider if more manual normalization is needed e.g. with StandardScaler.
-# Allow loading in pickles. 
 # Setup better naming/validation for the models.
 # Ensure we are saving everything we need to - e.g. training data, validation data, hyperparameters, results, etc.
 # Add hyperparameter optimization using Optuna.
 # Build out other plotting functions. Consider what other functions are needed.
 # Method to test model on single data point.
 # Investigate bayesian model comparison methods. 
+# Get loading from pickle working for online models.
+# Get general posterior sampling working for emcee. 

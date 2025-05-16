@@ -20,6 +20,7 @@ from synthesizer.particle.stars import sample_sfzh
 from synthesizer.conversions import fnu_to_lnu, lnu_to_fnu
 from typing import Dict, Any, List, Tuple, Union, Optional, Type
 from abc import ABC, abstractmethod
+from collections import defaultdict
 import copy
 from scipy.stats import uniform, loguniform
 from unyt import unyt_array, unyt_quantity, erg, cm, s, Angstrom, um, Hz, m, nJy, K, Msun, Myr, yr, Unit, kg, Mpc, dimensionless, Jy, uJy
@@ -567,7 +568,10 @@ def generate_sfh_basis(
 
     return np.array(sfhs), redshifts
 
-def generate_constant_R(R=300, start=1*Angstrom, end=9e5*Angstrom):
+def generate_constant_R(R=300, start=1*Angstrom, end=9e5*Angstrom, auto_start_stop=False, filterset=None, **kwargs):
+
+    if auto_start_stop and filterset is not None:
+        start, end = calculate_min_max_wav_grid(filterset, **kwargs)
     
     x=[start.to(Angstrom).value]
 
@@ -999,20 +1003,29 @@ class GalaxyBasis:
 
             self.galaxies.append(gal)
 
-        self.all_parameters = {}
-        self.all_params = {}
-        for i, gal in enumerate(self.galaxies):
-            for key, value in gal.all_params.items():
-                if key not in self.all_parameters:
-                    self.all_parameters[key] = []
-                if value not in self.all_parameters[key]:
-                    self.all_parameters[key].append(value)
-
-                else:
-                    pass
-            self.all_params[i] = gal.all_params
         
-                # Remove any paremters which are just [None]
+        # Use sets instead of lists for faster lookups and unique values
+        self.all_parameters = defaultdict(set)
+        self.all_params = {}
+        
+        # Process all galaxies in one pass
+        for i, gal in enumerate(self.galaxies):
+            # Store the galaxy parameters directly
+            self.all_params[i] = gal.all_params
+            
+            # Add unique values to sets using update operation
+            for key, value in gal.all_params.items():
+                if isinstance(value, (unyt_quantity, unyt_array)):
+                    value = value.value
+                if isinstance(value, np.ndarray):
+                    value = value.tolist()
+
+                self.all_parameters[key].add(value)
+        
+        # Convert sets to lists at the end if needed
+        self.all_parameters = {k: list(v) for k, v in self.all_parameters.items()}
+            
+        # Remove any paremters which are just [None]
         to_remove = []
         fixed_param_names = []
         varying_param_names = []
@@ -1037,6 +1050,8 @@ class GalaxyBasis:
         for key in to_remove:
             self.all_parameters.pop(key)
 
+        print('Finished creating galaxies.')
+
         return self.galaxies
 
     def process_galaxies(self, 
@@ -1059,7 +1074,6 @@ class GalaxyBasis:
 
         pipeline = Pipeline(
             emission_model=self.emission_model,
-            instruments=self.instrument,
             nthreads=n_proc,
             verbose=verbose,
         )
@@ -1088,12 +1102,12 @@ class GalaxyBasis:
         pipeline.get_observed_spectra(self.cosmo)
 
         #pipeline.get_photometry_luminosities() # Switch off so they aren't saved
-        pipeline.get_photometry_fluxes()
+        pipeline.get_photometry_fluxes(self.instrument)
 
-
-        print(f'Running pipeline at {datetime.now()} for {len(galaxies)} galaxies')
+        ngal = len(galaxies)
+        print(f'Running pipeline at {datetime.now()} for {ngal} galaxies')
         pipeline.run()
-        print(f'Finished running pipeline at {datetime.now()} for {len(galaxies)} galaxies')
+        print(f'Finished running pipeline at {datetime.now()} for {ngal} galaxies')
         if save:
             # Save the pipeline to a file
 
@@ -1377,7 +1391,7 @@ class CombinedBasis:
     def process_bases(self, 
                       n_proc: int = 6,
                       overwrite: Union[bool, List[bool]] = False,
-                      verbose=1,
+                      verbose=False,
                       **extra_analysis_functions,
                       ) -> None:
         """
@@ -2009,8 +2023,625 @@ class CombinedBasis:
         self.grid_filter_codes = grid_data['filter_codes']
         
         return grid_data
-
+    
     def create_full_grid(self,
+                      override_instrument: Union[Instrument, None] = None,
+                      save: bool = True,
+                      overload_out_name: str = '',
+                      overwrite: bool = False) -> None:
+        """
+        Create a complete grid of spectral energy distributions (SEDs) by combining galaxy bases.
+        
+        This method handles both single-base and multi-base scenarios, properly scaling according to
+        masses and weights. It constructs a grid without sampling, generating the full set of
+        combinations for all specified parameters.
+        
+        Parameters
+        ----------
+        override_instrument : Instrument, optional
+            If provided, use these filters instead of those in the bases
+        save : bool, default=True
+            Whether to save the grid to disk
+        overload_out_name : str, default=''
+            Custom filename for saving the grid
+        overwrite : bool, default=False
+            Whether to overwrite existing files
+        """
+        # Validate initialization conditions
+        if self.draw_parameter_combinations:
+            raise AssertionError("Cannot create full grid with draw_parameter_combinations set to True. Set to False to create full grid.")
+        
+        # Load base model data
+        pipeline_outputs = self.load_bases()
+        
+        # ===== VALIDATION =====
+        # Check all bases have the same number of galaxies
+        ngal = len(pipeline_outputs[self.bases[0].model_name]['properties']['mass'])
+        for i, base in enumerate(self.bases):
+            model_name = base.model_name
+            if len(pipeline_outputs[model_name]['properties']['mass']) != ngal:
+                raise ValueError(f"Base {i} has different number of galaxies to base 0. Cannot combine bases with different number of galaxies.")
+        
+        # Validate input arrays
+        for array_name, array in [('redshifts', self.redshifts), 
+                                ('total_stellar_masses', self.total_stellar_masses),
+                                ('combination_weights', self.combination_weights)]:
+            if len(array) != ngal:
+                raise ValueError(f"{array_name} length {len(array)} does not match number of galaxies {ngal}.")
+        
+        # Validate filters
+        base_filters = self.bases[0].instrument.filters.filter_codes
+        for i, base in enumerate(self.bases):
+            if base.instrument.filters.filter_codes != base_filters:
+                raise ValueError(f"Base {i} has different filters to base 0. Cannot combine bases with different filters.")
+        
+        # Determine which filters to use
+        if override_instrument is not None:
+            # Ensure all requested filters exist in the base
+            for filter_code in override_instrument.filters.filter_codes:
+                if filter_code not in base_filters:
+                    raise ValueError(f"Filter {filter_code} not found in base filters. Cannot override instrument.")
+            filter_codes = override_instrument.filters.filter_codes
+        else:
+            filter_codes = base_filters
+        
+        # Strip path info from filter codes
+        filter_codes = [code.split('/')[-1] for code in filter_codes]
+        
+        # ===== PARAMETER SETUP =====
+        # Set up parameter names
+        ignore_keys = ['redshift']
+        param_columns = ['redshift', 'log_mass']
+        
+        # Add weight fraction parameter for multiple bases
+        is_multi_base = len(self.bases) > 1
+        if is_multi_base:
+            param_columns.append('weight_fraction')
+        
+        # Set up per-base parameter tracking
+        total_property_names = {}
+        for base in self.bases:
+            model_name = base.model_name
+            # Track parameters unique to this base
+            varying_params = [f'{model_name}/{param}' for param in base.varying_param_names if param not in ignore_keys]
+            total_property_names[model_name] = varying_params
+            param_columns.extend(varying_params)
+            
+            # Rename parameter keys in the pipeline outputs
+            params = pipeline_outputs[model_name]['properties']
+            for param in base.varying_param_names:
+                if param not in ignore_keys and param in params:
+                    params[f'{model_name}/{param}'] = params[param]
+        
+        # ===== SUPPLEMENTARY PARAMETER SETUP =====
+        # Get the list of supplementary parameters from the first base
+        supp_param_keys = list(pipeline_outputs[self.bases[0].model_name]['supp_properties'].keys())
+        
+        # Validate all bases have the same supplementary parameters
+        for key in supp_param_keys:
+            for base in self.bases:
+                if key not in pipeline_outputs[base.model_name]['supp_properties']:
+                    raise ValueError(f"Supplementary parameter {key} not found in base {base.model_name}.")
+        
+        # Process supplementary parameters for each base
+        supp_params = {}
+        supp_param_units = {}
+        
+        for i, base in enumerate(self.bases):
+            model_name = base.model_name
+            supp_params[model_name] = {}
+            
+            for key in supp_param_keys:
+                value = pipeline_outputs[model_name]['supp_properties'][key]
+                
+                # Handle nested dictionary case (typically for emission models)
+                if isinstance(value, dict):
+                    emission_key = self.base_emission_model_keys[i]
+                    if emission_key not in value:
+                        raise ValueError(f"Emission model key {emission_key} not found in supplementary parameter {key}.")
+                    supp_params[model_name][key] = value[emission_key]
+                else:
+                    supp_params[model_name][key] = value
+        
+        # ===== PROCESS EACH galaxy =====
+        all_outputs = []
+        all_params = []
+        all_supp_params = []
+        
+        for pos in range(ngal):
+            redshift = self.redshifts[pos]
+            total_mass = self.total_stellar_masses[pos]
+            weights = self.combination_weights[pos]
+            
+            # Create per-base data structures to hold galaxy information at this redshift
+            base_data = []
+            
+            # For each base, extract galaxies at this redshift and calculate scaling factors
+            for i, base in enumerate(self.bases):
+                model_name = base.model_name
+                model_output = pipeline_outputs[model_name]
+                
+                masses = np.array([model_output['properties']['mass'][pos]*Msun]) 
+
+                if is_multi_base:
+                    # Multiple bases: scale by weight for this base
+                    scaling_factors = weights[i] * total_mass / masses
+                else:
+                    # Single base: scale by total mass directly
+                    scaling_factors = total_mass / masses
+                
+                # Get photometry for all filters and scale it
+                photometry = np.array([model_output['observed_photometry'][code][pos] 
+                                    for code in filter_codes], dtype=np.float32)
+                scaled_phot = photometry * scaling_factors
+                
+                # Extract parameters for this base
+                params_dict = {}
+                for param_name in total_property_names.get(model_name, []):
+                    original_param = param_name.split('/')[-1]
+                    # Check both possible parameter locations
+                    if f'{model_name}/{original_param}' in model_output['properties']:
+                        params_dict[param_name] = model_output['properties'][f'{model_name}/{original_param}'][pos]
+                    elif original_param in model_output['properties']:
+                        params_dict[param_name] = model_output['properties'][original_param][pos]
+                
+                # Process supplementary parameters
+                supp_dict = {}
+                for key, value in supp_params[model_name].items():
+                    if isinstance(value, dict):
+                        supp_dict[key] = {}
+                        for subkey, subvalue in value.items():
+                            if isinstance(subvalue, unyt_array):
+                                supp_dict[key][subkey] = subvalue[pos] * scaling_factors
+                                supp_param_units[key] = str(subvalue.units)
+                            else:
+                                supp_dict[key][subkey] = subvalue[pos]
+                                supp_param_units[key] = str(dimensionless)
+                    else:
+                        if isinstance(value, unyt_array):
+                            supp_dict[key] = value[pos] * scaling_factors
+                            supp_param_units[key] = str(value.units)
+                        else:
+                            supp_dict[key] = value[pos]
+                            supp_param_units[key] = str(dimensionless)
+                
+                # Store all relevant data for this base
+                base_data.append({
+                    'photometry': scaled_phot,
+                    'params': params_dict,
+                    'supp_params': supp_dict,
+                    'num_items': len(masses)
+                })
+            
+            # Decide how to process based on number of bases
+            if not is_multi_base:
+                # SINGLE BASE CASE - just use the data directly
+                base = base_data[0]
+                num_items = base['num_items']
+
+                # Use photometry directly
+                output_array = base['photometry']
+                
+                # Create parameter array
+                params_array = np.zeros((len(param_columns), num_items))
+                param_idx = 0
+                
+                # Fill standard parameters
+                params_array[param_idx, :] = redshift
+                param_idx += 1
+                params_array[param_idx, :] = np.log10(total_mass.value)
+                param_idx += 1
+                
+                # Fill varying parameters
+                for param_name in total_property_names.get(self.bases[0].model_name, []):
+                    if param_name in base['params']:
+                        params_array[param_idx, :] = base['params'][param_name]
+                    param_idx += 1
+                
+                # Process supplementary parameters
+                supp_array = np.zeros((len(supp_param_keys), num_items))
+                for k, param_name in enumerate(supp_param_keys):
+                    data = base['supp_params'][param_name]
+                    if isinstance(data, unyt_array):
+                        data = data.value
+                    supp_array[k, :] = data
+                    
+            else:
+                # MULTI-BASE CASE - create combinations
+                
+                # Get the number of items per base
+                items_per_base = [base['num_items'] for base in base_data]
+                
+                # Create meshgrid of indices for combination
+                mesh_indices = np.meshgrid(*[np.arange(n) for n in items_per_base], indexing='ij')
+                
+                # Reshape to get all combinations: array of shape (total_combinations, num_bases)
+                combinations = np.array([indices.flatten() for indices in mesh_indices]).T
+                num_combinations = len(combinations)
+
+                # Create output arrays
+                output_array = np.zeros((len(filter_codes), num_combinations))
+                params_array = np.zeros((len(param_columns), num_combinations))
+                supp_array = np.zeros((len(supp_param_keys), num_combinations))
+                
+                # Fill arrays
+                for i, combo_indices in enumerate(combinations):
+                    # Fill photometry - combine the weighted contributions
+                    for j, base_idx in enumerate(combo_indices):
+                        output_array[:, i] += base_data[j]['photometry'][:, base_idx]
+                    
+                    # Fill parameters
+                    param_idx = 0
+                    
+                    # Standard parameters first
+                    params_array[param_idx, i] = redshift
+                    param_idx += 1
+                    params_array[param_idx, i] = np.log10(total_mass.value)
+                    param_idx += 1
+                    if is_multi_base:
+                        params_array[param_idx, i] = weights[0]  # weight fraction
+                        param_idx += 1
+                    
+                    # Add all varying parameters from each base
+                    for j, base in enumerate(self.bases):
+                        model_name = base.model_name
+                        for param_name in total_property_names.get(model_name, []):
+                            if param_name in base_data[j]['params']:
+                                params_array[param_idx, i] = base_data[j]['params'][param_name][combo_indices[j]]
+                            param_idx += 1
+                    
+                    # Fill supplementary parameters
+                    for k, param_name in enumerate(supp_param_keys):
+                        total_value = 0
+                        for j, base_idx in enumerate(combo_indices):
+                            data = base_data[j]['supp_params'][param_name]
+                            if isinstance(data, unyt_array):
+                                total_value += data[base_idx].value
+                            elif hasattr(data, '__len__') and len(data) > base_idx:
+                                total_value += data[base_idx]
+                            else:
+                                total_value += data  # Scalar case
+                        supp_array[k, i] = total_value
+            
+            # Append results for this redshift to the global arrays
+            all_outputs.append(output_array)
+            all_params.append(params_array)
+            all_supp_params.append(supp_array)
+        
+        # ===== COMBINE RESULTS =====
+        
+        combined_outputs = np.hstack(all_outputs).T 
+        combined_params = np.hstack(all_params)
+        combined_supp_params = np.hstack(all_supp_params)
+        
+        # Convert units dict to list
+        supp_param_units_list = [supp_param_units.get(name, str(dimensionless)) for name in supp_param_keys]
+        
+        # Print summary
+        print(f"Combined outputs shape: {combined_outputs.shape}")
+        print(f"Combined parameters shape: {combined_params.shape}")
+        print(f"Combined supplementary parameters shape: {combined_supp_params.shape}")
+        print(f"Filter codes: {filter_codes}")
+        
+        # Create output dictionary
+        out = {
+            'photometry': combined_outputs,
+            'parameters': combined_params,
+            'parameter_names': param_columns,
+            'filter_codes': filter_codes,
+            'supplementary_parameters': combined_supp_params,
+            'supplementary_parameter_names': supp_param_keys,
+            'supplementary_parameter_units': supp_param_units_list,
+        }
+        
+        # Update object attributes
+        self.grid_photometry = combined_outputs
+        self.grid_parameters = combined_params
+        self.grid_parameter_names = param_columns
+        self.grid_filter_codes = filter_codes
+        self.grid_supplementary_parameters = combined_supp_params
+        self.grid_supplementary_parameter_names = supp_param_keys
+        
+        # Save results if requested
+        if save:
+            self.save_grid(out, overload_out_name=overload_out_name, overwrite=overwrite)
+            
+    def create_full_grid_old(self,
+                override_instrument: Union[Instrument, None] = None,
+                save: bool = True,
+                overload_out_name: str = '',
+                overwrite: bool = False,
+                ) -> None:
+        '''
+        This is the annoying case where we have to create a grid of SEDs for a given set of parameters,
+        but we're not sampling a grid so we have to generate the fullset of galaxies for both bases.
+        '''
+
+        assert self.draw_parameter_combinations == False, "Cannot create full grid with draw_parameter_combinations set to True. Set to False to create full grid."
+
+        pipeline_outputs = self.load_bases()
+        # Check all basis have the same number of galaxies
+        ngal = len(pipeline_outputs[self.bases[0].model_name]['properties']['mass'])
+        for i, base in enumerate(self.bases):
+            if len(pipeline_outputs[base.model_name]['properties']['mass']) != ngal:
+                raise ValueError(f"Base {i} has different number of galaxies to base 0. Cannot combine bases with different number of galaxies.")
+
+        assert len(self.redshifts) == ngal, f"Redshift array length {len(self.redshifts)} does not match number of galaxies {ngal}. Cannot combine bases with different number of galaxies."
+        assert len(self.total_stellar_masses) == ngal, f"Mass array length {len(self.total_stellar_masses)} does not match number of galaxies {ngal}. Cannot combine bases with different number of galaxies."
+        assert len(self.combination_weights) == ngal, f"Combination weights array length {len(self.combination_weights)} does not match number of galaxies {ngal}. Cannot combine bases with different number of galaxies."
+        
+        base_filters = self.bases[0].instrument.filters.filter_codes
+        for i, base in enumerate(self.bases):
+            if base.instrument.filters.filter_codes != base_filters:
+                raise ValueError(f"Base {i} has different filters to base 0. Cannot combine bases with different filters.")
+
+        if override_instrument is not None:
+            # Check all filters in override_instrument are in the base filters
+            for filter_code in override_instrument.filters.filter_codes:
+                if filter_code not in base_filters:
+                    raise ValueError(f"Filter {filter_code} not found in base filters. Cannot override instrument.")
+                
+            filter_codes = override_instrument.filters.filter_codes
+        else:
+            filter_codes = base_filters
+
+        filter_codes = [i.split('/')[-1] for i in filter_codes]
+
+        all_outputs = []
+        all_params = []
+        all_supp_params = []
+        ignore_keys = ['redshift']
+        total_property_names = {}
+        for j, base in enumerate(self.bases):
+            total_property_names[base.model_name] = [f'{base.model_name}/{i}' for i in base.varying_param_names if i not in ignore_keys]
+            params = pipeline_outputs[base.model_name]['properties']
+            rename_keys = [g for g in base.varying_param_names if g not in ignore_keys]
+            for key in list(params.keys()):
+                if key in rename_keys:
+                    # rename the key to be the base name + parameter name
+                    params[f'{base.model_name}/{key}'] = params[key]
+       
+        # Check if any of the bases have the same varying parameters
+        all_combined_param_names = []
+        for key, value in total_property_names.items():
+            all_combined_param_names.extend(value)
+        
+        # Add our standard parameters that are always included
+        param_columns = ['redshift', 'log_mass']
+
+        if len(self.bases) > 1:
+            param_columns.append('weight_fraction')
+
+        param_columns.extend(all_combined_param_names)
+
+        # set supplementary parameters
+        supp_param_keys = list(pipeline_outputs[self.bases[0].model_name]['supp_properties'].keys())
+        assert all([i in pipeline_outputs[self.bases[0].model_name]['supp_properties'] for i in supp_param_keys]), f"Not all bases have the same supplementary parameters. {supp_param_keys} not found in {pipeline_outputs[self.bases[0].model_name]['supp_properties'].keys()}"
+        supp_params = {}
+        supp_param_units = {}
+        for i, base in enumerate(self.bases):
+            supp_params[base.model_name] = {}
+            for key in supp_param_keys:
+                if isinstance(pipeline_outputs[base.model_name]['supp_properties'][key], dict):
+                    subkeys = list(pipeline_outputs[base.model_name]['supp_properties'][key].keys())
+                    # Check if the emission model key is in the subkeys
+                    if self.base_emission_model_keys[i] not in subkeys:
+                        raise ValueError(f"Emission model key {self.base_emission_model_keys[i]} not found in {subkeys}. Don't know how to deal with dictionary supplementary parameters with other keys.")
+                    value = pipeline_outputs[base.model_name]['supp_properties'][key][self.base_emission_model_keys[i]]
+                else:
+                    value = pipeline_outputs[base.model_name]['supp_properties'][key]
+                
+                supp_params[base.model_name][key] = value
+
+        for pos, redshift in enumerate(self.redshifts):
+            total_mass = self.total_stellar_masses[pos]
+            combination = self.combination_weights[pos]
+            
+            # Handle both single and multi-base cases
+            is_single_base = len(self.bases) == 1
+            
+            if is_single_base:
+                # For single base, weight is always 1.0
+                mass_weights = [total_mass]
+            else:
+                # For multiple bases, distribute according to weights
+                mass_weights = np.array(combination) * total_mass
+
+            # Process each base to get the scaled photometries and parameters
+            scaled_photometries = []
+            base_param_values = []
+            supp_params_values = []
+
+            for i, base in enumerate(self.bases):
+                outputs = pipeline_outputs[base.model_name]
+                z_base = outputs['properties']['redshift']
+                mask = z_base == redshift
+                mass = outputs['properties']['mass'][mask]
+                if len(mass) == 0:
+                    raise ValueError(f"No galaxies found for redshift {redshift} in base {base.model_name}. Check your redshift array.")
+
+                # Calculate the scaling factor for each base
+                if is_single_base:
+                    scaling_factors = mass_weights[0] / mass
+                else:
+                    scaling_factors = mass_weights[i] / mass
+
+                base_photometry = np.array([pipeline_outputs[base.model_name]['observed_photometry'][filter_code][mask] for filter_code in filter_codes], dtype=np.float32)
+
+                # Scale the photometry by the scaling factor
+                scaled_photometry = base_photometry * scaling_factors
+                scaled_photometries.append(scaled_photometry)
+
+                # Get the varying parameters for this base
+                base_params = {}
+                for param_name in total_property_names[base.model_name]:
+                    # Extract the original parameter name without the base prefix
+                    orig_param = param_name.split('/')[-1]
+                    if f'{base.model_name}/{orig_param}' in outputs['properties']:
+                        base_params[param_name] = outputs['properties'][f'{base.model_name}/{orig_param}'][mask]
+                    elif orig_param in outputs['properties']:
+                        base_params[param_name] = outputs['properties'][orig_param][mask]
+                
+                base_param_values.append(base_params)
+                
+                # Get the supplementary parameters for this base
+                # For any supp params that are a flux or luminosity, scale them by the scaling factor
+                scaled_supp_params = {}
+                for key, value in supp_params[base.model_name].items():
+                    if isinstance(value, dict):
+                        scaled_supp_params[key] = {}
+                        for subkey, subvalue in value.items():
+                            if isinstance(subvalue, unyt_array):
+                                scaled_supp_params[key][subkey] = subvalue[mask] * scaling_factors
+                            else:
+                                scaled_supp_params[key][subkey] = subvalue[mask]
+                    else:
+                        if isinstance(value, unyt_array):
+                            scaled_supp_params[key] = value[mask] * scaling_factors
+                        else:
+                            scaled_supp_params[key] = value[mask]
+
+                supp_params_values.append(scaled_supp_params)
+
+            # For single base, we don't need to combine - just use all the data points from that base
+            if is_single_base:
+                num_items = scaled_photometries[0].shape[1]
+                output_array = scaled_photometries[0]
+                params_array = np.zeros((len(param_columns), num_items))
+                supp_array = np.zeros((len(supp_param_keys), num_items))
+                
+                # Fill parameter values
+                param_idx = 0
+                
+                # Add standard parameters first
+                params_array[param_idx, :] = redshift
+                param_idx += 1
+                
+                params_array[param_idx, :] = np.log10(total_mass.value)
+                param_idx += 1
+                
+                # Add all varying parameters from the base
+                base_idx = 0
+                for param_name in total_property_names[self.bases[0].model_name]:
+                    if param_name in base_param_values[0]:
+                        params_array[param_idx, :] = base_param_values[0][param_name]
+                    param_idx += 1
+
+                # Add supplementary parameters
+                for k, param_name in enumerate(supp_param_keys):
+                    data = supp_params_values[0][param_name]
+                    if isinstance(data, unyt_array):
+                        supp_param_units[param_name] = str(data.units)
+                        data = data.value
+                    else:
+                        supp_param_units[param_name] = str(dimensionless)
+                    
+                    supp_array[k, :] = data
+                
+            else:
+                # For multiple bases, we need to create combinations
+                # Calculate the number of items per base (not the total combinations)
+                items_per_base = [photometry.shape[1] for photometry in scaled_photometries]
+                
+                # Create individual index arrays for each base
+                indices_per_base = [np.arange(items) for items in items_per_base]
+                
+                # Create the combinations grid
+                combinations = np.meshgrid(*indices_per_base, indexing='ij')
+                # Reshape to get all combinations
+                combinations = np.array(combinations).reshape(len(self.bases), -1).T
+                
+                # Now combinations has shape (total_combinations, num_bases)
+                num_combinations = len(combinations)
+                
+                # Initialize output arrays
+                output_array = np.zeros((scaled_photometries[0].shape[0], num_combinations))
+                params_array = np.zeros((len(param_columns), num_combinations))
+                supp_array = np.zeros((len(supp_param_keys), num_combinations))
+                
+                # Fill the arrays
+                for i, combo_indices in enumerate(combinations):
+                    # For photometry, combine the weighted contributions from each base
+                    current_total = np.zeros_like(scaled_photometries[0][:, 0])
+                    for j, base_idx in enumerate(combo_indices):
+                        current_total += scaled_photometries[j][:, base_idx]
+                    
+                    output_array[:, i] = current_total
+                    
+                    # Fill parameter values
+                    param_idx = 0
+                    
+                    # Add standard parameters
+                    params_array[param_idx, i] = redshift
+                    param_idx += 1
+                    
+                    params_array[param_idx, i] = np.log10(total_mass.value)
+                    param_idx += 1
+                    
+                    if len(self.bases) > 1:
+                        params_array[param_idx, i] = combination[0]  # weight fraction
+                        param_idx += 1
+                    
+                    # Add all varying parameters from each base
+                    for j, base in enumerate(self.bases):
+                        for param_name in total_property_names[base.model_name]:
+                            if param_name in base_param_values[j]:
+                                params_array[param_idx, i] = base_param_values[j][param_name][combo_indices[j]]
+                            param_idx += 1
+                    
+                    # Calculate supplementary parameters
+                    for k, param_name in enumerate(supp_param_keys):
+                        current_supp_value = 0
+                        for j, base_idx in enumerate(combo_indices):
+                            data = supp_params_values[j][param_name][base_idx]
+                            if isinstance(data, unyt_array):
+                                if j == 0:
+                                    supp_param_units[param_name] = str(data.units)
+                                current_supp_value += data.value
+                            else:
+                                if j == 0:
+                                    supp_param_units[param_name] = str(dimensionless)
+                                current_supp_value += data
+                        
+                        supp_array[k, i] = current_supp_value
+
+            all_outputs.append(output_array)
+            all_params.append(params_array)
+            all_supp_params.append(supp_array)
+
+        supp_param_units = [i for i in supp_param_units.values()]
+        # Combine all outputs and parameters
+        combined_outputs = np.hstack(all_outputs)
+        combined_params = np.hstack(all_params)
+        combined_supp_params = np.hstack(all_supp_params)
+        
+        print(f"Combined outputs shape: {combined_outputs.shape}")
+        print(f"Combined parameters shape: {combined_params.shape}")
+        print(f"Combined supplementary parameters shape: {combined_supp_params.shape}")
+        print(f"Filter codes: {filter_codes}")
+
+        out = {
+            'photometry': combined_outputs,
+            'parameters': combined_params,
+            'parameter_names': param_columns,
+            'filter_codes': filter_codes,
+            'supplementary_parameters': combined_supp_params,
+            'supplementary_parameter_names': supp_param_keys,
+            'supplementary_parameter_units': supp_param_units,
+        }
+
+        self.grid_photometry = combined_outputs
+        self.grid_parameters = combined_params
+        self.grid_parameter_names = param_columns
+        self.grid_filter_codes = filter_codes
+        self.grid_supplementary_parameters = combined_supp_params
+        self.grid_supplementary_parameter_names = supp_param_keys
+
+        if save:
+            self.save_grid(out, overload_out_name=overload_out_name, overwrite=overwrite)
+
+
+    def create_full_grid_old2(self,
                 override_instrument: Union[Instrument, None] = None,
                 save: bool = True,
                 overload_out_name: str = '',
@@ -2125,7 +2756,7 @@ class CombinedBasis:
                 else:
                     scaling_factors = mass_weights[i] / mass
 
-                print(f"Scaling factors: {scaling_factors}")
+                #print(f"Scaling factors: {scaling_factors}")
 
                 base_photometry = np.array([pipeline_outputs[base.model_name]['observed_photometry'][filter_code][mask] for filter_code in filter_codes], dtype=np.float32)
 
@@ -2167,8 +2798,7 @@ class CombinedBasis:
 
             # Calculate the total number of combinations
             dimension = np.prod([i.shape[-1] for i in scaled_photometries])
-            print(f"Dimension: {dimension}")
-
+            
             output_array = np.zeros((scaled_photometries[0].shape[0], dimension))
             params_array = np.zeros((len(param_columns), dimension))
             supp_array = np.zeros((len(supp_param_keys), dimension))
@@ -2218,7 +2848,6 @@ class CombinedBasis:
                         
                         supp_array[k, i] += data
 
-
             all_outputs.append(output_array)
             all_params.append(params_array)
             all_supp_params.append(supp_array)
@@ -2228,7 +2857,6 @@ class CombinedBasis:
         combined_outputs = np.hstack(all_outputs)
         combined_params = np.hstack(all_params)
         combined_supp_params = np.hstack(all_supp_params)
-
         print(f"Combined outputs shape: {combined_outputs.shape}")
         print(f"Combined parameters shape: {combined_params.shape}")
         print(f"Combined supplementary parameters shape: {combined_supp_params.shape}")
@@ -2282,6 +2910,7 @@ class GalaxySimulator(object):
                 extra_functions: List[callable] = None,
                 normalize_method: str = None,
                 output_type: str = 'photo_fnu',
+                set_self=False,
                 depths: Union[np.ndarray, unyt_array] = None, 
                 depth_sigma: int = 5,
                 ) -> None:
@@ -2327,7 +2956,7 @@ class GalaxySimulator(object):
             Normalization method to use. If None, no normalization is applied. Only works on photo_fnu currently.
             Currently can be either the name of a filter, or a callable function with the same rules as extra_functions.
         output_type : str
-            Output type to use. Default is 'photo_fnu'. Can be 'photo_fnu', 'photo_lnu', 'fnu', 'lnu'.
+            Output type to use. Default is 'photo_fnu'. Can be 'photo_fnu', 'photo_lnu', 'fnu', 'lnu', or a list of any of these.     
         depths : Union[np.ndarray, unyt_array] = None
             Depths to use for the photometry. If None, no depths are applied. Default is None.
         depth_sigma : int
@@ -2358,7 +2987,9 @@ class GalaxySimulator(object):
         self.depths = depths
         self.depth_sigma = depth_sigma
         
-        assert output_type in ['photo_fnu', 'photo_lnu', 'fnu', 'lnu'], f"Output type {output_type} not recognised. Must be one of ['photo_fnu', 'photo_lnu', 'fnu', 'lnu']"
+        assert isinstance(output_type, list) or output_type in ['photo_fnu', 'photo_lnu', 'fnu', 'lnu'], f"Output type {output_type} not recognised. Must be one of ['photo_fnu', 'photo_lnu', 'fnu', 'lnu']"
+        if not isinstance(output_type, list):
+            output_type = [output_type]
         self.output_type = output_type
 
         self.sfh_model = sfh_model
@@ -2396,6 +3027,8 @@ class GalaxySimulator(object):
         params = copy.deepcopy(params)
 
         if not isinstance(params, dict):
+            if self.param_order is None:
+                raise ValueError('simulate() input requires a dictionary unless param_order is set. Cannot create photometry.')
             assert len(params) == len(self.param_order), f"Parameter array length {len(params)} does not match parameter order length {len(self.param_order)}. Cannot create photometry."
             params = {i:j for i, j in zip(self.param_order, params)}
 
@@ -2449,7 +3082,6 @@ class GalaxySimulator(object):
             for key in found_params:
                 stellar_keys[key] = params[key]
 
-
         stars = Stars(
             log10ages=self.grid.log10ages,
             metallicities=self.grid.metallicity,
@@ -2472,28 +3104,67 @@ class GalaxySimulator(object):
 
         # Get the spectra for the galaxy
         spec = galaxy.stars.get_spectra(self.emission_model)
+        outputs = {}
 
-        if self.output_type == 'lnu':
+        if 'sfh' in self.output_type:
+
+            stars_sfh = stars.get_sfh()
+            stars_sfh = stars_sfh / np.diff(10**(self.grid.log10age), prepend=0) / yr
+            time = 10**(self.grid.log10age) * yr
+            time = time.to('Myr')
+
+            # Check if any NANS in SFH. If there are, print sfh
+            #if np.isnan(sfr).any():
+            #    print(f"SFH has NANS: {sfh.parameters}")
+                
+            outputs['sfh'] = stars_sfh
+            outputs['sfh_time'] = time
+            outputs['redshift'] = galaxy.redshift
+            # Put an absolute SFH time here as well given self.cosmo and redshift
+            outputs['sfh_time_abs'] = self.cosmo.age(galaxy.redshift).to('Myr').value * Myr
+            outputs['sfh_time_abs'] = outputs['sfh_time_abs'] - time
+
+        if 'lnu' in self.output_type: 
             fluxes = spec.lnu
+            outputs['lnu'] = fluxes
 
-        elif self.output_type == 'photo_lnu':
+        if 'photo_lnu' in self.output_type:
             fluxes = galaxy.stars.spectra[self.emission_model_key].get_photo_lnu(self.instrument.filters)
             fluxes = fluxes.photo_lnu
+            outputs['photo_lnu'] = fluxes
 
-        elif self.output_type in ['fnu', 'photo_fnu']:
+        if 'fnu' in self.output_type or 'photo_fnu' in self.output_type:
             # Apply IGM and distance
             galaxy.get_observed_spectra(self.cosmo)
 
-            if self.output_type == 'photo_fnu':
+            if 'photo_fnu' in self.output_type:
                 fluxes = galaxy.stars.spectra[self.emission_model_key].get_photo_fnu(self.instrument.filters)
-                fluxes = fluxes.photo_fnu
-            else:
+                outputs['photo_fnu'] =  fluxes.photo_fnu
+                outputs['photo_wav'] = fluxes.filters.pivot_lams
+
                 fluxes = galaxy.stars.spectra[self.emission_model_key].fnu
+                outputs['fnu'] = fluxes
+                outputs['fnu_wav'] = galaxy.stars.spectra[self.emission_model_key].lam * (1+galaxy.redshift)
 
         if self.out_flux_unit == 'ABmag':
-            fluxes = -2.5 * np.log10(fluxes.to(Jy).value) + 8.9
+            convert = lambda f: -2.5 * np.log10(f.to(Jy).value) + 8.9
+            if 'photo_fnu' in self.output_type:
+                fluxes = convert(outputs['photo_fnu'])
+                outputs['photo_fnu'] = fluxes
+            if 'fnu' in self.output_type:
+                fluxes = convert(outputs['fnu'])
+                outputs['fnu'] = fluxes
         else:
-            fluxes = fluxes.to(self.out_flux_unit).value
+            if 'photo_fnu' in self.output_type:
+                outputs['photo_fnu'] = fluxes.to(self.out_flux_unit).value
+            if 'fnu' in self.output_type:
+                outputs['fnu'] = fluxes.to(self.out_flux_unit).value
+
+        if len(self.output_type) == 1:
+            fluxes = outputs[self.output_type[0]]
+        else:
+            outputs['filters'] = self.instrument.filters
+            return outputs
 
         def inspect_func(func, locals):
             parameters = inspect.signature(func).parameters
@@ -2630,8 +3301,21 @@ class GalaxySimulator(object):
     def __str__(self):
         return f"PhotometrySimulator({self.sfh_model}, {self.zdist_model}, {self.grid}, {self.instrument}, {self.emission_model}, {self.emission_model_key})"
 
-    
 
+def calculate_min_max_wav_grid(filterset, max_redshift, min_redshift=0):
+    """
+    Calculate the minimum and maximum wavelengths for a given redshift.
+    """
+    # Get the filter limits
+    filter_lims = filterset.get_non_zero_lam_lims()
+    
+    # Calculate the maximum wavelength for a given redshift
+    max_wav = filter_lims[1] / (1 + min_redshift)
+    
+    # Calculate the minimum wavelength for a given redshift
+    min_wav = filter_lims[0] / (1 + max_redshift)
+    
+    return min_wav, max_wav
 
 
 
