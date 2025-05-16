@@ -55,9 +55,6 @@ filter_codes = [
 ]
 instrument = 'JWST'
 
-# Consistent wavelength grid for both SPS grids and filters
-new_wav = generate_constant_R(R=300)
-
 path = f'{os.path.dirname(__file__)}/filters/{instrument}.hdf5'
 
 if 'cosma' in path:
@@ -67,9 +64,17 @@ else:
 
 
 if os.path.exists(path):
-    filterset = FilterCollection(path=path, new_lam=new_wav)
+    filterset = FilterCollection(path=path)
 else:
-    filterset = FilterCollection(filter_codes=filter_codes, new_lam=new_wav)
+    filterset = FilterCollection(filter_codes=filter_codes)
+
+
+
+# Consistent wavelength grid for both SPS grids and filters
+new_wav = generate_constant_R(R=300, auto_start_stop=True, 
+                            filterset=filterset, max_redshift=15)
+
+filterset.resample_filters(new_lam=new_wav)
 
 instrument = Instrument(instrument, filters=filterset)
 
@@ -90,9 +95,9 @@ except:
 
 # params
 
-Nmodels = 50_000
+Nmodels = 100_000
 redshift = (5, 12)
-masses = (5, 11)
+masses = (6, 11.5)
 max_redshift = 20 # gives maximum age of SFH at a given redshift
 cosmo = Planck18 # cosmology to use for age calculations
 
@@ -100,12 +105,12 @@ cosmo = Planck18 # cosmology to use for age calculations
 # Pop II
 
 tau_v = (0.0, 2.0)
-log_zmet = (-3, 0.3)
+log_zmet = (-3, -1.39) # max of grid (e.g. 0.04)
 
 # SFH
 sfh_type = SFH.LogNormal
 tau = (0.05, 2.5)
-peak_age = (-1, 1) # normalized to maximum age of the universe at that redshift
+peak_age = (0, 1) # normalized to maximum age of the universe at that redshift
 sfh_param_units = [None, None]
 
 # ---------------------------------------------------------------
@@ -174,7 +179,7 @@ galaxy_params={
 sfh_name = str(sfh_type).split('.')[-1].split("'")[0]
 
 popII_basis = GalaxyBasis(
-    model_name=f'Pop_II_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_simple',
+    model_name=f'sps_Pop_II_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_BPASS_Chab_v1',
     redshifts=redshifts,
     grid=grid,
     emission_model=emission_model,
@@ -199,13 +204,13 @@ combined_basis = CombinedBasis(
     base_emission_model_keys=['total'],
     combination_weights=None,
     redshifts=redshifts,
-    out_name='BPASS_Chab_LogNorm_5_z_12_phot_grid2',
+    out_name=f'grid_Pop_II_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_BPASS_Chab_v1',
     out_dir=out_dir,
     draw_parameter_combinations=False, # Since we have already drawn the parameters, we don't need to combine them again.
 )
 
 # Passing in extra analysis function to pipeline to calculate mUV. Any funciton could be passed in. 
-combined_basis.process_bases(overwrite=False, mUV=(calculate_muv, cosmo), n_proc=n_proc)
+combined_basis.process_bases(overwrite=False, mUV=(calculate_muv, cosmo), n_proc=n_proc, verbose=False)
 
 # Create grid - kinda overkill for a single case, but it does work.
 combined_basis.create_grid(overwrite=True)
