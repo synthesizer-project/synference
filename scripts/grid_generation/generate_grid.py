@@ -1,33 +1,16 @@
 # ignore warnings for readability
 import warnings
 import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib.colors as mcolors
-import synthesizer
-from synthesizer.parametric import Galaxy
-from synthesizer.emission_models.attenuation import Inoue14
-from synthesizer.emission_models import PacmanEmission, TotalEmission, EmissionModel, IntrinsicEmission, StellarEmissionModel, STELLAR_MODELS, IncidentEmission
+from synthesizer.emission_models import TotalEmission, EmissionModel, IncidentEmission
 from synthesizer.emission_models.attenuation import PowerLaw
-from synthesizer.emissions import plot_spectra
-from synthesizer.emission_models.dust.emission import Greybody
 from synthesizer.grid import Grid
-from synthesizer.parametric import SFH, Stars, ZDist
-from synthesizer import check_openmp
+from synthesizer.parametric import SFH, ZDist
 from synthesizer.instruments import Instrument, FilterCollection
 
-from typing import Dict, Any, List, Tuple, Union, Optional, Type
-from abc import ABC, abstractmethod
-import copy
-from scipy.stats import uniform, loguniform
-from astropy.io import ascii
-from unyt import unyt_array, unyt_quantity, erg, cm, s, Angstrom, um, Hz, m, nJy, K, Msun, Myr, yr, Unit, kg
-from unyt.equivalencies import SpectralEquivalence
-from astropy.cosmology import Planck18, Cosmology, z_at_value
-import astropy.units as u
-from matplotlib.ticker import ScalarFormatter, FuncFormatter
-from tqdm import tqdm
-from ltu_ili_testing import (generate_emission_models, generate_sfh_basis, 
-                            generate_metallicity_distribution, sed_grid_generator, 
+from scipy.stats import loguniform
+from unyt import unyt_array, Msun, Myr
+from astropy.cosmology import Planck18
+from ltu_ili_testing import (generate_sfh_basis, 
                             generate_constant_R, GalaxyBasis, CombinedBasis,
                             calculate_muv)
 

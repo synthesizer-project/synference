@@ -465,7 +465,7 @@ def generate_sfh_basis(
                         row_params[k] = row_params[k] * sfh_param_units[k]
 
                 # Create parameter dictionary for SFH constructor
-                sfh_params = {sfh_param_names[l]: row_params[l] for l in range(len(sfh_param_names))}
+                sfh_params = {sfh_param_names[sf]: row_params[sf] for sf in range(len(sfh_param_names))}
 
                 if "sfh_timescale" in sfh_param_names:
                     sfh_params["max_age"] = sfh_params["min_age"] + sfh_params["sfh_timescale"]
@@ -507,7 +507,7 @@ def generate_sfh_basis(
 
             # Create parameter dictionary for SFH constructor
 
-            sfh_params = {param_names_i[l]: row_params[l] for l in range(len(param_names_i))}
+            sfh_params = {param_names_i[sf]: row_params[sf] for sf in range(len(param_names_i))}
 
             # remove _norm from parameter names
             if "sfh_timescale" in sfh_param_names:
@@ -950,14 +950,10 @@ class GalaxyBasis:
 
         # generate all combinations of the varying parameters
         if len(varying_param_values) == 0:
-            param_list = [{}]
             fixed_params = self.galaxy_params
             varying_param_names = []
 
         else:
-            column_names = [
-                i for i, j in zip(self.galaxy_params.keys(), varying_param_values) if type(j) in [list, np.ndarray]
-            ]
             fixed_params = {
                 key: value for key, value in self.galaxy_params.items() if type(value) not in [list, np.ndarray]
             }
@@ -1445,7 +1441,7 @@ class CombinedBasis:
 
             print(f"Created {len(galaxies)} galaxies for base {base.model_name}")
             # Process the galaxies
-            pipeline = base.process_galaxies(
+            base.process_galaxies(
                 galaxies,
                 f"{base.model_name}.hdf5",
                 out_dir=self.out_dir,
@@ -2429,7 +2425,7 @@ class CombinedBasis:
         but we're not sampling a grid so we have to generate the fullset of galaxies for both bases.
         """
 
-        assert self.draw_parameter_combinations == False, (
+        assert self.draw_parameter_combinations, (
             "Cannot create full grid with draw_parameter_combinations set to True. Set to False to create full grid."
         )
 
@@ -2752,7 +2748,7 @@ class CombinedBasis:
 
         """
 
-        assert self.draw_parameter_combinations == False, (
+        assert self.draw_parameter_combinations, (
             "Cannot create full grid with draw_parameter_combinations set to True. Set to False to create full grid."
         )
 
@@ -3283,7 +3279,8 @@ class GalaxySimulator(object):
                 outputs["fnu_wav"] = galaxy.stars.spectra[self.emission_model_key].lam * (1 + galaxy.redshift)
 
         if self.out_flux_unit == "ABmag":
-            convert = lambda f: -2.5 * np.log10(f.to(Jy).value) + 8.9
+            def convert(f):
+                return -2.5 * np.log10(f.to(Jy).value) + 8.9
             if "photo_fnu" in self.output_type:
                 fluxes = convert(outputs["photo_fnu"])
                 outputs["photo_fnu"] = fluxes
@@ -3400,7 +3397,7 @@ class GalaxySimulator(object):
 
         m = fluxes.shape
 
-        if type(fluxes) == unyt_array:
+        if isinstance(fluxes, unyt_array):
             assert fluxes.units == flux_units, (
                 f"Fluxes units {fluxes.units} do not match flux units {flux_units}. Cannot scatter photometry."
             )
