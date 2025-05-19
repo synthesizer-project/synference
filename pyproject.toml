@@ -268,3 +268,5 @@ torchvision = { path = "../rocm_sdk_builder/src_projects/pytorch_vision/dist/tor
 triton = { path = "../rocm_sdk_builder/src_projects/triton/python/dist/triton-3.0.0+git0fea1b65-cp311-cp311-linux_x86_64.whl" }
 tarp = { git = "https://github.com/maho3/tarp.git" }
 
+[tool.ruff]
+line-length = 120
