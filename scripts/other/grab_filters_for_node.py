@@ -1,4 +1,4 @@
-from synthesizer.instruments import Instrument, FilterCollection
+from synthesizer.instruments import FilterCollection
 from ltu_ili_testing import generate_constant_R
 
 filter_codes = [

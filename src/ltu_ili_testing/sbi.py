@@ -1,25 +1,19 @@
 from .grid import CombinedBasis
 import os
-import os, sys, time, signal, warnings
+import time
 import numpy as np
-from numpy.random import normal, uniform
 from scipy import stats
-from scipy.interpolate import interp1d
-from scipy.spatial.distance import euclidean
 import torch
 import glob
 import torch.nn as nn
-import torch.nn.functional as F
 import h5py
-import numpy as np
-from unyt import unyt_array, nJy, Msun
+from unyt import unyt_array, nJy
 import re
 import operator
 from tqdm import tqdm
-from typing import List, Dict, Union, Optional, Tuple
+from typing import List, Dict, Union
 import optuna
 from optuna.trial import TrialState
-import sys
 from io import StringIO
 from contextlib import redirect_stdout
 import matplotlib.pyplot as plt
@@ -28,15 +22,12 @@ import json
 from datetime import datetime
 from astropy.visualization import hist
 
-import torch
-import torch.nn as nn
 
 import ili
 from ili.dataloaders import NumpyLoader, SBISimulator
-from ili.inference import InferenceRunner, SBIRunnerSequential
-from ili.validation.metrics import PlotSinglePosterior, PosteriorCoverage, PosteriorSamples
+from ili.inference import InferenceRunner
+from ili.validation.metrics import PlotSinglePosterior, PosteriorCoverage
 from ili.validation.runner import ValidationRunner
-from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from ili.utils.samplers import EmceeSampler, PyroSampler, DirectSampler, VISampler
 
@@ -51,7 +42,7 @@ if verbose:
         print("Pytorch version: " + torch.__version__)
         print("ROCM HIP version: " + torch.version.hip)
         print("CUDA version: " + torch.version.cuda)
-    except:
+    except Exception:
         pass
 torch.cuda.set_device(f"{device}:0")
 
@@ -942,10 +933,6 @@ class SBI_Fitter:
         for key, value in trial.params.items():
             print("    {}: {}".format(key, value))
 
-        output = {
-            "study": study,
-            "best_trial": trial,
-        }
 
         # Save the study to a file
         study_path = os.path.join(out_dir, f"{study_name}_optuna_study_{self._timestamp}.pkl")
@@ -971,7 +958,7 @@ class SBI_Fitter:
         parameters = {}
 
         for key, value in suggested_hyperparameters.items():
-            if type(value) == list:
+            if isinstance(value, list):
                 assert len(value) == 2 or isinstance(value[0], str), (
                     f"Value for {key} should be a list of length 2 or list of strings. Got {value}"
                 )
@@ -1211,7 +1198,7 @@ class SBI_Fitter:
 
                 else:
                     print(
-                        f"Drawing random photometry from prior to conditon on. Results probably won't generalize well."
+                        "Drawing random photometry from prior to conditon on. Results probably won't generalize well."
                     )
                     samples = prior.sample_n(1)
                     phot = []
@@ -1233,12 +1220,12 @@ class SBI_Fitter:
 
             loader = SBISimulator(
                 in_dir=f"{out_dir}/online/",
-                xobs_file=f"xobs.npy",
-                thetafid_file=f"thetafid.npy",
+                xobs_file="xobs.npy",
+                thetafid_file="thetafid.npy",
                 num_simulations=num_simulations,
                 save_simulated=True,
-                x_file=f"x.npy",  # if initial_training_from_grid else None,
-                theta_file=f"theta.npy",  # , if initial_training_from_grid else None,
+                x_file="x.npy",  # if initial_training_from_grid else None,
+                theta_file="theta.npy",  # , if initial_training_from_grid else None,
                 simulator=simulator,
             )
 
@@ -2606,7 +2593,7 @@ class MissingPhotometryHandler:
         ave_theta = []
 
         y_obs = np.copy(obs["mags_sbi"])
-        sig_obs = np.copy(obs["mags_unc_sbi"])
+        #sig_obs = np.copy(obs["mags_unc_sbi"])
         invalid_mask = np.copy(obs["missing_mask"])
 
         # Full observed vector (fluxes + uncertainties)
@@ -2614,7 +2601,7 @@ class MissingPhotometryHandler:
         observed = y_obs
 
         # Indices for valid and invalid bands
-        valid_idx = np.where(~invalid_mask)[0]
+        #valid_idx = np.where(~invalid_mask)[0]
         not_valid_idx = np.where(invalid_mask)[0]
 
         st = time.time()
@@ -2623,7 +2610,7 @@ class MissingPhotometryHandler:
         kdes, use_res = self.gauss_approx_missingband(obs)
 
         nbands = len(y_obs)  # Total number of bands
-        not_valid_idx_unc = not_valid_idx + nbands
+        #not_valid_idx_unc = not_valid_idx + nbands
 
         all_x = []
         cnt = 0
@@ -2688,7 +2675,7 @@ class MissingPhotometryHandler:
         # Process results
         all_x = np.array(all_x)
         all_x_flux = all_x[:, :nbands]
-        all_x_unc = all_x[:, nbands:]
+        #all_x_unc = all_x[:, nbands:]
 
         # Calculate median fluxes and uncertainties
         """y_guess = np.concatenate([
