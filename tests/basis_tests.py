@@ -2,9 +2,8 @@ import os
 import numpy as np
 import pytest
 from unittest.mock import patch, MagicMock
-import h5py
 
-from unyt import unyt_array, unyt_quantity, Msun, Mpc, Myr
+from unyt import unyt_array, Msun, Myr
 from synthesizer.parametric import SFH, ZDist, Stars, Galaxy
 from synthesizer.instruments import Instrument, FilterCollection
 from synthesizer.emission_models import EmissionModel, TotalEmission, IncidentEmission

@@ -2,12 +2,12 @@ from ltu_ili_testing import GalaxySimulator, SBI_Fitter, calculate_muv
 
 import numpy as np
 import torch
-from synthesizer.emission_models import PacmanEmission, TotalEmission, EmissionModel, IntrinsicEmission
-from synthesizer.emission_models.attenuation import PowerLaw, Calzetti2000
+from synthesizer.emission_models import TotalEmission
+from synthesizer.emission_models.attenuation import Calzetti2000
 from synthesizer.grid import Grid
 from synthesizer.parametric import SFH, ZDist
-from synthesizer.instruments import Instrument, FilterCollection, Filter
-from unyt import Myr, erg, Hz, s
+from synthesizer.instruments import Instrument, FilterCollection
+from unyt import Myr
 
 device = "cuda" 
 
@@ -74,7 +74,7 @@ def run_simulator(params, return_type='tensor'):
         params = {i: params[i] for i in inputs}
     elif isinstance(params, (list, tuple, np.ndarray)):
         params = {inputs[i]: params[i] for i in range(len(inputs))}
-    input_dict = {i: params[i] for i in inputs}
+
     phot = simulator(params)
     if return_type == 'tensor':
         return torch.tensor(phot[np.newaxis, :], dtype=torch.float32).to(device)
