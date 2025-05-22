@@ -382,6 +382,7 @@ class SBI_Fitter:
         override_phot_grid_units: str = None,
         norm_mag_limit: float = 50.0,
         remove_nan_inf: bool = True,
+        parameters_to_remove: list = [],
     ) -> np.ndarray:
         """
         Create a feature array from the raw photometry grid.
@@ -726,7 +727,7 @@ class SBI_Fitter:
                 )
             print("---------------------------------------------")
 
-        self.update_parameter_array(delete_rows=delete_rows, n_scatters=scatter_fluxes)
+        self.update_parameter_array(delete_rows=delete_rows, n_scatters=scatter_fluxes, parameters_to_remove=parameters_to_remove)
 
         return feature_array, feature_names
 
@@ -1036,6 +1037,7 @@ class SBI_Fitter:
         initial_training_from_grid: bool = False,
         override_prior_ranges: dict = {},
         online_training_xobs: np.ndarray = None,
+        load_existing_model: bool = True,
     ) -> tuple:
         """
         Run a single SBI training instance.
@@ -1079,6 +1081,7 @@ class SBI_Fitter:
                 learning_type is 'online'. Reduces number of calls to the simulator. WARNING! BROKEN.
             override_prior_ranges: Dictionary of prior ranges to override the default ranges.
             online_training_xobs: A single input observation to condition on for online training.
+            load_existing_model: Whether to load an existing model if it exists.
         Returns:
             A tuple containing the posterior distribution and training statistics.
         """
@@ -1089,11 +1092,20 @@ class SBI_Fitter:
         if name_append == "timestamp":
             name_append = f"_{self._timestamp}"
 
+        print(f"{out_dir}/{self.name}{name_append}_params.pkl")
         if os.path.exists(f"{out_dir}/{self.name}{name_append}_params.pkl") and save_model:
-            print(
-                "Model with same name already exists. Please change the name of this model or delete the existing one."
-            )
-            return None
+            if load_existing_model:
+                print(f"Loading existing model from {out_dir}/{self.name}{name_append}_params.pkl")
+                posterior, stats, params = self.load_model_from_pkl(
+                    f"{out_dir}/{self.name}{name_append}_posterior.pkl",
+                    set_self=set_self,
+                )
+                return posterior, stats
+            else:
+                print(
+                    "Model with same name already exists. Please change the name of this model or delete the existing one."
+                )
+                return None
 
         if simulator is not None:
             self.has_simulator = True
@@ -1357,11 +1369,11 @@ class SBI_Fitter:
                 param_dict["online_training_xobs"] = online_training_xobs
 
             if learning_type == "offline":
-                param_dict["train_fraction"]: train_test_fraction
-                param_dict["test_indices"]: test_indices
-                param_dict["train_indices"]: train_indices
-                param_dict["feature_array"]: self.feature_array
-                param_dict["parameter_array"]: self.fitted_parameter_array
+                param_dict["train_fraction"] = train_test_fraction
+                param_dict["test_indices"] = test_indices
+                param_dict["train_indices"] = train_indices
+                param_dict["feature_array"] = self.feature_array
+                param_dict["parameter_array"] =  self.fitted_parameter_array
 
             dump(param_dict, f"{out_dir}/{self.name}{name_append}_params.pkl", compress=3)
 
@@ -1372,9 +1384,15 @@ class SBI_Fitter:
 
         if plot:
             if learning_type == "offline":
+                # Deal with the sampling method.
+                if engine in ['NLE']:
+                    sample_method = 'emcee'
+                else:
+                    sample_method = 'direct'
                 self.plot_diagnostics(
-                    X_train=X_scaled, y_train=y_scaled, X_test=X_test, y_test=y_test, plots_dir=f"{out_dir}/plots/"
-                )
+                    X_train=X_scaled, y_train=y_scaled, X_test=X_test, y_test=y_test,
+                    plots_dir=f"{out_dir}/plots/", stats=stats,
+                    sample_method=sample_method, posteriors=posteriors)
             else:
                 print("No plots for online learning yet.")
 
@@ -1796,7 +1814,10 @@ class SBI_Fitter:
         y_train: np.ndarray = None,
         X_test: np.ndarray = None,
         y_test: np.ndarray = None,
+        stats: list = None,
         plots_dir: str = f"{code_path}/models/name/plots/",
+        sample_method: str = "direct",
+        posteriors: object = None,
     ) -> None:
         """
         Plot the diagnostics of the SBI model.
@@ -1805,6 +1826,12 @@ class SBI_Fitter:
         plots_dir = plots_dir.replace("name", self.name)
         if not os.path.exists(plots_dir):
             os.makedirs(plots_dir)
+
+        if stats is None:
+            if hasattr(self, "stats"):
+                stats = self.stats
+            else:
+                raise ValueError("No stats found. Please provide the stats.")
 
         if X_train is None or y_train is None:
             if hasattr(self, "_X_train") and hasattr(self, "_y_train"):
@@ -1820,17 +1847,19 @@ class SBI_Fitter:
                 raise ValueError("X_test and y_test must be provided or set in the object.")
 
         # Plot the loss
-        self.plot_loss(self.stats, plots_dir=plots_dir)
+        self.plot_loss(stats, plots_dir=plots_dir)
 
         # Plot the posterior
         self.plot_posterior(
-            X=X_train,
-            y=y_train,
+            X=X_test,
+            y=y_test,
             plots_dir=plots_dir,
+            sample_method=sample_method,
+            posteriors=posteriors,
         )
 
         # Plot the coverage
-        self.plot_coverage(X=X_test, y=y_test, plots_dir=plots_dir)
+        self.plot_coverage(X=X_test, y=y_test, plots_dir=plots_dir, sample_method=sample_method, posteriors=posteriors)
 
     def plot_loss(
         self,
@@ -1908,6 +1937,7 @@ class SBI_Fitter:
         sample_kwargs: dict = {},
         plots_dir: str = f"{code_path}/models/name/plots/",
         plot_kwargs=dict(fill=True),
+        posteriors: object = None,
         **kwargs: dict,
     ) -> None:
         """
@@ -1936,8 +1966,11 @@ class SBI_Fitter:
             **sample_kwargs,
         )
 
+        if posteriors is None:
+            posteriors = self.posteriors
+
         fig = metric(
-            posterior=self.posteriors,
+            posterior=posteriors,
             x_obs=X[ind],
             theta_fid=y[ind],
             plot_kws=plot_kwargs,
@@ -2018,13 +2051,14 @@ class SBI_Fitter:
         self,
         X: np.ndarray = None,
         y: np.ndarray = None,
-        posteriors: Union[str, int] = "total",
+        posterior_plot_type: Union[str, int] = "total",
         num_samples: int = 1000,
         sample_method: str = "direct",
         sample_kwargs: dict = {},
         plot_list=["coverage", "histogram", "predictions", "tarp", "logprob"],
         plots_dir: str = f"{code_path}/models/name/plots/",
         n_test_draws: int = 1000,
+        posteriors: object = None,
     ) -> None:
         """
         Plot the coverage of the SBI model.
@@ -2065,18 +2099,21 @@ class SBI_Fitter:
             **sample_kwargs,
         )
 
+        if posteriors is None:
+            posteriors = self.posteriors
+
         fig = None
-        if posteriors == "seperate":
-            for i in range(len(self.posteriors)):
+        if posterior_plot_type == "seperate":
+            for i in range(len(posteriors)):
                 fig = metric(
-                    posterior=self.posteriors[i],
+                    posterior=posteriors[i],
                     x=X,
                     theta=y,
                     fig=fig,
                 )
         else:
             fig = metric(
-                posterior=self.posteriors if posteriors == "total" else self.posteriors[posteriors],
+                posterior=posteriors if posterior_plot_type == "total" else posteriors[posterior_plot_type],
                 x=X,
                 theta=y,  # X and y are the feature and target arrays
             )
@@ -2158,8 +2195,9 @@ class SBI_Fitter:
             posteriors = load(f)
         #
         stats = model_file.replace("posterior.pkl", "summary.json")
+
         if os.path.exists(stats):
-            with open(stats, "r") as f:
+            with open(stats, "r", encoding="utf-8") as f:
                 stats = json.load(f)
 
             if set_self:
@@ -2184,7 +2222,7 @@ class SBI_Fitter:
                 learning_type = params.get("learning_type", "offline")
                 self.feature_names = params["feature_names"]
 
-                print(params.keys())
+                #print(params.keys())
 
                 if learning_type == "offline":
                     self.fitted_parameter_array = params["parameter_array"]

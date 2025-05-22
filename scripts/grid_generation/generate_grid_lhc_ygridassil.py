@@ -2,13 +2,13 @@
 import numpy as np
 import os
 import sys
-from synthesizer.emission_models import TotalEmission
+from synthesizer.emission_models import TotalEmission, EmissionModel, IncidentEmission
 from synthesizer.emission_models.attenuation import Calzetti2000, ParametricLi08 #noqa
 from synthesizer.grid import Grid
 from synthesizer.parametric import SFH, ZDist
 from synthesizer.instruments import Instrument, FilterCollection
 
-from unyt import unyt_array, Msun
+from unyt import unyt_array, Msun, Myr
 from astropy.cosmology import Planck18
 from ltu_ili_testing import (generate_sfh_basis, 
                             generate_constant_R, GalaxyBasis, CombinedBasis,
@@ -76,23 +76,24 @@ except Exception:
 
 # params
 
-Nmodels = 100_000
+Nmodels = 10_000
 redshift = (5, 12)
-masses = (6, 11.5)
+masses = (4, 9)
 max_redshift = 20 # gives maximum age of SFH at a given redshift
 cosmo = Planck18 # cosmology to use for age calculations
 
 # ---------------------------------------------------------------
 # Pop II
 
-tau_v = (0.0, 2.0)
-log_zmet = (-3, -1.39) # max of grid (e.g. 0.04)
+log_zmet = 0 # max of grid (e.g. 0.04)
 
 # SFH
-sfh_type = SFH.LogNormal
-tau = (0.05, 2.5)
-peak_age = (0, 1) # normalized to maximum age of the universe at that redshift
-sfh_param_units = [None, None]
+sfh_type = SFH.Constant
+
+min_age= (0.00, 30) # Myr
+sfh_timescale = (0.01, 30) # Length of Time - e.g. min_age_popIII + popIII_sfh_timescale
+sfh_param_units = [Myr, Myr]
+
 
 # ---------------------------------------------------------------
 
@@ -101,10 +102,8 @@ sfh_param_units = [None, None]
 full_params = {
     'redshift': redshift,
     'masses': masses,
-    'tau_v': tau_v,
-    'log_zmet': log_zmet,
-    'tau': tau,
-    'peak_age': peak_age,
+    'sfh_timescale': sfh_timescale,
+    'min_age': min_age,
 }
 
 # Generate the grid
@@ -116,50 +115,57 @@ param_grid = draw_from_hypercube(Nmodels, full_params, rng=42)
 all_param_dict = {}
 for i, key in enumerate(full_params.keys()):
     all_param_dict[key] = param_grid[:, i]
+# yggdrasil-1.3.3-PopIII_salpeter-10,1,500
+# yggdrasil-1.3.3-POPIII-fcov_0.5_salpeter-10,1,500.hdf5
+# yggdrasil-1.3.3-POPIII-fcov_1_salpeter-10,1,500.hdf5
+
+grid = Grid('yggdrasil-1.3.3-POPIII-fcov_1_salpeter-10,1,500',
+                    grid_dir=grid_dir,
+                    read_lines=False, new_lam=new_wav)
 
 
-grid = Grid('bpass-2.2.1-bin_chabrier03-0.1,300.0_cloudy-c23.01-sps.hdf5',
-            grid_dir=grid_dir,
-            new_lam=new_wav)
+# Pop III parameters
 
-# Metallicity 
-Z_dists = [ZDist.DeltaConstant(log10metallicity=log_z) for log_z in all_param_dict['log_zmet']]
-
-# Redshifts
+# SFH
+sfh_array = np.vstack((all_param_dict['min_age'], all_param_dict['sfh_timescale'])).T
 redshifts = np.array(all_param_dict['redshift'])
 
-# Pop II SFH
-sfh_param_arrays = np.vstack((all_param_dict['tau'], all_param_dict['peak_age'])).T
 sfh_models, _ = generate_sfh_basis(
     sfh_type=sfh_type,
-    sfh_param_names=['tau', 'peak_age_norm'],
-    sfh_param_arrays=sfh_param_arrays,
+    sfh_param_names=['min_age', 'sfh_timescale'],
+    sfh_param_arrays=sfh_array,
     redshifts=redshifts,
     max_redshift=max_redshift,
     cosmo=cosmo,
     sfh_param_units=sfh_param_units,
-    iterate_redshifts=False,
     calculate_min_age=False,
+    iterate_redshifts=False,
 )
 
+# Metallicity 
+Z_dists = ZDist.DeltaConstant(metallicity=0)
+
 # Emission parameters
-emission_model = TotalEmission(
-    grid=grid,
-    fesc=0.1,
-    fesc_ly_alpha=0.1,
-    dust_curve=ParametricLi08(model='SMC'),
-    dust_emission_model=None,
-)
+if 'incident' not in grid.available_spectra:
+    # Need a custom emission model for the Pop III grid if loading the nebular spectra. 
+    emission_model = EmissionModel(
+        label = 'Pop_III',
+        extract=grid.available_spectra[0],
+        grid=grid,
+        emitter='stellar'
+    )
+else:
+    emission_model = IncidentEmission(
+        grid=grid,
+    )
 
 # List of other varying or fixed parameters. Either a distribution to pull from or a list.
 # Can be any parameter which can be property of emitter or galaxy and processed by the emission model.
-galaxy_params={
-    'tau_v': all_param_dict['tau_v'],
-}
+galaxy_params = {}
 
-sfh_name = str(sfh_type).split('.')[-1].split("'")[0]
+name = f'{grid.grid_name}_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_v1'
 
-name = f'Pop_II_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_BPASS_Chab_SMC_v1'
+
 
 popII_basis = GalaxyBasis(
     model_name=f'sps_{name}',
@@ -176,15 +182,10 @@ popII_basis = GalaxyBasis(
     build_grid=False,
 )
 
-# This will plot some of the SEDs as an example.
-# for i in range(30):
-#    popII_basis.plot_random_galaxy(out_dir='/home/tharvey/work/ltu-ili_testing/plots',
-#                                    masses=10**all_param_dict['masses'])
-
 combined_basis = CombinedBasis(
     bases=[popII_basis],
     total_stellar_masses=unyt_array(10**all_param_dict['masses'], units=Msun),
-    base_emission_model_keys=['total'],
+    base_emission_model_keys=['Pop_III'],
     combination_weights=None,
     redshifts=redshifts,
     out_name=f'grid_{name}',
@@ -193,7 +194,7 @@ combined_basis = CombinedBasis(
 )
 
 # Passing in extra analysis function to pipeline to calculate mUV. Any funciton could be passed in. 
-combined_basis.process_bases(overwrite=False, mUV=(calculate_muv, cosmo), n_proc=n_proc, verbose=False)
+combined_basis.process_bases(overwrite=True, mUV=(calculate_muv, cosmo), n_proc=n_proc, verbose=False)
 
 # Create grid - kinda overkill for a single case, but it does work.
 combined_basis.create_grid(overwrite=True)
