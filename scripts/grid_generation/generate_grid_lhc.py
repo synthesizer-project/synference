@@ -90,7 +90,7 @@ except:
 
 # params
 
-Nmodels = 1e3
+Nmodels = 3e5
 redshift = (5, 12)
 masses = (5, 11)
 weights = (0, 1)
@@ -101,12 +101,12 @@ cosmo = Planck18 # cosmology to use for age calculations
 # Pop II
 
 tau_v = (0.0, 2.0)
-log_zmet = (-3, 0.3)
+log_zmet = (-3, -1.39)
 
 # SFH
 sfh_type = SFH.LogNormal
 tau = (0.05, 2.5)
-peak_age = (-1, 1) # normalized to maximum age of the universe at that redshift
+peak_age = (0, 0.9) # normalized to maximum age of the universe at that redshift
 sfh_param_units = [None, None]
 
 # ---------------------------------------------------------------
@@ -182,8 +182,10 @@ galaxy_params={
 
 sfh_name = str(sfh_type).split('.')[-1].split("'")[0]
 
+name = f'{grid.grid_name}_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_v1'
+
 popII_basis = GalaxyBasis(
-    model_name=f'Pop_II_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}',
+    model_name=f'sps_{name}',
     redshifts=redshifts,
     grid=grid,
     emission_model=emission_model,
@@ -201,7 +203,7 @@ popII_basis = GalaxyBasis(
 # Second Population Model
 # ---------------------------------------------------------------
 
-popIII_grid = Grid('yggdrasil-1.3.3-PopIII_salpeter-10,1,500',
+popIII_grid = Grid('yggdrasil-1.3.3-POPIII-fcov_1_salpeter-10,1,500',
                     grid_dir=grid_dir,
                     read_lines=False, new_lam=new_wav)
 
@@ -226,7 +228,8 @@ popIII_sfhs, _ = generate_sfh_basis(
 
 popIII_metal_dists = ZDist.DeltaConstant(metallicity=0)
 
-if 'incident' not in grid.available_spectra:
+if 'incident' not in popIII_grid.available_spectra:
+    print('Using custom emission model for Pop III grid.')
     # Need a custom emission model for the Pop III grid if loading the nebular spectra. 
     popIII_emission_model = EmissionModel(
         label = 'Pop_III',
@@ -235,12 +238,15 @@ if 'incident' not in grid.available_spectra:
         emitter='stellar'
     )
 else:
+    print('Using incident emission model for Pop III grid.')
     popIII_emission_model = IncidentEmission(
         grid=popIII_grid,
     )
 
+name = f'{popIII_grid.grid_name}_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_v1'
+
 popIII_basis = GalaxyBasis(
-    model_name='Pop_III',
+    model_name=f'sps_{name}',
     redshifts=redshifts,
     grid=popIII_grid,
     emission_model=popIII_emission_model,
@@ -272,4 +278,4 @@ combined_basis = CombinedBasis(
 # Passing in extra analysis function to pipeline to calculate mUV. Any funciton could be passed in. 
 combined_basis.process_bases(overwrite=False, mUV=(calculate_muv, cosmo), n_proc=n_proc)
 
-combined_basis.create_grid(overwrite=True, out_name='combined_basis_LHC')
+combined_basis.create_grid(overwrite=True, out_name='BPASS_Chab+yggdrasil_fcov_1_salpeter_10,1,500_combined', out_dir=out_dir, n_proc=n_proc)
