@@ -5,6 +5,9 @@ import numpy as np
 from scipy import stats
 import torch
 import glob
+import copy
+import tarp
+import signal
 import torch.nn as nn
 import h5py
 from unyt import unyt_array, nJy
@@ -310,14 +313,18 @@ class SBI_Fitter:
         phot_flux_units: str = "AB",
     ):
         """
-        Given a set of depths, convert to photometry unit and use as standard deviations
+        Given a set of depths (1D or 2D), convert to photometry unit and use as standard deviations
         to generate a scattered photometry array of shape (m*n_scatters, n) from photometry array
-        of size (m, n)
+        of size (m, n).
+        
+        If depths is 2D, one depth array is randomly selected for each photometry row and scatter.
 
         Parameters:
         -----------
         depths : unyt_array
-            Array of depth values to be converted and used as standard deviations
+            Array of depth values. Can be:
+            - 1D array of shape (m,) for consistent depths across scatters
+            - 2D array of shape (k, m) where k is number of possible depth sets
         photometry_array : np.ndarray
             Input photometry array of shape (m, n)
         N_scatters : int, default=5
@@ -329,37 +336,67 @@ class SBI_Fitter:
 
         Returns:
         --------
-        np.ndarray
+        np.ndarray or tuple
             Scattered photometry array of shape (m, n_scatters*n)
+            If return_errors=True, also returns depth_errors array
         """
         # Get input array dimensions
         m, n = photometry_array.shape
-
-        # Verify dimensions match
-        if m != len(depths):
-            raise ValueError(
-                f"Mismatch in dimensions: photometry_array has {m} columns but depths has {len(depths)} elements"
-            )
-
-        # Convert depths to the correct units
-        depths_std = depths.to(photometry_array.units).value / depth_sigma
-
-        # Pre-allocate output array with correct dimensions
-        output_arr = np.zeros((m, N_scatters * n))
+        
+        # Check if depths is 2D and handle accordingly
+        if depths.ndim == 2:
+            k, depth_cols = depths.shape
+            
+            # Verify dimensions match
+            if depth_cols != m:
+                raise ValueError(
+                    f"Mismatch in dimensions: photometry_array has {m} rows but depths has {depth_cols} columns"
+                )
+            
+            # For each photometry row and each scatter, randomly select a depth set
+            # Shape: (m, N_scatters) - indices of which depth set to use
+            depth_indices = np.random.randint(0, k, size=(m, N_scatters))
+            
+            # Create depth array for scattering: shape (m, N_scatters)
+            selected_depths = depths[depth_indices, np.arange(m)[:, np.newaxis]]
+            
+            # Convert to correct units and scale
+            depths_std = selected_depths.to(photometry_array.units).value / depth_sigma
+            
+            # Expand depths_std to match output dimensions: (m, N_scatters * n)
+            depths_std_expanded = np.repeat(depths_std, n, axis=1)
+            
+        elif depths.ndim == 1:
+            # Original 1D case
+            if len(depths) != m:
+                raise ValueError(
+                    f"Mismatch in dimensions: photometry_array has {m} rows but depths has {len(depths)} elements"
+                )
+                
+            # Convert depths to the correct units
+            depths_std = depths.to(photometry_array.units).value / depth_sigma
+            
+            # Expand to match output dimensions: (m, N_scatters * n)
+            depths_std_expanded = np.repeat(depths_std[:, np.newaxis], N_scatters * n, axis=1)
+        else:
+            raise ValueError("depths must be 1D or 2D array")
 
         # Generate all random values at once for better performance
-        random_values = (
-            np.random.normal(loc=0, scale=depths_std[:, np.newaxis], size=(m, N_scatters * n)) * photometry_array.units
-        )
+        random_values = np.random.normal(
+            loc=0, 
+            scale=depths_std_expanded, 
+            size=(m, N_scatters * n)
+        ) * photometry_array.units
+        
         # Repeat the photometry array for each scatter
         photometry_repeated = np.repeat(photometry_array, N_scatters, axis=1)
+        
         # Add the random values to the repeated photometry
         output_arr = photometry_repeated + random_values
 
         if return_errors:
-            # Get errors for each row in the output array
-            # E.g. n*N_scatters copies of the depth errors
-            depth_errors = np.repeat(depths_std[:, np.newaxis], N_scatters * n, axis=1) * photometry_array.units
+            # Return the depth errors used for scattering
+            depth_errors = depths_std_expanded * photometry_array.units
             return output_arr, depth_errors
 
         return output_arr
@@ -377,6 +414,7 @@ class SBI_Fitter:
         simulate_missing_fluxes=False,
         missing_flux_value=99.0,
         missing_flux_fraction=0.0,
+        missing_flux_options: list = None,
         include_flags_in_feature_array=False,
         override_phot_grid: np.ndarray = None,
         override_phot_grid_units: str = None,
@@ -409,6 +447,8 @@ class SBI_Fitter:
                 with a specific filler flag, or a seperate boolean row/column to flag missing data.
             missing_flux_value: The value to use for missing fluxes. Default is 99.0.
             missing_flux_fraction: The fraction of missing fluxes. Default is 0.0.
+            missing_flux_options: If simulate_missing_fluxes is True, this is a list of mask for the missing fluxes. E.g.
+                rather than randomly masking galaxies, we have a set of possible options which are randomly selected from.
             include_flags_in_feature_array: boolean, default False.
             override_phot_grid: The photometry grid to use instead of the raw photometry grid.
                 This is used to override the photometry grid for testing purposes.
@@ -625,15 +665,30 @@ class SBI_Fitter:
         flag_names = []
 
         if simulate_missing_fluxes:
-            # Flags will be after errors (if any)
             start_index = len(raw_photometry_names) + len(error_names)
-            # generate a mask with missing_flux_fraction missing points
-            # 1.0 is missing
-            mask = np.random.choice(
-                [0.0, 1.0],
-                size=(len(raw_photometry_names), feature_array.shape[1]),
-                p=[1 - missing_flux_fraction, missing_flux_fraction],
-            )
+            if missing_flux_options is not None:
+                # For each row, pick a mask randomly from the missing_flux_options
+                mask = np.zeros((len(raw_photometry_names), feature_array.shape[1]))
+                for row in range(len(raw_photometry_names)):
+                    # Choose a random mask from the missing_flux_options
+                    chosen_index = np.random.choice(
+                        range(len(missing_flux_options)),
+                        p=[1 / len(missing_flux_options)] * len(missing_flux_options)
+                    )
+
+                    mask[:, row] = missing_flux_options[chosen_index]
+
+                mask = mask.astype(np.float32)
+                
+            else:
+                # Flags will be after errors (if any)
+                # generate a mask with missing_flux_fraction missing points
+                # 1.0 is missing
+                mask = np.random.choice(
+                    [0.0, 1.0],
+                    size=(len(raw_photometry_names), feature_array.shape[1]),
+                    p=[1 - missing_flux_fraction, missing_flux_fraction],
+                )
             if include_flags_in_feature_array:
                 flag_units = [None] * len(raw_photometry_names)
                 flag_names = [f"flag_{name}" for name in raw_photometry_names]
@@ -642,9 +697,9 @@ class SBI_Fitter:
             feature_array[: len(raw_photometry_names), :][mask == 1.0] = missing_flux_value
 
             if len(error_names) > 0:
-                feature_array[start_index : start_index + len(raw_photometry_names), :][mask == 1.0] = (
+                feature_array[len(raw_photometry_names): start_index, :][mask == 1.0] = (
                     missing_flux_value
-                )
+            )
 
         if normalize_method is not None:
             # Add the normalization factor as the last column
@@ -845,6 +900,9 @@ class SBI_Fitter:
         verbose: bool = False,
         persistent_storage: bool = False,
         out_dir: str = f"{code_path}/models/",
+        score_metrics: Union[str, List[str]] = "log_prob-pit",
+        direction: str = "maximize",
+        timeout_minutes_trial_sampling: float = 15.0,
     ) -> None:
         """
         Use Optuna to optimize the SBI model hyperparameters.
@@ -861,6 +919,11 @@ class SBI_Fitter:
         - stop_after_epochs: Number of epochs without improvement before stopping.
         - clip_max_norm: Maximum norm for gradient clipping.
         - persistent_storage: Whether to use persistent storage for the study.
+        - out_dir: Directory to save the study results.
+        - score_metrics: Metrics to use for scoring the trials. Either a string or a list of metrics.
+        - direction: Direction of optimization, either 'minimize' or 'maximize', or a list of directions if using multi-objective optimization.
+        - timeout_minutes_trial_sampling: Timeout in minutes for each trial sampling. e.g. if sampling gets stuck, will prune this trial.
+
 
         """
 
@@ -873,19 +936,30 @@ class SBI_Fitter:
         if self.fitted_parameter_names is None and not self.has_simulator:
             raise ValueError("Parameter names not created. Please create the parameter names first.")
 
+        out_dir = os.path.join(os.path.abspath(out_dir), self.name)
+
+        if isinstance(direction, (list, tuple)):
+            directions = copy.deepcopy(direction)
+            direction = None
+        else:
+            directions = None
+
         if persistent_storage:
             sqlite_path = os.path.join(out_dir, f"{study_name}_optuna_study.db")
+
             url = create_sqlite_db(sqlite_path)
             study = optuna.create_study(
                 study_name=study_name,
                 storage=url,
-                direction="maximize",
+                direction=direction,
+                directions=directions,
                 load_if_exists=True,
             )
         else:
             study = optuna.create_study(
                 study_name=study_name,
-                direction="maximize",
+                direction=direction,
+                directions=directions,
             )
 
         if self.has_features:
@@ -912,10 +986,12 @@ class SBI_Fitter:
                 y_test=y_test,
                 suggested_hyperparameters=suggested_hyperparameters,
                 verbose=verbose,
+                score=score_metrics,
+                timeout_minutes_trial_sampling=timeout_minutes_trial_sampling,
                 **fixed_hyperparameters,
             )
 
-        study.optimize(objective_func, n_trials=n_trials, n_jobs=n_jobs, show_progress_bar=True)
+        study.optimize(objective_func, n_trials=n_trials, n_jobs=n_jobs, show_progress_bar=True, gc_after_trial=True)
 
         pruned_trials = study.get_trials(deepcopy=False, states=[TrialState.PRUNED])
         complete_trials = study.get_trials(deepcopy=False, states=[TrialState.COMPLETE])
@@ -948,6 +1024,8 @@ class SBI_Fitter:
         test_indices: np.ndarray = None,
         X_test: np.ndarray = None,
         y_test: np.ndarray = None,
+        score: Union[str, List[str]] = "log_prob-pit",
+        timeout_minutes_trial_sampling: float = 15.0,
         **fixed_hyperparameters,
     ) -> tuple:
         """
@@ -993,15 +1071,58 @@ class SBI_Fitter:
         if y_test is None:
             y_test = self.fitted_parameter_array[test_indices]
 
-        # Do the evaluation
-        score = np.mean(self.log_prob(X_test, y_test, posterior))
+        timeout_seconds = timeout_minutes_trial_sampling * 60  # Convert minutes to seconds
 
-        # Continue with the PIT calculation and adjust the score
-        pit = self.calculate_PIT(X_test, y_test, num_samples=5000, posteriors=posterior)
-        dpit_max = np.max(np.abs(pit - np.linspace(0, 1, len(pit))))
-        score += -0.5 * np.log(dpit_max)
+        def timeout_handler(signum, frame):
+            raise optuna.exceptions.TrialPruned(f"Execution exceeded timeout of {timeout_seconds} seconds")
+    
+        # Set the signal handler
+        old_handler = signal.signal(signal.SIGALRM, timeout_handler)
+        signal.alarm(int(timeout_seconds))
+    
+        try:
 
-        return score
+            if isinstance(score, str):
+                if score == "log_prob-pit":
+                    # Do the evaluation
+                    score = np.mean(self.log_prob(X_test, y_test, posterior))
+
+                    # Continue with the PIT calculation and adjust the score
+                    pit = self.calculate_PIT(X_test, y_test, num_samples=5000, posteriors=posterior)
+                    dpit_max = np.max(np.abs(pit - np.linspace(0, 1, len(pit))))
+                    score += -0.5 * np.log(dpit_max)
+                elif score == "log_prob":
+                    score = np.mean(self.log_prob(X_test, y_test, posterior))
+                else:
+                    raise ValueError(f"Unknown score type: {score}")
+
+                return score
+            
+            elif isinstance(score, list):
+                scores = []
+                for s in score:
+                    if s == "log_prob":
+                        scores.append(np.mean(self.log_prob(X_test, y_test, posterior)))
+                    elif s == 'tarp':
+                        scores.append(self.calculate_TARP(X_test, y_test, posteriors=posterior))
+                    else:
+                        raise ValueError(f"Unknown score type: {s}")
+                return scores
+            else:
+                raise ValueError(f"Score should be a string or a list of strings. Got {score}")
+        except optuna.exceptions.TrialPruned:
+            raise
+        except Exception as e:
+            signal.alarm(0)  # Disable the alarm
+            raise e
+        finally:
+            signal.signal(signal.SIGALRM, old_handler)
+            
+        # if sampling takes more than timout, raise raise optuna.exceptions.TrialPruned() instead
+                   
+        
+
+        return scores
 
     def run_single_sbi(
         self,
@@ -1032,7 +1153,7 @@ class SBI_Fitter:
         set_self: bool = True,
         learning_type: str = "offline",
         simulator: callable = None,
-        num_simulations=500,
+        num_simulations=1000,
         num_online_rounds=5,
         initial_training_from_grid: bool = False,
         override_prior_ranges: dict = {},
@@ -1394,7 +1515,13 @@ class SBI_Fitter:
                     plots_dir=f"{out_dir}/plots/", stats=stats,
                     sample_method=sample_method, posteriors=posteriors)
             else:
-                print("No plots for online learning yet.")
+                self.plot_diagnostics(
+                    plots_dir=f"{out_dir}/online/plots/",
+                    stats=stats,
+                    sample_method=sample_method,
+                    posteriors=posteriors,
+                    online=True,
+                )
 
         return posteriors, stats
 
@@ -1493,6 +1620,9 @@ class SBI_Fitter:
         true_parameters=[],
         plot_name=None,
         plots_dir=f"{code_path}/models/name/plots/",
+        sample_color="violet",
+        param_labels=None,
+        plot_closest_draw_to={},
     ):
         if posteriors is None:
             posteriors = self.posteriors
@@ -1557,6 +1687,24 @@ class SBI_Fitter:
         wav_draws = np.array(wav_draws)
         sfh = np.array(sfh)
         print(f"Number of NaN SFH: {counter}")
+
+        extra_indexes = []
+        extra_labels = []
+        extra_lines = []
+        if len(plot_closest_draw_to) > 0:
+            for key, value in plot_closest_draw_to.items():
+                if key in self.fitted_parameter_names or key in self.simple_fitted_parameter_names:
+                    if key in self.simple_fitted_parameter_names:
+                        index = list(self.simple_fitted_parameter_names).index(key)
+                    else:
+                        index = list(self.fitted_parameter_names).index(key)
+                    
+                    closest_index = np.argmin(np.abs(samples[:, index] - value))
+                    print(f"Closest draw to {key}={value} is {samples[closest_index, index]} at index {closest_index}")
+                    print(f'Full draw: {samples[closest_index]}')
+                    # Plot the closest draw
+                    extra_indexes.append(closest_index)
+                    extra_labels.append(f"{key}={value}")
         # get the redshift draws
 
         fnu_quantiles = np.quantile(fnu_draws, [0.16, 0.5, 0.84], axis=0)
@@ -1572,25 +1720,34 @@ class SBI_Fitter:
 
             if plot_sfh:
                 # inset axes for SFH inside ax
-                inset_ax = fig.add_axes([0.72, 0.58, 0.25, 0.25])
+                inset_ax = fig.add_axes([0.71, 0.55, 0.25, 0.25])
                 # plot the SFH
                 # temp
                 time = output["sfh_time"]
-                inset_ax.plot(time, sfh_quantiles[1], label="Median SFH", color="purple")
+                inset_ax.plot(time, sfh_quantiles[1], label="Median SFH", color=sample_color)
                 inset_ax.fill_between(
-                    time, sfh_quantiles[0], sfh_quantiles[2], alpha=0.5, label="68% CI SFH", color="purple"
+                    time, sfh_quantiles[0], sfh_quantiles[2], alpha=0.5, label="68% CI SFH", color=sample_color
                 )
                 # Don't let the time go beyond 0
                 inset_ax.set_xlim(0, 1000)
-                inset_ax.set_xlabel("Time (Myr)")
-                inset_ax.set_ylabel(r"M$_{\odot} \rm \ yr^{-1}$")
+                inset_ax.set_xlabel("Lookback Time (Myr)", fontsize=10)
+                inset_ax.set_ylabel(r"M$_{\odot} \rm \ yr^{-1}$", fontsize=10)
+                # Reduced xlabel size
+                inset_ax.tick_params(axis='both', which='major', labelsize=8)
 
-            ax.plot(wav, fnu_quantiles[1], label="Median SED", color="purple", zorder=7, lw=2)
+            ax.plot(wav, fnu_quantiles[1], label="Median SED", color=sample_color, zorder=7, lw=2)
             ax.fill_between(
-                wav, fnu_quantiles[0], fnu_quantiles[2], alpha=0.5, label="68% CI SED", color="purple", zorder=7
+                wav, fnu_quantiles[0], fnu_quantiles[2], alpha=0.5, label="68% CI SED", color=sample_color, zorder=7
             )
             for f, lam in zip(fnu_draws, wav_draws):
-                ax.plot(lam, f, color="violet", alpha=0.05, lw=0.3, zorder=5)
+                ax.plot(lam, f, color="violet", alpha=0.05, lw=0.2, zorder=5)
+
+            if len(extra_indexes) > 0:
+                for i, index in enumerate(extra_indexes):
+                    if np.sum(fnu_draws[index]) == 0:
+                        print(f'Warning! The draw at index {index} has all zeros. Skipping.')
+                    line = ax.plot(wav, fnu_draws[index], label=extra_labels[i], lw=1, zorder=10)
+                    extra_lines.append(line)
 
             ax.set_xlabel("Wavelength (Angstrom)")
             ax.set_ylabel("Flux Density (AB mag")
@@ -1609,16 +1766,33 @@ class SBI_Fitter:
 
                 true_sed_output = simulator(true_parameters_dict)
                 true_sed = true_sed_output["fnu"]
-                ax.plot(wav, true_sed, label="True SED", color="orange", lw=1, zorder=11)
+                ax.plot(wav, true_sed, label="True SED", color="red", lw=1, zorder=11)
                 if plot_sfh:
                     true_sfh = true_sed_output["sfh"]
-                    inset_ax.plot(time, true_sfh, label="True SFH", color="orange")
+                    inset_ax.plot(time, true_sfh, label="True SFH", color="red")
+
+                    if len(extra_indexes) > 0:
+                        for i, index in enumerate(extra_indexes):
+                            inset_ax.plot(time, true_sfh, label=extra_labels[i], lw=1, zorder=10, color = extra_lines[i][0].get_color())
+                            
 
             # Match indexes of the filters to the feature names
             # Now plot the photometry we have been given (X_test).
             # TODO; Deal with the fact that this could be normalized
             labelled = False
             phots = []
+           
+            for pos, filter in enumerate(filter_codes):
+                index = self.feature_names.index(filter)
+                phot = X_test[index]
+                phots.append(phot)
+
+            phots = np.array(phots)
+            median_phot = np.nanmedian(phots)
+            max_phot_diff = 4
+            show_lims = phots > (median_phot + max_phot_diff)
+            phots[show_lims] = median_phot + max_phot_diff
+
             for pos, filter in enumerate(filter_codes):
                 if filter in self.feature_names:
                     if f"unc_{filter}" in self.feature_names:
@@ -1629,31 +1803,49 @@ class SBI_Fitter:
                         phot_unc = 0
                     index = self.feature_names.index(filter)
                     phot = X_test[index]
-                    if phot_unc == 0:
-                        ax.scatter(
-                            phot_wav[pos],
-                            phot,
-                            label="Input Phot." if not labelled else "",
-                            marker="o",
-                            color="black",
-                            zorder=12,
-                            s=10,
+                    if show_lims[pos]:
+                        #phot = median_phot + max_phot_diff 
+                        # Plot a downward arrow patch
+                        from matplotlib.patches import FancyArrowPatch
+                        phot = median_phot + max_phot_diff
+                        ax.add_patch(
+                            FancyArrowPatch(
+                                (phot_wav[pos], phot - 0.2),
+                                (phot_wav[pos], phot + 0.2),
+                                arrowstyle="->",
+                                mutation_scale=10,
+                                color="black",
+                                lw=1,
+                                zorder=12,
+                            )
                         )
-                    else:
-                        ax.errorbar(
-                            phot_wav[pos],
-                            phot,
-                            yerr=phot_unc,
-                            label="Input Phot." if not labelled else "",
-                            marker="o",
-                            color="black",
-                            zorder=12,
-                            markersize=5,
-                            linestyle="None",
-                        )
-                    labelled = True
-                    phots.append(phot)
 
+                    
+                    else:
+                        if phot_unc == 0:
+                            ax.scatter(
+                                phot_wav[pos],
+                                phot,
+                                label="Input Phot." if not labelled else "",
+                                marker="o",
+                                color="black",
+                                zorder=12,
+                                s=10,
+                            )
+                        else:
+                            ax.errorbar(
+                                phot_wav[pos],
+                                phot,
+                                yerr=phot_unc,
+                                label="Input Phot." if not labelled else "",
+                                marker="o",
+                                color="black",
+                                zorder=12,
+                                markersize=5,
+                                linestyle="None",
+                            )
+                    labelled = True
+                    
                 # Plot the photometry we have drawn from the posterior
 
                 phot = phot_fnu_quantiles[1][pos]
@@ -1672,7 +1864,7 @@ class SBI_Fitter:
                     yerr=err,
                     label="Posterior Phot." if pos == 0 else "",
                     marker="s",
-                    color="purple",
+                    color=sample_color,
                     zorder=9,
                     markersize=5,
                     linestyle="None",
@@ -1698,14 +1890,26 @@ class SBI_Fitter:
                 ax.invert_yaxis()
                 ax.set_ylabel("Flux Density (AB mag)")
 
+            if param_labels is None:
+                param_labels = self.simple_fitted_parameter_names
+        
+
             # Add a row of axis underneath and plot histograms of parameters
-            for i, param in enumerate(self.simple_fitted_parameter_names):
+            for i, param in enumerate(param_labels):
                 ax = fig.add_subplot(gridspec[1, i])
-                ax.hist(samples[:, i], bins=50, density=False, alpha=0.9, color="purple")
+                ax.hist(samples[:, i], bins=50, density=False, alpha=0.9, color=sample_color)
                 ax.set_xlabel(param)
                 ax.set_yticks([])
                 if len(true_parameters) > 0:
                     ax.axvline(true_parameters[i], color="black", linestyle="--", label="True")
+
+                if len(extra_indexes) > 0:
+                    for j, index in enumerate(extra_indexes):
+                        line = extra_lines[j][0]
+                        #print(f"Plotting extra line for {extra_labels[j]} at index {index}")
+                        ax.axvline(
+                            samples[index, i], color=line.get_color(), linestyle="--", label=extra_labels[j]
+                        )
 
             if plot_name is None:
                 plot_name = f"{self.name}_SED_{self._timestamp}.png"
@@ -1792,7 +1996,7 @@ class SBI_Fitter:
         """
 
         # Draw samples from the posterior
-        samples = self.sample_posterior(X_test, y_test, num_samples=num_samples, posteriors=posteriors)
+        samples = self.sample_posterior(X_test, num_samples=num_samples, posteriors=posteriors)
 
         # Calculate basic metrics
         mean_pred = np.mean(samples, axis=1)
@@ -1818,6 +2022,7 @@ class SBI_Fitter:
         plots_dir: str = f"{code_path}/models/name/plots/",
         sample_method: str = "direct",
         posteriors: object = None,
+        online: bool = False,
     ) -> None:
         """
         Plot the diagnostics of the SBI model.
@@ -1833,13 +2038,13 @@ class SBI_Fitter:
             else:
                 raise ValueError("No stats found. Please provide the stats.")
 
-        if X_train is None or y_train is None:
+        if X_train is None or y_train is None and not online:
             if hasattr(self, "_X_train") and hasattr(self, "_y_train"):
                 X_train = self._X_train
                 y_train = self._y_train
             else:
                 raise ValueError("X_train and y_train must be provided or set in the object.")
-        if X_test is None or y_test is None:
+        if X_test is None or y_test is None and not online:
             if hasattr(self, "_X_test") and hasattr(self, "_y_test"):
                 X_test = self._X_test
                 y_test = self._y_test
@@ -1849,14 +2054,15 @@ class SBI_Fitter:
         # Plot the loss
         self.plot_loss(stats, plots_dir=plots_dir)
 
-        # Plot the posterior
-        self.plot_posterior(
-            X=X_test,
-            y=y_test,
-            plots_dir=plots_dir,
-            sample_method=sample_method,
-            posteriors=posteriors,
-        )
+        if not online:
+            # Plot the posterior
+            self.plot_posterior(
+                X=X_test,
+                y=y_test,
+                plots_dir=plots_dir,
+                sample_method=sample_method,
+                posteriors=posteriors,
+            )
 
         # Plot the coverage
         self.plot_coverage(X=X_test, y=y_test, plots_dir=plots_dir, sample_method=sample_method, posteriors=posteriors)
@@ -1991,6 +2197,34 @@ class SBI_Fitter:
         """
         pass
 
+    def calculate_TARP(self, X: np.ndarray, y: np.ndarray, num_samples: int = 1000, posteriors: object = None, num_bootstrap=200) -> np.ndarray:
+        """
+        Calculate the total absolute residual probability (TARP) for the samples
+        produced by the regressor.
+
+        Parameters
+        ----------
+        X : 2-dimensional array of shape (num_samples, n_features)
+            Feature array.
+        y : 1-dimensional array of shape (num_samples,)
+            Target variable.
+
+        Returns
+        -------
+        tarp : 1-dimensional array
+            The TARP values.
+        """
+
+        samples = self.sample_posterior(X, num_samples=num_samples, posteriors=posteriors)
+        
+        ecp, _ = tarp.get_tarp_coverage(
+            samples, y, norm=True, bootstrap=True, num_bootstrap = num_bootstrap, 
+        )
+
+        tarp_val = torch.mean(torch.from_numpy(ecp[:, ecp.shape[1]//2])).to(self.device)
+
+        return abs(tarp_val - 0.5)
+
     def calculate_PIT(
         self, X: np.ndarray, y: np.ndarray, num_samples: int = 1000, posteriors: object = None
     ) -> np.ndarray:
@@ -2011,7 +2245,7 @@ class SBI_Fitter:
             The PIT values.
         """
 
-        samples = self.sample_posterior(X, y, num_samples=num_samples, posteriors=posteriors)
+        samples = self.sample_posterior(X, num_samples=num_samples, posteriors=posteriors)
 
         pit = np.empty(len(y))
         for i in range(len(y)):
@@ -2037,7 +2271,7 @@ class SBI_Fitter:
         for i in tqdm(range(len(X)), disable=not verbose, desc="Log prob"):
             x = torch.tensor([X[i]], dtype=torch.float32, device=self.device)
             theta = torch.tensor([y[i]], dtype=torch.float32, device=self.device)
-            lp[i] = posteriors.log_prob(x=x, theta=theta, norm_posterior=True)
+            lp[i] = posteriors.log_prob(x=x, theta=theta) #norm_posterior=True)
 
         return lp
 
@@ -2834,6 +3068,8 @@ def create_sqlite_db(db_path: str):
         print("Failed to open database:", e)
 
     storage_name = "sqlite:///{}".format(db_path)
+
+    print(storage_name)
 
     return storage_name
 

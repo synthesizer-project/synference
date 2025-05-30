@@ -49,6 +49,21 @@ def calculate_muv(galaxy, cosmo=Planck18):
     return phots
 
 
+def generate_random_DB_sfh(
+    size=1,
+    Nparam=3,
+    tx_alpha=5,
+    redshift=6,
+    logmass=8,
+    logsfr=-1,
+):
+    txs = np.cumsum(np.random.dirichlet(np.ones((Nparam+1,))*tx_alpha, size=size),axis=1)[0:,0:-1][0]
+    
+    db_tuple = (logmass, logsfr, Nparam, *txs)
+    sfh = SFH.DenseBasis(db_tuple, redshift)
+
+    return sfh, txs
+
 def generate_sfh_grid(
     sfh_type: Type[SFH.Common],
     sfh_priors: Dict[str, Dict[str, Any]],
@@ -1507,13 +1522,18 @@ class CombinedBasis:
                 observed_spectra = spec[self.base_emission_model_keys[i]]
                 observed_spectra = unyt_array(observed_spectra, units=observed_spectra.attrs["Units"])
 
-                observed_photometry = galaxies["Stars"]["Photometry"]["Fluxes"][self.base_emission_model_keys[i]][
-                    base.instrument.label
-                ]
+                flux_obs = galaxies["Stars"]["Photometry"]["Fluxes"]
+                flux_observatories = flux_obs.keys()
 
+                observed_photometry = galaxies["Stars"]["Photometry"]["Fluxes"][self.base_emission_model_keys[i]]
+                
                 phot = {}
-                for key in observed_photometry.keys():
-                    phot[key] = observed_photometry[key][()]
+                for observatory in observed_photometry:
+                    phot_inst = observed_photometry[observatory]
+
+                    for key in phot_inst.keys():
+                        full_key = f"{observatory}/{key}"
+                        phot[full_key] = phot_inst[key][()]
 
                 outputs[base.model_name] = {
                     "properties": properties,
@@ -2148,7 +2168,7 @@ class CombinedBasis:
             filter_codes = base_filters
 
         # Strip path info from filter codes
-        filter_codes = [code.split("/")[-1] for code in filter_codes]
+        #filter_codes = [code.split("/")[-1] for code in filter_codes]
 
         # ===== PARAMETER SETUP =====
         # Set up parameter names
@@ -3032,6 +3052,7 @@ class GalaxySimulator(object):
         set_self=False,
         depths: Union[np.ndarray, unyt_array] = None,
         depth_sigma: int = 5,
+        fixed_params: dict = {},
     ) -> None:
         """
         Parameters
@@ -3080,6 +3101,9 @@ class GalaxySimulator(object):
         depth_sigma : int
             Sigma to use for the depths. Default is 5. This is used to calculate the 1 sigma error in nJy.
             If depths is None, this is ignored.
+        fixed_params : dict
+            Dictionary of fixed parameters to use. Keys are the parameter names and values are the fixed values.
+            This is used to fix parameters in the simulation. If None, no parameters are fixed. Default is None.
 
         """
 
@@ -3104,6 +3128,7 @@ class GalaxySimulator(object):
         self.required_keys = required_keys
         self.extra_functions = extra_functions
         self.normalize_method = normalize_method
+        self.fixed_params = fixed_params
 
         if depths is not None:
             assert len(depths) == len(instrument.filters.filter_codes), (
@@ -3151,6 +3176,7 @@ class GalaxySimulator(object):
 
     def simulate(self, params):
         params = copy.deepcopy(params)
+        params.update(self.fixed_params)
 
         if not isinstance(params, dict):
             if self.param_order is None:
@@ -3214,6 +3240,10 @@ class GalaxySimulator(object):
         if "stellar" in self.emitter_params:
             for key in found_params:
                 stellar_keys[key] = params[key]
+
+        #print(type(stellar_keys['tau_v']))
+        #stellar_keys['tau_v'] = 0.0
+        #print(stellar_keys)
 
         stars = Stars(
             log10ages=self.grid.log10ages,
