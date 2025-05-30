@@ -2,18 +2,18 @@
 import numpy as np
 import os
 import sys
+from tqdm import tqdm
 from synthesizer.emission_models import TotalEmission
 from synthesizer.emission_models.attenuation import Calzetti2000, ParametricLi08 #noqa
-from synthesizer.emission_models.dust.emission import Greybody, IR_templates
 from synthesizer.grid import Grid
 from synthesizer.parametric import SFH, ZDist
 from synthesizer.instruments import Instrument, FilterCollection
 
-from unyt import unyt_array, Msun, K
+from unyt import unyt_array, Msun, Myr
 from astropy.cosmology import Planck18
 from ltu_ili_testing import (generate_sfh_basis, 
                             generate_constant_R, GalaxyBasis, CombinedBasis,
-                            calculate_muv, draw_from_hypercube)
+                            calculate_muv, draw_from_hypercube, generate_random_DB_sfh)
 '''try:
     from mpi4py import MPI
     rank = MPI.COMM_WORLD.Get_rank()
@@ -29,13 +29,19 @@ except ImportError:
 # ---------------------------------------------------------------
 # all medium and wide band filters for JWST NIRCam
 filter_codes = [
-    "JWST/NIRCam.F070W", "JWST/NIRCam.F090W", "JWST/NIRCam.F115W", "JWST/NIRCam.F140M",
-    "JWST/NIRCam.F150W", "JWST/NIRCam.F162M", "JWST/NIRCam.F182M", "JWST/NIRCam.F200W",
-    "JWST/NIRCam.F210M", "JWST/NIRCam.F250M", "JWST/NIRCam.F277W", "JWST/NIRCam.F300M",
-    "JWST/NIRCam.F335M", "JWST/NIRCam.F356W", "JWST/NIRCam.F360M", "JWST/NIRCam.F410M",
-    "JWST/NIRCam.F430M", "JWST/NIRCam.F444W", "JWST/NIRCam.F460M", "JWST/NIRCam.F480M",
+    "HST/ACS_WFC.F435W", "HST/ACS_WFC.F475W", "HST/ACS_WFC.F606W",
+    "JWST/NIRCam.F070W",  "HST/ACS_WFC.F775W", "HST/ACS_WFC.F814W", 
+    "HST/ACS_WFC.F850LP", "JWST/NIRCam.F090W", "HST/WFC3_IR.F105W",
+    "HST/WFC3_IR.F110W", "JWST/NIRCam.F115W", "HST/WFC3_IR.F125W", 
+    "JWST/NIRCam.F140M","HST/WFC3_IR.F140W","JWST/NIRCam.F150W",
+    "HST/WFC3_IR.F160W", "JWST/NIRCam.F162M", "JWST/NIRCam.F182M",
+    "JWST/NIRCam.F200W","JWST/NIRCam.F210M", "JWST/NIRCam.F250M", 
+    "JWST/NIRCam.F277W", "JWST/NIRCam.F300M","JWST/NIRCam.F335M", 
+    "JWST/NIRCam.F356W", "JWST/NIRCam.F360M", "JWST/NIRCam.F410M",
+    "JWST/NIRCam.F430M", "JWST/NIRCam.F444W", "JWST/NIRCam.F460M", 
+    "JWST/NIRCam.F480M", "JWST/MIRI.F560W", "JWST/MIRI.F770W"
 ]
-instrument = 'JWST'
+instrument = 'HST+JWST'
 
 path = f'{os.path.dirname(__file__)}/filters/{instrument}.hdf5'
 
@@ -78,14 +84,11 @@ except Exception:
 # params
 
 Nmodels = 50_000
-redshift = (5, 12)
-masses = (6, 11.5)
+redshift = (0.01, 12)
+masses = (6, 12)
 max_redshift = 20 # gives maximum age of SFH at a given redshift
 cosmo = Planck18 # cosmology to use for age calculations
-fesc = 0.0 # escape fraction of ionizing photons
-fesc_ly_alpha = 0.0 # escape fraction of Ly-alpha photons
-dust_emission = None # No dust emission model for this grid, but can be added later.
-dust_curve = Calzetti2000() # Dust attenuation curve to use for the grid.
+
 # ---------------------------------------------------------------
 # Pop II
 
@@ -93,12 +96,19 @@ tau_v = (0.0, 2.0)
 log_zmet = (-3, -1.39) # max of grid (e.g. 0.04)
 
 # SFH
-sfh_type = SFH.LogNormal
-tau = (0.05, 2.5)
-peak_age = (0, 0.99) # normalized to maximum age of the universe at that redshift. Clipped to help prior leakage.
-sfh_param_units = [None, None]
+# sfh_type = SFH.DenseBasis
+# tx_alpha = 5
+# Nparam_SFH = 5
+# ssfr = (-12, -7) # log10(sSFR) in yr^-1
+
+sfh_type = SFH.DelayedExponential
+tau = (10, 1000)
+max_age = (0.01, 0.9) # normalized to maximum age of the universe at that redshift. If 0 or 1 we have problems.
+sfh_param_units = [Myr, Myr]
 
 # ---------------------------------------------------------------
+
+
 
 # Generate the grid. Could also seperate hyper-parameters for each model. 
 
@@ -108,10 +118,21 @@ full_params = {
     'tau_v': tau_v,
     'log_zmet': log_zmet,
     'tau': tau,
-    'peak_age': peak_age,
+    'max_age': max_age,
 }
 
+if sfh_type == SFH.DenseBasis:
+    Nparam_SFH = 5 # number of SFH parameters to draw from the prior
+    tx_alpha = 5 # alpha parameter for the Dense Basis SFH
+
+    # Add dummy parameters for the SFH
+    for i in tqdm(range(Nparam_SFH)):
+        j = 100 *(i + 1)/(Nparam_SFH+1)
+        full_params[f'sfh_quantile_{j:.0f}'] = (0, 1) # dummy parameters for the SFH
+
 # Generate the grid
+    
+print(full_params.keys())
 
 param_grid = draw_from_hypercube(Nmodels, full_params, rng=42)
 
@@ -122,10 +143,10 @@ for i, key in enumerate(full_params.keys()):
     all_param_dict[key] = param_grid[:, i]
 
 
+
 grid = Grid('bpass-2.2.1-bin_chabrier03-0.1,300.0_cloudy-c23.01-sps.hdf5',
             grid_dir=grid_dir,
             new_lam=new_wav)
-
 
 # Metallicity 
 Z_dists = [ZDist.DeltaConstant(log10metallicity=log_z) for log_z in all_param_dict['log_zmet']]
@@ -133,41 +154,47 @@ Z_dists = [ZDist.DeltaConstant(log10metallicity=log_z) for log_z in all_param_di
 # Redshifts
 redshifts = np.array(all_param_dict['redshift'])
 
-# Pop II SFH
-sfh_param_arrays = np.vstack((all_param_dict['tau'], all_param_dict['peak_age'])).T
-sfh_models, _ = generate_sfh_basis(
-    sfh_type=sfh_type,
-    sfh_param_names=['tau', 'peak_age_norm'],
-    sfh_param_arrays=sfh_param_arrays,
-    redshifts=redshifts,
-    max_redshift=max_redshift,
-    cosmo=cosmo,
-    sfh_param_units=sfh_param_units,
-    iterate_redshifts=False,
-    calculate_min_age=False,
-)
-# dust emission
-'''
-dust_emission_grid = Grid(
-    'draine_li_dust_emission_grid_MW_3p1',
-    grid_dir=grid_dir,
-    new_lam=new_wav,
-    read_lines=False,
-)
 
-ir_templates =IR_templates(dust_emission_grid,
-                           mdust=1e6*Msun)
+if isinstance(sfh_type, SFH.DenseBasis):
+    # Draw SFH params from prior
+    sfh_models = []
+    for i in tqdm(range(Nmodels)):
+        z = all_param_dict['redshift'][i]
+        logmass = all_param_dict['masses'][i]
+        logssfr = all_param_dict['ssfr'][i]
+        logsfr = logmass + logssfr
+        sfh, tx = generate_random_DB_sfh(size=Nmodels,
+                                        Nparam=Nparam_SFH,
+                                        tx_alpha=tx_alpha,
+                                        redshift=z,
+                                        logsfr=logsfr,
+                                        logmass=logmass)
+        sfh_models.append(sfh)
+        # Reassign parameters
+        for j in range(Nparam_SFH):
+            all_param_dict[f'sfh_quantile_{100*(j+1)/(Nparam_SFH+1):.0f}'][i] = tx[j]
+else:
+        # Pop II SFH
+    sfh_param_arrays = np.vstack((all_param_dict['tau'], all_param_dict['max_age'])).T
+    sfh_models, _ = generate_sfh_basis(
+        sfh_type=sfh_type,
+        sfh_param_names=['tau', 'max_age_norm'],
+        sfh_param_arrays=sfh_param_arrays,
+        redshifts=redshifts,
+        max_redshift=max_redshift,
+        cosmo=cosmo,
+        sfh_param_units=sfh_param_units,
+        iterate_redshifts=False,
+        calculate_min_age=False,
+    )
 
-dust_emission = IR_templates'''
-
-
-# Emission parameters
+    # Emission parameters
 emission_model = TotalEmission(
     grid=grid,
-    fesc=fesc,
-    fesc_ly_alpha=fesc_ly_alpha,
-    dust_curve=dust_curve,#ParametricLi08(model='SMC'),
-    dust_emission_model=dust_emission,
+    fesc=0.1,
+    fesc_ly_alpha=0.1,
+    dust_curve=Calzetti2000(),
+    dust_emission_model=None,
 )
 
 # List of other varying or fixed parameters. Either a distribution to pull from or a list.
@@ -178,7 +205,7 @@ galaxy_params={
 
 sfh_name = str(sfh_type).split('.')[-1].split("'")[0]
 
-name = f'Pop_II_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_BPASS_Chab_Calzetti_v1_fesc0.0'
+name = f'BPASS_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_Chab_Calzetti_v1'
 
 popII_basis = GalaxyBasis(
     model_name=f'sps_{name}',
@@ -191,7 +218,7 @@ popII_basis = GalaxyBasis(
     metal_dists=Z_dists,
     galaxy_params=galaxy_params,
     redshift_dependent_sfh=True,
-    params_to_ignore=['max_age'], # This is dependent on the redshift and should not be included in the basis
+    params_to_ignore=[], # This is dependent on the redshift and should not be included in the basis
     build_grid=False,
 )
 
