@@ -215,13 +215,15 @@ class SBI_Fitter:
         """
         Removes any parameter in self.provided_feature_parameters from the parameter array and parameter names
         """
+        self.fitted_parameter_array = self.parameter_array
+        self.fitted_parameter_names = self.parameter_names
 
         params = np.unique(self.provided_feature_parameters + parameters_to_remove)
         for param in params:
-            if param in self.parameter_names:
-                index = list(self.parameter_names).index(param)
-                self.fitted_parameter_array = np.delete(self.parameter_array, index, axis=1)
-                self.fitted_parameter_names = np.delete(self.parameter_names, index)
+            if param in self.fitted_parameter_names:
+                index = list(self.fitted_parameter_names).index(param)
+                self.fitted_parameter_array = np.delete(self.fitted_parameter_array, index, axis=1)
+                self.fitted_parameter_names = np.delete(self.fitted_parameter_names, index)
                 self.simple_fitted_parameter_names = [i.split("/")[-1] for i in self.fitted_parameter_names]
 
         # Now duplicate the parameter array n_scatters times. E.g. if it was [[1], [2], [3]] and n_scatters is 3, it should be [[1], [1], [1], [2], [2], [2], [3], [3], [3]]
@@ -669,7 +671,7 @@ class SBI_Fitter:
             if missing_flux_options is not None:
                 # For each row, pick a mask randomly from the missing_flux_options
                 mask = np.zeros((len(raw_photometry_names), feature_array.shape[1]))
-                for row in range(len(raw_photometry_names)):
+                for row in range(feature_array.shape[1]):
                     # Choose a random mask from the missing_flux_options
                     chosen_index = np.random.choice(
                         range(len(missing_flux_options)),
@@ -1155,6 +1157,7 @@ class SBI_Fitter:
         simulator: callable = None,
         num_simulations=1000,
         num_online_rounds=5,
+        num_bins: int = 10,
         initial_training_from_grid: bool = False,
         override_prior_ranges: dict = {},
         online_training_xobs: np.ndarray = None,
@@ -1198,6 +1201,8 @@ class SBI_Fitter:
             simulator: Function to simulate the data. This is only used if learning_type is 'online'.
             num_simulations: Number of simulations to run in each call if learning_type is 'online'.
             num_online_rounds: Number of rounds to run in online learning.
+            num_bins: Number of bins used for the splines in `nsf`. Ignored if density
+            estimator not `nsf`.
             initial_training_from_grid: Whether to use the initial training from the grid when
                 learning_type is 'online'. Reduces number of calls to the simulator. WARNING! BROKEN.
             override_prior_ranges: Dictionary of prior ranges to override the default ranges.
@@ -1254,7 +1259,7 @@ class SBI_Fitter:
             assert len(test_indices) > 0, "Test indices should not be empty."
 
             assert self.feature_array.shape[0] == self.fitted_parameter_array.shape[0], (
-                "Feature array and parameter array should have the same number of samples."
+                f"Feature array and parameter array should have the same number of samples, got {self.feature_array.shape[0]} and {self.fitted_parameter_array.shape[0]}."
             )
 
             X_train = self.feature_array[train_indices]
@@ -1381,6 +1386,9 @@ class SBI_Fitter:
                     "hidden_features": hidden_features[i] if isinstance(hidden_features, list) else hidden_features,
                     "num_transforms": num_transforms[i] if isinstance(num_transforms, list) else num_transforms,
                 }
+                if model_type == "nsf":
+                    model_args["num_bins"] = num_bins
+                    
             elif model_type in ["linear"]:
                 model_args = {}
             elif model_type in ["mlp", "resnet"]:
