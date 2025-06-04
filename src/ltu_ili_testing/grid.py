@@ -15,7 +15,7 @@ from synthesizer.parametric import SFH, Stars, ZDist
 from synthesizer.instruments import Instrument, FilterCollection
 from synthesizer.particle.stars import sample_sfzh
 from synthesizer.conversions import lnu_to_fnu
-from typing import Dict, Any, List, Tuple, Union, Optional, Type
+from typing import Dict, Any, List, Tuple, Union, Optional, Type, Callable
 from collections import defaultdict
 import copy
 from unyt import unyt_array, unyt_quantity, Angstrom, um, nJy, Msun, Myr, yr, Unit, Mpc, dimensionless, Jy, uJy
@@ -26,7 +26,10 @@ from matplotlib.ticker import ScalarFormatter, FuncFormatter
 from tqdm import tqdm
 from synthesizer.pipeline import Pipeline
 import matplotlib.patheffects as PathEffects
+from scipy.interpolate import interp1d
+from scipy import stats
 from scipy.stats import qmc
+
 
 warnings.filterwarnings("ignore")
 
@@ -1064,6 +1067,8 @@ class GalaxyBasis:
         verbose: int = 1,
         save: bool = True,
         emission_model_keys=None,
+        batch_galaxies: bool = True,
+        batch_size: int = 40_000,
         **extra_analysis_functions,
     ) -> Pipeline:
         self.emission_model.set_per_particle(self.per_particle)
@@ -1073,73 +1078,95 @@ class GalaxyBasis:
 
         print("Creating pipeline.")
 
-        pipeline = Pipeline(
-            emission_model=self.emission_model,
-            nthreads=n_proc,
-            verbose=verbose,
-        )
+        if not batch_galaxies:
+            batch_size = len(galaxies)
 
-        for key in self.all_parameters.keys():
-            pipeline.add_analysis_func(lambda gal, key=key: gal.all_params[key], result_key=key)
+        n_batches = int(np.ceil(len(galaxies) / batch_size))
 
-        pipeline.add_analysis_func(lambda gal: gal.stars.initial_mass, result_key="mass")
+        if n_batches > 1:
+            print(f"Splitting galaxies into {n_batches} batches of size {batch_size}.")
+            galaxies = [galaxies[i * batch_size : (i + 1) * batch_size] for i in range(n_batches)]
 
-        print("Added analysis functions to pipeline.")
+        for batch_i, batch in enumerate(galaxies):
 
-        # Add any extra analysis functions requested by the user.
+            if save:
+                if out_dir == "self":
+                    out_dir = self.out_dir
 
-        for key, params in extra_analysis_functions.items():
-            if callable(params):
-                func = params
-            else:
-                func = params[0]
-                params = params[1:]
+                if out_name == "auto":
+                    out_name = self.model_name
 
-            pipeline.add_analysis_func(func, f"supp_{key}", *params)
+                fullpath = os.path.join(out_dir, out_name)
+                final_fullpath = fullpath.replace(".hdf5", f"_{batch_i+1}.hdf5")
+                init_fullpath = fullpath.replace(".hdf5", "_0.hdf5")
+                if os.path.exists(final_fullpath):
+                    print(f"Skipping batch {batch_i+1} as {final_fullpath} already exists.")
+                    galaxies[batch_i] = None  # Clear the batch to free memory
+                    continue
+                
 
-        pipeline.add_galaxies(galaxies)
-        # pipeline.get_spectra() # Switch off so they aren't saved
-        pipeline.get_observed_spectra(self.cosmo)
+            pipeline = Pipeline(
+                emission_model=self.emission_model,
+                nthreads=n_proc,
+                verbose=verbose,
+            )
 
-        # pipeline.get_photometry_luminosities() # Switch off so they aren't saved
-        pipeline.get_photometry_fluxes(self.instrument)
+            for key in self.all_parameters.keys():
+                pipeline.add_analysis_func(lambda gal, key=key: gal.all_params[key], result_key=key)
 
-        ngal = len(galaxies)
-        print(f"Running pipeline at {datetime.now()} for {ngal} galaxies")
-        pipeline.run()
-        print(f"Finished running pipeline at {datetime.now()} for {ngal} galaxies")
-        if save:
-            # Save the pipeline to a file
+            pipeline.add_analysis_func(lambda gal: gal.stars.initial_mass, result_key="mass")
 
-            if out_dir == "self":
-                out_dir = self.out_dir
+            print("Added analysis functions to pipeline.")
 
-            if out_name == "auto":
-                out_name = self.model_name
+            # Add any extra analysis functions requested by the user.
 
-            fullpath = os.path.join(out_dir, out_name)
+            for key, params in extra_analysis_functions.items():
+                if callable(params):
+                    func = params
+                else:
+                    func = params[0]
+                    params = params[1:]
 
-            pipeline.write(fullpath, verbose=0)
+                pipeline.add_analysis_func(func, f"supp_{key}", *params)
 
-            wav = self.grid.lam.to(Angstrom).value
+            # pipeline.get_spectra() # Switch off so they aren't saved
+            pipeline.get_observed_spectra(self.cosmo)
 
-            # it will put the file at fullpath_0.hdf5, so we need to rename it
-            pipe_fullpath = fullpath.replace(".hdf5", "_0.hdf5")
-            os.rename(pipe_fullpath, fullpath)
+            # pipeline.get_photometry_luminosities() # Switch off so they aren't saved
+            pipeline.get_photometry_fluxes(self.instrument)
+            
+            pipeline.add_galaxies(batch)
+            
+            ngal = len(batch)
+            print(f"Running pipeline at {datetime.now()} for {ngal} galaxies")
+            pipeline.run()
+            print(f"Finished running pipeline at {datetime.now()} for {ngal} galaxies")
+            if save:
+                # Save the pipeline to a file
+                pipeline.write(fullpath, verbose=0)
 
-            with h5py.File(fullpath, "r+") as f:
-                # Add the varying and fixed parameters to the file
-                f.attrs["varying_param_names"] = self.varying_param_names
-                f.attrs["fixed_param_names"] = self.fixed_param_names
+                wav = self.grid.lam.to(Angstrom).value
 
-                # Store grid wavelengths since I can't see them in the pipeline output (the filter wavelength array doesn't match)
+    
+                if n_batches  == 1:
+                    final_fullpath = fullpath
 
-                f.create_dataset("Wavelengths", data=wav)
-                f["Wavelengths"].attrs["Units"] = "Angstrom"
+                os.rename(init_fullpath, final_fullpath)
 
-            print(f"Written pipeline to disk at {fullpath}.")
+                with h5py.File(final_fullpath, "r+") as f:
+                    # Add the varying and fixed parameters to the file
+                    f.attrs["varying_param_names"] = self.varying_param_names
+                    f.attrs["fixed_param_names"] = self.fixed_param_names
 
-        return pipeline
+                    # Store grid wavelengths since I can't see them in the pipeline output (the filter wavelength array doesn't match)
+
+                    f.create_dataset("Wavelengths", data=wav)
+                    f["Wavelengths"].attrs["Units"] = "Angstrom"
+
+                print(f"Written pipeline to disk at {final_fullpath}.")
+
+            del pipeline  # Clean up the pipeline object to free memory
+            galaxies[batch_i] = None  # Clear the batch to free memory
 
     def plot_random_galaxy(self, masses, **kwargs):
         """
@@ -1413,6 +1440,7 @@ class CombinedBasis:
         n_proc: int = 6,
         overwrite: Union[bool, List[bool]] = False,
         verbose=False,
+        batch_size: int = 40_000,
         **extra_analysis_functions,
     ) -> None:
         """
@@ -1464,10 +1492,11 @@ class CombinedBasis:
                 verbose=verbose,
                 save=True,
                 emission_model_keys=self.base_emission_model_keys[i],
+                batch_size=batch_size,
                 **extra_analysis_functions,
             )
 
-    def load_bases(self, indexes: List[int] = None) -> dict:
+    def load_bases(self, load_spectra=False) -> dict:
         # Load the bases from the files
 
         outputs = {}
@@ -1476,72 +1505,123 @@ class CombinedBasis:
 
             full_out_path = f"{self.out_dir}/{base.model_name}.hdf5"
             if not os.path.exists(full_out_path):
-                raise ValueError(f"File {full_out_path} does not exist")
 
-            properties = {}
-            supp_properties = {}
+                if os.path.exists(f"{self.out_dir}/{base.model_name}_1.hdf5"):
+                    import glob
+                    # Check if there are multiple files for this base
+                    full_out_paths = glob.glob(f"{self.out_dir}/{base.model_name}_*.hdf5")
+                    print(f"Found {len(full_out_paths)} files for base {base.model_name}.")
 
-            with h5py.File(full_out_path, "r") as f:
-                # Load in which parameters are varying and fixed
-                base.varying_param_names = f.attrs["varying_param_names"]
-                base.fixed_param_names = f.attrs["fixed_param_names"]
+                    full_out_paths = sorted(full_out_paths, key=lambda x: int(x.split("_")[-1].split(".")[0]))
+                else:
+                    raise ValueError(f"File {full_out_path} does not exist")
+            else:
+                full_out_paths = [full_out_path]
 
-                galaxies = f["Galaxies"]
 
-                property_keys = list(galaxies.keys())
-                property_keys.remove("Stars")
+            for j, path in enumerate(full_out_paths):
+                properties = {}
+                supp_properties = {}
+                with h5py.File(path, "r") as f:
+                    # Load in which parameters are varying and fixed
+                    base.varying_param_names = f.attrs["varying_param_names"]
+                    base.fixed_param_names = f.attrs["fixed_param_names"]
 
-                for key in property_keys:
-                    if key.startswith("supp_"):
-                        dic = supp_properties
-                        use_key = key[5:]
+                    galaxies = f["Galaxies"]
+
+                    property_keys = list(galaxies.keys())
+                    property_keys.remove("Stars")
+
+                    for key in property_keys:
+                        if key.startswith("supp_"):
+                            dic = supp_properties
+                            use_key = key[5:]
+                        else:
+                            dic = properties
+                            use_key = key
+
+                        if isinstance(galaxies[key], h5py.Group):
+                            dic[use_key] = {}
+                            for subkey in galaxies[key].keys():
+                                dic[use_key][subkey] = galaxies[key][subkey][()]
+                                if hasattr(galaxies[key][subkey], "attrs"):
+                                    if "Units" in galaxies[key][subkey].attrs:
+                                        unit = galaxies[key][subkey].attrs["Units"]
+                                        dic[use_key][subkey] = unyt_array(dic[use_key][subkey], unit)
+                        else:
+                            dic[use_key] = galaxies[key][()]
+                            if hasattr(galaxies[key], "attrs"):
+                                if "Units" in galaxies[key].attrs:
+                                    unit = galaxies[key].attrs["Units"]
+                                    dic[use_key] = unyt_array(dic[use_key], unit)
+
+                    if load_spectra:
+                    # Get the spectra
+                        spec = galaxies["Stars"]["Spectra"]["SpectralFluxDensities"]
+                        assert self.base_emission_model_keys[i] in spec.keys(), (
+                            f"Emission model key {self.base_emission_model_keys[i]} not found in {spec.keys()}"
+                        )
+                        observed_spectra = spec[self.base_emission_model_keys[i]]
+                        observed_spectra = unyt_array(observed_spectra, units=observed_spectra.attrs["Units"])
                     else:
-                        dic = properties
-                        use_key = key
+                        observed_spectra = {}
 
-                    if isinstance(galaxies[key], h5py.Group):
-                        dic[use_key] = {}
-                        for subkey in galaxies[key].keys():
-                            dic[use_key][subkey] = galaxies[key][subkey][()]
-                            if hasattr(galaxies[key][subkey], "attrs"):
-                                if "Units" in galaxies[key][subkey].attrs:
-                                    unit = galaxies[key][subkey].attrs["Units"]
-                                    dic[use_key][subkey] = unyt_array(dic[use_key][subkey], unit)
+                    observed_photometry = galaxies["Stars"]["Photometry"]["Fluxes"][self.base_emission_model_keys[i]]
+                    
+                    phot = {}
+                    for observatory in observed_photometry:
+                        phot_inst = observed_photometry[observatory]
+
+                        for key in phot_inst.keys():
+                            full_key = f"{observatory}/{key}"
+                            phot[full_key] = phot_inst[key][()]
+
+                    if j == 0:
+                        outputs[base.model_name] = {
+                            "properties": properties,
+                            "observed_spectra": observed_spectra,
+                            "wavelengths": unyt_array(f["Wavelengths"][()], units=f["Wavelengths"].attrs["Units"]),
+                            "observed_photometry": phot,
+                            "supp_properties": supp_properties,
+                        }
+
                     else:
-                        dic[use_key] = galaxies[key][()]
-                        if hasattr(galaxies[key], "attrs"):
-                            if "Units" in galaxies[key].attrs:
-                                unit = galaxies[key].attrs["Units"]
-                                dic[use_key] = unyt_array(dic[use_key], unit)
+                        # Combine the outputs for this base with the previous ones
+                        for key in properties.keys():
 
-                # Get the spectra
-                spec = galaxies["Stars"]["Spectra"]["SpectralFluxDensities"]
-                assert self.base_emission_model_keys[i] in spec.keys(), (
-                    f"Emission model key {self.base_emission_model_keys[i]} not found in {spec.keys()}"
-                )
-                observed_spectra = spec[self.base_emission_model_keys[i]]
-                observed_spectra = unyt_array(observed_spectra, units=observed_spectra.attrs["Units"])
+                            outputs[base.model_name]["properties"][key] = np.concatenate(
+                                (outputs[base.model_name]["properties"][key], properties[key])
+                            )
 
-                flux_obs = galaxies["Stars"]["Photometry"]["Fluxes"]
-                flux_observatories = flux_obs.keys()
 
-                observed_photometry = galaxies["Stars"]["Photometry"]["Fluxes"][self.base_emission_model_keys[i]]
-                
-                phot = {}
-                for observatory in observed_photometry:
-                    phot_inst = observed_photometry[observatory]
+                        for key in phot.keys():
+                            if key not in outputs[base.model_name]["observed_photometry"]:
+                                outputs[base.model_name]["observed_photometry"][key] = []
+                            outputs[base.model_name]["observed_photometry"][key]= np.concatenate(
+                                (outputs[base.model_name]["observed_photometry"][key], phot[key])
+                            )
+                        if load_spectra:
+                            # Combine the observed spectra
+                            if "observed_spectra" not in outputs[base.model_name]:
+                                outputs[base.model_name]["observed_spectra"] = {}
+                            if self.base_emission_model_keys[i] not in outputs[base.model_name]["observed_spectra"]:
+                                outputs[base.model_name]["observed_spectra"][self.base_emission_model_keys[i]] = []
+                            outputs[base.model_name]["observed_spectra"][self.base_emission_model_keys[i]] = np.concatenate(
+                                (outputs[base.model_name]["observed_spectra"][self.base_emission_model_keys[i]], observed_spectra)
+                            )
 
-                    for key in phot_inst.keys():
-                        full_key = f"{observatory}/{key}"
-                        phot[full_key] = phot_inst[key][()]
+                        # Combine supplementary properties
+                        for key in supp_properties.keys():
+                            if key not in outputs[base.model_name]["supp_properties"]:
+                                outputs[base.model_name]["supp_properties"][key] = {}
+                            for subkey in supp_properties[key].keys():
+                                if subkey not in outputs[base.model_name]["supp_properties"][key]:
+                                    outputs[base.model_name]["supp_properties"][key][subkey] = []
+                                outputs[base.model_name]["supp_properties"][key][subkey] = np.concatenate(
+                                    (outputs[base.model_name]["supp_properties"][key][subkey], supp_properties[key][subkey])
+                                )
 
-                outputs[base.model_name] = {
-                    "properties": properties,
-                    "observed_spectra": observed_spectra,
-                    "wavelengths": unyt_array(f["Wavelengths"][()], units=f["Wavelengths"].attrs["Units"]),
-                    "observed_photometry": phot,
-                    "supp_properties": supp_properties,
-                }
+
 
         self.pipeline_outputs = outputs
 
@@ -3022,7 +3102,305 @@ class CombinedBasis:
         if save:
             self.save_grid(out, overload_out_name=overload_out_name, overwrite=overwrite)
 
+class EmpiricalUncertaintyModel:
+    """
+    A class to model and sample photometric uncertainties based on an empirical
+    distribution derived from observed fluxes and their uncertainties.
 
+    The model estimates p(sigma_X | f_X) as a Gaussian N(mu_sigma_X(f_X), sigma_sigma_X(f_X)),
+    where mu_sigma_X and sigma_sigma_X are interpolated from binned statistics of
+    observed (sigma_X, f_X) pairs.
+    """
+
+    def __init__(
+        self,
+        observed_fluxes: np.ndarray,
+        observed_errors: np.ndarray,
+        num_bins: int = 20,
+        flux_bins: Optional[np.ndarray] = None,
+        log_bins: bool = True,
+        min_flux_for_binning: Optional[float] = None,
+        min_samples_per_bin: int = 10,
+        flux_unit: str = "AB",
+        min_flux_error: Optional[float] = None,
+
+
+    ):
+        """
+        Initializes the model by building interpolators for the mean and
+        standard deviation of observed errors as a function of flux.
+
+        Args:
+            observed_fluxes: 1D array of fluxes from a real survey.
+            observed_errors: 1D array of corresponding flux uncertainties.
+            num_bins: Number of bins to use for flux if flux_bins is not provided.
+            flux_bins: Optional array defining the edges of flux bins.
+                       If None, bins are created based on num_bins and log_bins.
+            log_bins: If True and flux_bins is None, bins will be spaced
+                      logarithmically. Otherwise, linearly.
+            min_flux_for_binning: If provided, only fluxes above this value are
+                                  used for creating the interpolation model.
+                                  This can help avoid issues with very low/zero fluxes.
+            min_samples_per_bin: Minimum number of samples required in a bin
+                                 for it to be considered valid for interpolation.
+        """
+        if len(observed_fluxes) != len(observed_errors):
+            raise ValueError("observed_fluxes and observed_errors must have the same length.")
+
+        valid_mask = np.isfinite(observed_fluxes) & np.isfinite(observed_errors) & (observed_errors > 0)
+        if min_flux_for_binning is not None:
+            valid_mask &= (observed_fluxes > min_flux_for_binning)
+
+        fluxes = observed_fluxes[valid_mask]
+        errors = observed_errors[valid_mask]
+
+        if len(fluxes) < min_samples_per_bin * 2 : # Need at least two bins for interpolation
+             raise ValueError(
+                f"Not enough valid data points ({len(fluxes)}) to build the model "
+                f"with min_samples_per_bin={min_samples_per_bin}. "
+                "Consider adjusting min_flux_for_binning or providing more data."
+            )
+
+
+        if flux_bins is None:
+            if log_bins:
+                # Ensure fluxes are positive for log binning
+                positive_flux_mask = fluxes > 0
+                if not np.any(positive_flux_mask):
+                    raise ValueError("No positive fluxes available for log binning. Try linear bins or check data.")
+                min_f = np.min(fluxes[positive_flux_mask])
+                max_f = np.max(fluxes[positive_flux_mask])
+                if min_f <= 0: # Should be caught by positive_flux_mask, but as safeguard
+                    min_f = np.partition(fluxes[positive_flux_mask], 1)[1] if len(fluxes[positive_flux_mask]) > 1 else 1e-9
+                flux_bins = np.logspace(np.log10(min_f), np.log10(max_f), num_bins + 1)
+            else:
+                min_f = np.min(fluxes)
+                max_f = np.max(fluxes)
+                flux_bins = np.linspace(min_f, max_f, num_bins + 1)
+        
+        self.flux_bins_centers: List[float] = []
+        bin_median_errors: List[float] = []
+        bin_std_errors: List[float] = []
+
+        for i in range(len(flux_bins) - 1):
+            low_f, high_f = flux_bins[i], flux_bins[i+1]
+            # Ensure the last bin includes the maximum value
+            if i == len(flux_bins) - 2:
+                 mask = (fluxes >= low_f) & (fluxes <= high_f)
+            else:
+                 mask = (fluxes >= low_f) & (fluxes < high_f)
+
+            errors_in_bin = errors[mask]
+
+            if len(errors_in_bin) >= min_samples_per_bin:
+                self.flux_bins_centers.append(low_f + (high_f - low_f) / 2.0) # Bin center
+                bin_median_errors.append(np.median(errors_in_bin))
+                bin_std_errors.append(np.std(errors_in_bin))
+
+        if len(self.flux_bins_centers) < 2: # Need at least two points for interpolation
+            raise ValueError(
+                f"Could not create enough valid bins ({len(self.flux_bins_centers)}) "
+                f"for interpolation with min_samples_per_bin={min_samples_per_bin}. "
+                "Try reducing num_bins, adjusting flux_bins, or min_flux_for_binning."
+            )
+
+        self.flux_bins_centers = np.array(self.flux_bins_centers)
+        # Store the flux range for which the model is considered valid
+        self._min_interp_flux = self.flux_bins_centers[0]
+        self._max_interp_flux = self.flux_bins_centers[-1]
+
+        self.flux_unit = flux_unit
+        self.min_flux_error = min_flux_error if min_flux_error is not None else 0.0
+
+        # Use 'bounds_error=False' and 'fill_value' to handle extrapolation.
+        # For sigma_sigma_X (std of errors), it should not be negative.
+        # We use the value from the closest bin if extrapolating.
+        print(bin_median_errors[0], bin_std_errors[0])
+
+        self.mu_sigma_interpolator_clip: Callable[[Union[float, np.ndarray]], Union[float, np.ndarray]] = interp1d(
+            self.flux_bins_centers, bin_median_errors, kind='linear',
+            bounds_error=False, fill_value=(bin_median_errors[0], bin_median_errors[-1])
+        )
+        '''self.mu_sigma_interpolator_extrap: Callable[[Union[float, np.ndarray]], Union[float, np.ndarray]] = interp1d(
+            self.flux_bins_centers, bin_median_errors, kind='linear',
+            bounds_error=False, fill_value='extrapolate'
+        )
+
+        def mu_sigma_interpolator(flux_values):
+            output = np.empty_like(flux_values, dtype=float)
+            extrapolate_mask = flux_values > self._max_interp_flux
+            output[~extrapolate_mask]  = self.mu_sigma_interpolator_clip(flux_values[~extrapolate_mask])
+            output[extrapolate_mask]  = self.mu_sigma_interpolator_extrap(flux_values[extrapolate_mask])
+            return output'''
+        
+        self.mu_sigma_interpolator = self.mu_sigma_interpolator_clip
+
+        self.sigma_sigma_interpolator_clip: Callable[[Union[float, np.ndarray]], Union[float, np.ndarray]] = interp1d(
+            self.flux_bins_centers, bin_std_errors, kind='linear',
+            bounds_error=False, fill_value=(bin_std_errors[0], bin_std_errors[-1])
+        )
+        '''self.sigma_sigma_interpolator_extrap: Callable[[Union[float, np.ndarray]], Union[float, np.ndarray]] = interp1d(
+            self.flux_bins_centers, bin_std_errors, kind='linear',
+            bounds_error=False, fill_value='extrapolate'
+        )
+
+        def sigma_sigma_interpolator(flux_values):
+
+            output = np.empty_like(flux_values, dtype=float)
+            extrapolate_mask = flux_values > self._max_interp_flux
+            output[~extrapolate_mask]  = self.sigma_sigma_interpolator_clip(flux_values[~extrapolate_mask])
+            output[extrapolate_mask]  = self.sigma_sigma_interpolator_extrap(flux_values[extrapolate_mask])
+            
+                    return output'''
+        
+        self.sigma_sigma_interpolator = self.sigma_sigma_interpolator_clip
+        
+        # Ensure sigma_sigma (the std dev of the error distribution) is not negative after interpolation
+        # by wrapping the interpolator.
+        original_sigma_sigma_interpolator = self.sigma_sigma_interpolator
+        def non_negative_sigma_sigma_interpolator(flux_values):
+            std_devs = original_sigma_sigma_interpolator(flux_values)
+            if isinstance(std_devs, np.ndarray):
+                std_devs[std_devs < 0] = 0
+            elif std_devs < 0: # scalar
+                std_devs = 0
+            return std_devs
+        self.sigma_sigma_interpolator = non_negative_sigma_sigma_interpolator
+        
+    def plot_sigma(self, ax=None, **kwargs):
+        if ax is None:
+            import matplotlib.pyplot as plt
+            fig, ax = plt.subplots()
+        flux_range = np.linspace(self._min_interp_flux, self._max_interp_flux, 1000)
+        mu_sigma = self.mu_sigma_interpolator(flux_range)
+        sigma_sigma = self.sigma_sigma_interpolator(flux_range)
+
+        line=ax.plot(flux_range, mu_sigma, **kwargs)
+        ax.fill_between(flux_range, mu_sigma - sigma_sigma, mu_sigma + sigma_sigma,
+                        alpha=0.2, color=line[0].get_color())
+        
+        ax.set_xlabel(f"Flux ({self.flux_unit})")
+        ax.set_ylabel(f"Flux Uncertainty ({self.flux_unit})")
+
+
+    def get_valid_flux_range(self) -> Tuple[float, float]:
+        """Returns the flux range for which the interpolator was built."""
+        return self._min_interp_flux, self._max_interp_flux
+
+    def sample_uncertainty(
+        self,
+        true_flux: Union[float, np.ndarray],
+        max_resamples_for_positive_sigma: int = 5
+    ) -> Union[float, np.ndarray, None]:
+        """
+        Samples a 'fake' uncertainty (sigma_prime_X) for a given true flux.
+
+        Args:
+            true_flux: The true flux value(s) for which to sample an uncertainty.
+            max_resamples_for_positive_sigma: How many times to try resampling if a
+                                              negative sigma_prime_X is drawn.
+
+        Returns:
+            The sampled uncertainty (sigma_prime_X). Returns np.nan for scalar input
+            or an array with np.nan for problematic inputs if a positive sigma
+            cannot be sampled after max_resamples.
+        """
+
+        is_scalar = np.isscalar(true_flux)
+        flux_array = np.atleast_1d(true_flux)
+        sampled_sigmas = np.empty_like(flux_array)
+
+        mu_sigma_values = self.mu_sigma_interpolator(flux_array)
+        sigma_sigma_values = self.sigma_sigma_interpolator(flux_array) # Already ensures non-negativity
+
+        for i in range(len(flux_array)):
+            mu_s = mu_sigma_values[i]
+            sig_s = sigma_sigma_values[i]
+            
+            # Handle cases where true_flux might be outside the reliable interpolation range
+            # The interpolators use fill_value, but we might want to flag this.
+            # For this example, we proceed with the extrapolated/filled values.
+
+            sigma_prime_x = -1.0  # Initialize to a non-physical value
+            for _ in range(max_resamples_for_positive_sigma):
+                sigma_prime_x = stats.norm.rvs(loc=mu_s, scale=sig_s)
+                if sigma_prime_x > 0:
+                    break
+            
+            if sigma_prime_x <= 0:
+                # Could raise an error, return a default, or NaN as per literature's removal rule.
+                # Returning NaN indicates the calling code should handle removal.
+                print(f"Warning: Could not sample a positive sigma for flux {flux_array[i]} "
+                       f"(mu_sigma={mu_s:.2e}, sigma_sigma={sig_s:.2e}). Assigning NaN.")
+                sampled_sigmas[i] = np.nan
+            else:
+                sampled_sigmas[i] = sigma_prime_x
+        
+        return sampled_sigmas[0] if is_scalar else sampled_sigmas
+
+    def apply_noise_to_flux(
+        self,
+        true_flux: Union[float, np.ndarray],
+        true_flux_units: Optional[str] = None,
+        max_resamples_for_positive_sigma: int = 5,
+        out_units: Optional[str] = None,
+    ) -> Tuple[Union[float, np.ndarray, None], Union[float, np.ndarray, None]]:
+        """
+        Applies noise to a true flux by first sampling an uncertainty
+        and then adding Gaussian noise.
+
+        Args:
+            true_flux: The true flux value(s).
+            max_resamples_for_positive_sigma: Passed to sample_uncertainty.
+
+        Returns:
+            A tuple (noisy_flux, sampled_sigma_prime).
+            Returns (np.nan, np.nan) for problematic inputs where positive sigma
+            could not be determined.
+        """
+        if self.flux_unit != true_flux_units:
+            if self.flux_unit == "AB":
+                if not isinstance(true_flux, unyt_array):
+                    true_flux = unyt_array(true_flux, units=true_flux_units).to("Jy").value
+                else:
+                    true_flux = true_flux.to("Jy").value
+
+                true_flux = -2.5 * np.log10(true_flux) + 8.9 
+            else:
+                true_flux = unyt_array(true_flux, units=true_flux_units).to(self.flux_unit).value
+
+                
+        is_scalar = np.isscalar(true_flux)
+        flux_array = np.atleast_1d(true_flux)
+
+        flux_array = np.array(flux_array, dtype=float)  # Ensure it's a float array for calculations
+
+        sampled_sigma_prime = self.sample_uncertainty(flux_array, max_resamples_for_positive_sigma)
+        
+        # Apply minimum flux error
+        sampled_sigma_prime[sampled_sigma_prime < self.min_flux_error] = self.min_flux_error
+
+        noisy_flux_array = flux_array + stats.norm.rvs(loc=0, scale=sampled_sigma_prime)
+          # Ensure noise is not below the minimum error
+        noisy_flux_array[np.isnan(sampled_sigma_prime)] = np.nan  # Handle NaNs from sampling
+
+
+        # convert back to original units if necessary
+
+        if out_units is None:
+            out_units = true_flux_units
+
+        if self.flux_unit != out_units:
+            if self.flux_unit == "AB":
+                raise NotImplementedError()
+            else:
+                noisy_flux_array = unyt_array(noisy_flux_array, units=self.flux_unit).to(true_flux_units).value
+                sampled_sigma_prime = unyt_array(sampled_sigma_prime, units=self.flux_unit).to(true_flux_units).value
+
+        if is_scalar:
+            return noisy_flux_array[0], sampled_sigma_prime[0]
+        return noisy_flux_array, sampled_sigma_prime
+    
 class GalaxySimulator(object):
     """
     Photometry Simulator class. Initialize with required model,
@@ -3049,9 +3427,11 @@ class GalaxySimulator(object):
         extra_functions: List[callable] = None,
         normalize_method: str = None,
         output_type: str = "photo_fnu",
+        include_phot_errors: bool = False,
         set_self=False,
         depths: Union[np.ndarray, unyt_array] = None,
         depth_sigma: int = 5,
+        noise_models: Union[None, Dict[str, EmpiricalUncertaintyModel]] = None,
         fixed_params: dict = {},
     ) -> None:
         """
@@ -3083,7 +3463,7 @@ class GalaxySimulator(object):
             Dictionary of parameter transforms to use. Keys are the parameter names and values are the transforms functions.
             Can be used to fit say Av when model requires tau_v, or for unit conversion etc.
         out_flux_unit : str
-            Output flux unit to use. Default is 'nJy'. Can be 'ABmag', 'Jy', 'nJy', 'uJy', 'mJy'.
+            Output flux unit to use. Default is 'nJy'. Can be 'AB', 'Jy', 'nJy', 'uJy', 'mJy'.
         required_keys : list
             List of required keys to use. Default is ['redshift', 'log_mass']. Typically this can be ignored.
         extra_functions : List[callable]
@@ -3096,11 +3476,15 @@ class GalaxySimulator(object):
             Currently can be either the name of a filter, or a callable function with the same rules as extra_functions.
         output_type : str
             Output type to use. Default is 'photo_fnu'. Can be 'photo_fnu', 'photo_lnu', 'fnu', 'lnu', or a list of any of these.
+        include_phot_errors : bool
+            Whether to include photometric errors in the output. Default is False.
         depths : Union[np.ndarray, unyt_array] = None
             Depths to use for the photometry. If None, no depths are applied. Default is None.
         depth_sigma : int
             Sigma to use for the depths. Default is 5. This is used to calculate the 1 sigma error in nJy.
             If depths is None, this is ignored.
+        noise_models : Union[None, Dict[str, EmpiricalUncertaintyModel]] = None
+            List of noise models to use for the photometry. If None, no noise is applied. Default is None.
         fixed_params : dict
             Dictionary of fixed parameters to use. Keys are the parameter names and values are the fixed values.
             This is used to fix parameters in the simulation. If None, no parameters are fixed. Default is None.
@@ -3129,6 +3513,26 @@ class GalaxySimulator(object):
         self.extra_functions = extra_functions
         self.normalize_method = normalize_method
         self.fixed_params = fixed_params
+
+        if noise_models is not None:
+            assert isinstance(noise_models, dict), (
+                f"Noise models must be a dictionary. Got {type(noise_models)} instead."
+            )
+            # Check all filters in noise_models are in the instrument filters
+            for filter_code in instrument.filters.filter_codes:
+                if filter_code not in noise_models:
+                    raise ValueError(
+                        f"Filter {filter_code} not found in noise models. Cannot apply noise models to photometry."
+                    )
+        self.noise_models = noise_models
+        self.include_phot_errors = include_phot_errors
+
+        assert not (self.depths is not None and self.noise_models is not None), (
+            "Cannot use both depths and noise models at the same time. Choose one or the other."
+        )
+        assert not (self.depths is None and self.noise_models is None and self.include_phot_errors), (
+            "Cannot include photometric errors without depths or noise models. Set include_phot_errors to False or provide depths or noise models."
+        )
 
         if depths is not None:
             assert len(depths) == len(instrument.filters.filter_codes), (
@@ -3308,7 +3712,7 @@ class GalaxySimulator(object):
                 outputs["fnu"] = fluxes
                 outputs["fnu_wav"] = galaxy.stars.spectra[self.emission_model_key].lam * (1 + galaxy.redshift)
 
-        if self.out_flux_unit == "ABmag":
+        if self.out_flux_unit == "AB":
             def convert(f):
                 return -2.5 * np.log10(f.to(Jy).value) + 8.9
             if "photo_fnu" in self.output_type:
@@ -3355,7 +3759,7 @@ class GalaxySimulator(object):
                     inputs = inspect_func(func, locals())
                     output.append(func(**inputs))
 
-        fluxes = self._scatter(fluxes, flux_units=self.out_flux_unit)
+        fluxes, errors = self._scatter(fluxes, flux_units=self.out_flux_unit)
 
         if self.normalize_method is not None:
             if callable(self.normalize_method):
@@ -3369,13 +3773,16 @@ class GalaxySimulator(object):
 
             fluxes = self._normalize(fluxes, method=norm, norm_unit=self.out_flux_unit)
 
+        if self.include_phot_errors:
+            fluxes = np.concatenate((fluxes, errors))
+
         return fluxes
 
-    def _normalize(self, fluxes, method=None, norm_unit="ABmag", add_norm_pos=-1):
+    def _normalize(self, fluxes, method=None, norm_unit="AB", add_norm_pos=-1):
         if method is None:
             return fluxes
 
-        if norm_unit == "ABmag":
+        if norm_unit == "AB":
             func = np.subtract
         else:
             func = np.divide
@@ -3389,8 +3796,8 @@ class GalaxySimulator(object):
             else:
                 raise ValueError(f"Filter {method} not found in filter codes. Cannot normalize photometry.")
         elif isinstance(method, (unyt_array, unyt_quantity)):
-            if norm_unit == "ABmag":
-                # Convert to ABmag
+            if norm_unit == "AB":
+                # Convert to AB
                 method = -2.5 * np.log10(method.to(Jy).value) + 8.9
 
             norm = method
@@ -3418,44 +3825,74 @@ class GalaxySimulator(object):
         to generate a scattered photometry array of shape (m*n_scatters, n) from photometry array
         """
 
-        depths = self.depths
+        if self.depths is not None:
+            depths = self.depths
+            if depths is None:
+                return fluxes
 
-        if depths is None:
-            return fluxes
+            depths = np.array(depths)
 
-        depths = np.array(depths)
+            m = fluxes.shape
 
-        m = fluxes.shape
+            if isinstance(fluxes, unyt_array):
+                assert fluxes.units == flux_units, (
+                    f"Fluxes units {fluxes.units} do not match flux units {flux_units}. Cannot scatter photometry."
+                )
 
-        if isinstance(fluxes, unyt_array):
-            assert fluxes.units == flux_units, (
-                f"Fluxes units {fluxes.units} do not match flux units {flux_units}. Cannot scatter photometry."
-            )
+            if flux_units == "AB":
+                fluxes = (10 ** ((fluxes - 23.9) / -2.5)) * uJy
 
-        if flux_units == "ABmag":
-            fluxes = (10 ** ((fluxes - 23.9) / -2.5)) * uJy
+            # Convert depths based on units
+            if self.out_flux_unit == "AB" and not hasattr(depths, "unit"):
+                # Convert from AB magnitudes to microjanskys
+                depths_converted = (10 ** ((depths - 23.9) / -2.5)) * uJy
+                depths_std = depths_converted.to(uJy).value / self.depth_sigma
+            else:
+                depths_std = depths.to(self.out_flux_unit).value / self.depth_sigma
+            # Pre-allocate output array with correct dimensions
+            output_arr = np.zeros(m)
 
-        # Convert depths based on units
-        if self.out_flux_unit == "ABmag" and not hasattr(depths, "unit"):
-            # Convert from AB magnitudes to microjanskys
-            depths_converted = (10 ** ((depths - 23.9) / -2.5)) * uJy
-            depths_std = depths_converted.to(uJy).value / self.depth_sigma
+            # Generate all random values at once for better performance
+            random_values = np.random.normal(loc=0, scale=depths_std, size=(m)) * uJy
+            # Add the random values to the fluxes
+            output_arr = fluxes + random_values
+
+            errors = depths_std
+
+            if flux_units == "AB":
+                # Convert back to AB magnitudes
+                output_arr = -2.5 * np.log10(output_arr.to(Jy).value) + 8.9
+                errors = -2.5 * np.log10(1 + (depths_std / fluxes.to(uJy).value))
+
+
+            return output_arr, errors
+        
+        elif self.noise_models is not None:
+            # Apply noise models to the fluxes
+            scattered_fluxes = np.zeros_like(fluxes, dtype=float)
+            errors = np.zeros_like(fluxes, dtype=float)
+            for i, filter_code in enumerate(self.instrument.filters.filter_codes):
+                noise_model = self.noise_models.get(filter_code)
+                flux = fluxes[i]
+
+                scattered_flux, sigma = noise_model.apply_noise_to_flux(
+                    true_flux=flux,
+                    true_flux_units=flux_units,
+                    max_resamples_for_positive_sigma=5,
+                    out_units=self.out_flux_unit,
+                )
+
+                scattered_fluxes[i] = scattered_flux
+                errors[i] = sigma
+                
+
+            return scattered_fluxes, errors
+
         else:
-            depths_std = depths.to(self.out_flux_unit).value / self.depth_sigma
-        # Pre-allocate output array with correct dimensions
-        output_arr = np.zeros(m)
+            # No depths or noise models, return the fluxes as is
+            return fluxes, None
 
-        # Generate all random values at once for better performance
-        random_values = np.random.normal(loc=0, scale=depths_std, size=(m)) * uJy
-        # Add the random values to the fluxes
-        output_arr = fluxes + random_values
-
-        if flux_units == "ABmag":
-            # Convert back to AB magnitudes
-            output_arr = -2.5 * np.log10(output_arr.to(Jy).value) + 8.9
-
-        return output_arr
-
+    
     def __call__(self, params):
         return self.simulate(params)
 
@@ -3464,6 +3901,7 @@ class GalaxySimulator(object):
 
     def __str__(self):
         return f"PhotometrySimulator({self.sfh_model}, {self.zdist_model}, {self.grid}, {self.instrument}, {self.emission_model}, {self.emission_model_key})"
+
 
 
 def calculate_min_max_wav_grid(filterset, max_redshift, min_redshift=0):
@@ -3480,6 +3918,8 @@ def calculate_min_max_wav_grid(filterset, max_redshift, min_redshift=0):
     min_wav = filter_lims[0] / (1 + max_redshift)
 
     return min_wav, max_wav
+
+
 
 
 if __name__ == "__main__":
