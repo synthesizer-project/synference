@@ -4,26 +4,20 @@ import os
 import sys
 from tqdm import tqdm
 from synthesizer.emission_models import TotalEmission
-from synthesizer.emission_models.attenuation import Calzetti2000, ParametricLi08 #noqa
+from synthesizer.emission_models.attenuation import Calzetti2000, ParametricLi08, PowerLaw #noqa
+from synthesizer.emission_models.stellar.pacman_model import CharlotFall2000, BimodalPacmanEmission #noqa
+from synthesizer.emission_models.dust.emission import Greybody, IR_templates #noqa
 from synthesizer.grid import Grid
 from synthesizer.parametric import SFH, ZDist
 from synthesizer.instruments import Instrument, FilterCollection
 
-from unyt import unyt_array, Msun, Myr
+from unyt import unyt_array, Msun, Myr, dimensionless, K
 from astropy.cosmology import Planck18
 from ltu_ili_testing import (generate_sfh_basis, 
                             generate_constant_R, GalaxyBasis, CombinedBasis,
                             calculate_muv, draw_from_hypercube, generate_random_DB_sfh)
-'''try:
-    from mpi4py import MPI
-    rank = MPI.COMM_WORLD.Get_rank()
-    size = MPI.COMM_WORLD.Get_size()
 
-except ImportError:
-    rank, size = 0, 1'''
 
-# Issues
-# Minimum Age longer than maximum age!
 
 # Filters
 # ---------------------------------------------------------------
@@ -33,7 +27,7 @@ filter_codes = [
     "JWST/NIRCam.F070W",  "HST/ACS_WFC.F775W", "HST/ACS_WFC.F814W", 
     "HST/ACS_WFC.F850LP", "JWST/NIRCam.F090W", "HST/WFC3_IR.F105W",
     "HST/WFC3_IR.F110W", "JWST/NIRCam.F115W", "HST/WFC3_IR.F125W", 
-    "JWST/NIRCam.F140M","HST/WFC3_IR.F140W","JWST/NIRCam.F150W",
+    "JWST/NIRCam.F140M","HST/WFC3_IR.F140W", "JWST/NIRCam.F150W",
     "HST/WFC3_IR.F160W", "JWST/NIRCam.F162M", "JWST/NIRCam.F182M",
     "JWST/NIRCam.F200W","JWST/NIRCam.F210M", "JWST/NIRCam.F250M", 
     "JWST/NIRCam.F277W", "JWST/NIRCam.F300M","JWST/NIRCam.F335M", 
@@ -81,19 +75,28 @@ try:
 except Exception:
     n_proc = 6
 
+av_to_tau_v = 1.086 # conversion factor from Av to tau_v for the dust attenuation curve
 # params
 
-Nmodels = 50_000
+# Two component dust law
+
+
+
+Nmodels = 500_000
+batch_size = 40_000 # number of models to generate in each batch
 redshift = (0.01, 12)
 masses = (6, 12)
 max_redshift = 20 # gives maximum age of SFH at a given redshift
 cosmo = Planck18 # cosmology to use for age calculations
 
 # ---------------------------------------------------------------
-# Pop II
 
-tau_v = (0.0, 2.0)
+
+Av = (0.0, 4.0)
+dust_birth_fraction = (0.5, 2.0) # multiplier for the attenuation av for the birth cloud
 log_zmet = (-3, -1.39) # max of grid (e.g. 0.04)
+
+
 
 # SFH
 # sfh_type = SFH.DenseBasis
@@ -103,7 +106,7 @@ log_zmet = (-3, -1.39) # max of grid (e.g. 0.04)
 
 sfh_type = SFH.DelayedExponential
 tau = (10, 1000)
-max_age = (0.01, 0.9) # normalized to maximum age of the universe at that redshift. If 0 or 1 we have problems.
+max_age = (0.001, 0.9) # normalized to maximum age of the universe at that redshift. If 0 or 1 we have problems.
 sfh_param_units = [Myr, Myr]
 
 # ---------------------------------------------------------------
@@ -115,7 +118,8 @@ sfh_param_units = [Myr, Myr]
 full_params = {
     'redshift': redshift,
     'masses': masses,
-    'tau_v': tau_v,
+    'Av': Av,
+    'dust_birth_fraction': dust_birth_fraction,
     'log_zmet': log_zmet,
     'tau': tau,
     'max_age': max_age,
@@ -143,7 +147,7 @@ for i, key in enumerate(full_params.keys()):
     all_param_dict[key] = param_grid[:, i]
 
 
-
+# Create the grid
 grid = Grid('bpass-2.2.1-bin_chabrier03-0.1,300.0_cloudy-c23.01-sps.hdf5',
             grid_dir=grid_dir,
             new_lam=new_wav)
@@ -188,26 +192,40 @@ else:
         calculate_min_age=False,
     )
 
-    # Emission parameters
-emission_model = TotalEmission(
-    grid=grid,
-    fesc=0.1,
-    fesc_ly_alpha=0.1,
-    dust_curve=Calzetti2000(),
-    dust_emission_model=None,
+dust_emission = Greybody(
+    temperature=40 * K, 
+    emissivity=1.5
 )
+
+# Essentially CF00 with explicit fesc and fesc_ly_alpha parameters.
+
+emission_model = BimodalPacmanEmission(
+    grid=grid,
+    tau_v_ism='tau_v_ism',
+    tau_v_birth='tau_v_birth',
+    dust_curve_ism=PowerLaw(slope=-0.7),
+    dust_curve_birth=PowerLaw(slope=-0.7),
+    age_pivot=7 * dimensionless,
+    dust_emission_ism=dust_emission,
+    dust_emission_birth=dust_emission,
+    fesc=0.0, # escape fraction of ionizing photons
+    fesc_ly_alpha=0.1, # escape fraction of Lyman-alpha photons
+)
+
+#emission_model.plot_emission_tree(show=True)
+
 
 # List of other varying or fixed parameters. Either a distribution to pull from or a list.
 # Can be any parameter which can be property of emitter or galaxy and processed by the emission model.
 galaxy_params={
-    'tau_v': all_param_dict['tau_v'],
+    'tau_v_ism': all_param_dict['Av'] / av_to_tau_v, 'tau_v_birth': all_param_dict['Av'] * all_param_dict['dust_birth_fraction'] / av_to_tau_v, # Av to tau_v for the birth cloud
 }
 
 sfh_name = str(sfh_type).split('.')[-1].split("'")[0]
 
-name = f'BPASS_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_Chab_Calzetti_v1'
+name = f'BPASS_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_Chab_CF00_v1'
 
-popII_basis = GalaxyBasis(
+basis = GalaxyBasis(
     model_name=f'sps_{name}',
     redshifts=redshifts,
     grid=grid,
@@ -228,7 +246,7 @@ popII_basis = GalaxyBasis(
 #                                    masses=10**all_param_dict['masses'])
 
 combined_basis = CombinedBasis(
-    bases=[popII_basis],
+    bases=[basis],
     total_stellar_masses=unyt_array(10**all_param_dict['masses'], units=Msun),
     base_emission_model_keys=['total'],
     combination_weights=None,
@@ -239,7 +257,7 @@ combined_basis = CombinedBasis(
 )
 
 # Passing in extra analysis function to pipeline to calculate mUV. Any funciton could be passed in. 
-combined_basis.process_bases(overwrite=False, mUV=(calculate_muv, cosmo), n_proc=n_proc, verbose=False)
+combined_basis.process_bases(overwrite=False, mUV=(calculate_muv, cosmo), n_proc=n_proc, verbose=False, batch_size=batch_size)
 
 # Create grid - kinda overkill for a single case, but it does work.
 combined_basis.create_grid(overwrite=True)

@@ -14,7 +14,7 @@ from unyt import unyt_array, nJy
 import re
 import operator
 from tqdm import tqdm
-from typing import List, Dict, Union
+from typing import List, Dict, Union, Optional, Callable
 import optuna
 from optuna.trial import TrialState
 from io import StringIO
@@ -34,7 +34,7 @@ from ili.validation.runner import ValidationRunner
 from sklearn.preprocessing import StandardScaler
 from ili.utils.samplers import EmceeSampler, PyroSampler, DirectSampler, VISampler
 
-from .grid import GalaxySimulator
+from .grid import GalaxySimulator, EmpiricalUncertaintyModel
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -313,6 +313,7 @@ class SBI_Fitter:
         depth_sigma: int = 5,
         return_errors: bool = False,
         phot_flux_units: str = "AB",
+        min_flux_pc_error: float = 0.0,
     ):
         """
         Given a set of depths (1D or 2D), convert to photometry unit and use as standard deviations
@@ -335,6 +336,11 @@ class SBI_Fitter:
             Divisor to scale the depths
         return_errors : bool, default=False
             If True, return the errors as well
+        phot_flux_units : str, default='AB'
+            Units of the photometry fluxes. Used to convert depths to the same units.
+        min_flux_pc_error : float, default=0.0
+            Minimum percentage error to apply to the fluxes when scattering.
+
 
         Returns:
         --------
@@ -344,6 +350,10 @@ class SBI_Fitter:
         """
         # Get input array dimensions
         m, n = photometry_array.shape
+
+                
+        # Repeat the photometry array for each scatter
+        photometry_repeated = np.repeat(photometry_array, N_scatters, axis=1)
         
         # Check if depths is 2D and handle accordingly
         if depths.ndim == 2:
@@ -364,7 +374,8 @@ class SBI_Fitter:
             
             # Convert to correct units and scale
             depths_std = selected_depths.to(photometry_array.units).value / depth_sigma
-            
+
+
             # Expand depths_std to match output dimensions: (m, N_scatters * n)
             depths_std_expanded = np.repeat(depths_std, n, axis=1)
             
@@ -382,6 +393,12 @@ class SBI_Fitter:
             depths_std_expanded = np.repeat(depths_std[:, np.newaxis], N_scatters * n, axis=1)
         else:
             raise ValueError("depths must be 1D or 2D array")
+        
+        if min_flux_pc_error > 0.0:
+            print(f"Applying minimum percentage error of {min_flux_pc_error}% to depths.")
+            # Apply minimum percentage error to depths
+            depths_std_expanded = np.maximum(depths_std_expanded, photometry_repeated.value * min_flux_pc_error / 100.0)
+            
 
         # Generate all random values at once for better performance
         random_values = np.random.normal(
@@ -389,9 +406,7 @@ class SBI_Fitter:
             scale=depths_std_expanded, 
             size=(m, N_scatters * n)
         ) * photometry_array.units
-        
-        # Repeat the photometry array for each scatter
-        photometry_repeated = np.repeat(photometry_array, N_scatters, axis=1)
+
         
         # Add the random values to the repeated photometry
         output_arr = photometry_repeated + random_values
@@ -403,6 +418,69 @@ class SBI_Fitter:
 
         return output_arr
 
+    def _apply_empirical_noise_models(
+            self,
+            photometry_array: np.ndarray,
+            phot_names: List[str],
+            empirical_noise_models: Dict[str, EmpiricalUncertaintyModel],
+            N_scatters: int = 5,
+            min_flux_pc_error: float = 0.0,
+            flux_units: str = "AB",
+            return_errors: bool = False,
+            normed_flux_units: str = "AB",
+    ):
+        """
+        Apply empirical noise models to the photometry array.
+
+        Args:
+            photometry_array: The photometry array to apply the noise models to.
+            empirical_noise_models: A dictionary of empirical noise models to use for scattering the fluxes.
+                The keys should be the filter names, and the values should be the EmpiricalUncertaintyModel objects.
+            phot_names: The names of the photometry filters to apply the noise models to.
+            N_scatters: The number of times to scatter the fluxes.
+            min_flux_pc_error: The minimum percentage error to apply to the fluxes.
+
+        Returns:
+            The photometry array with applied noise models.
+        """
+        if not isinstance(empirical_noise_models, dict):
+            raise ValueError("empirical_noise_models must be a dictionary")
+        
+        # check all keys in empirical_noise_models are in phot_names
+        for filter in phot_names:
+            if filter not in empirical_noise_models:
+                raise ValueError(f"No empirical noise model found for filter {filter}. Please provide a valid model.")
+            
+        for filter in empirical_noise_models.keys():
+            if filter not in phot_names:
+                raise ValueError(f"Filter {filter} in empirical_noise_models is not in phot_names. Please provide a valid filter name.")
+
+        # Create a copy of the photometry array
+        scattered_photometry = np.repeat(photometry_array, N_scatters, axis=1)
+        errors = np.zeros(scattered_photometry.shape)
+
+        # Iterate over each filter and apply the corresponding noise model
+        for filter_name in phot_names:
+            if filter_name in empirical_noise_models.keys():
+                noise_model = empirical_noise_models[filter_name]
+                pos = list(phot_names).index(filter_name)
+
+                # Apply the model to the photometry array
+                flux = scattered_photometry[pos, :].copy()
+                noisy_flux, sampled_sigma = noise_model.apply_noise_to_flux(flux, true_flux_units=flux_units, out_units=normed_flux_units)
+                # print(filter_name, noisy_flux.max())
+
+                scattered_photometry[pos, :] = noisy_flux
+                # Store the errors
+                errors[pos, :] = sampled_sigma
+            else:
+                print(f"No empirical noise model found for filter {filter_name}. Skipping.")
+
+        if return_errors:
+            return scattered_photometry, errors
+ 
+        return scattered_photometry
+
     def create_feature_array_from_raw_photometry(
         self,
         normalize_method: str = "mUV",
@@ -411,8 +489,10 @@ class SBI_Fitter:
         normalization_unit: str = "AB",
         verbose: bool = True,
         scatter_fluxes: Union[int, bool] = False,
+        empirical_noise_models: Optional[Dict[str, EmpiricalUncertaintyModel]] = None,
         depths: Union[unyt_array, None] = None,
         include_errors_in_feature_array=False,
+        min_flux_pc_error: float = 0.0,
         simulate_missing_fluxes=False,
         missing_flux_value=99.0,
         missing_flux_fraction=0.0,
@@ -423,6 +503,7 @@ class SBI_Fitter:
         norm_mag_limit: float = 50.0,
         remove_nan_inf: bool = True,
         parameters_to_remove: list = [],
+        photometry_to_remove: list = [],
     ) -> np.ndarray:
         """
         Create a feature array from the raw photometry grid.
@@ -439,12 +520,16 @@ class SBI_Fitter:
                 normalization factor will be provided as well.
             normalization_unit: The unit of the normalization factor. E.g. 'log10 nJy', 'nJy, AB', etc.
             scatter_fluxes: Whether to scatter fluxes with Gaussian error (with scatter_fluxes variations for each row).
+            empirical_noise_models: A dictionary of empirical noise models to use for scattering the fluxes.
+                The keys should be the filter names, and the values should be the EmpiricalUncertaintyModel objects.
             depths: Either None, or a unyt_array of length photometry.
             include_errors_in_feature_array: boolean, default False.
                 Whether to include the RMS uncertainty in the input model.
                 This would pass in the uncertainity as a seperate parameter. Could be either 2D, or (value, error) pairs in 1D training dataset.
                 Could also allow options to under or overestimate model uncertainity in depths.
-            simulate_missing_fluxes:  boolean, default False. CURRENTLY UNIMPLEMENTED.
+            min_flux_pc_error: The minimum percentage error to apply to the fluxes.
+                This is used to set the minimum error on the fluxes when scattering.
+            simulate_missing_fluxes:  boolean, default False. 
                 This would allow missing photometry for some fraction of the time, which could be marked
                 with a specific filler flag, or a seperate boolean row/column to flag missing data.
             missing_flux_value: The value to use for missing fluxes. Default is 99.0.
@@ -473,49 +558,100 @@ class SBI_Fitter:
         else:
             phot_grid = self.raw_photometry_grid
             raw_photometry_units = self.raw_photometry_units
+        
+        raw_photometry_names = self.raw_photometry_names
+        if len(photometry_to_remove) > 0:
+            # Remove the photometry from the grid
+            photometry_to_remove = np.array(photometry_to_remove)
+            remove_indices = [i for i, name in enumerate(self.raw_photometry_names) if name in photometry_to_remove]
+            if len(remove_indices) > 0:
+                print(f"Removing {len(remove_indices)} photometry filters: {photometry_to_remove}")
+                phot_grid = np.delete(phot_grid, remove_indices, axis=0)
+                raw_photometry_names = np.delete(self.raw_photometry_names, remove_indices)
+                        
 
         phot = unyt_array(phot_grid, units=raw_photometry_units)
+        converted = False
 
         if scatter_fluxes:
-            assert depths is not None
-            assert isinstance(depths, unyt_array)
+            assert depths is not None or empirical_noise_models is not None, f'If scattering fluxes, depths or empirical noise models must be provided.'
             assert isinstance(phot, unyt_array)
-            self.phot_depths = depths
-            # Need to get units right here!
-            phot, depth_errors = self._apply_depths(depths, phot, scatter_fluxes, return_errors=True)
-            print(f"Scattering photometry {scatter_fluxes} times for each row")
+            
+            if depths is not None:
+                print(f'Using depth-based noise models with {scatter_fluxes} scatters per row.')
+                assert isinstance(depths, unyt_array)
+                self.phot_depths = depths
+
+                self.min_flux_pc_error = min_flux_pc_error
+                # Need to get units right here!
+                phot, depth_errors = self._apply_depths(depths, phot, scatter_fluxes, return_errors=True, min_flux_pc_error=min_flux_pc_error, 
+                                                        phot_flux_units=normed_flux_units)
+                converted = False
+            elif empirical_noise_models is not None:
+                print(f'Using empirical noise models with {scatter_fluxes} scatters per row.')
+                self.empirical_noise_models = empirical_noise_models
+
+                phot, depth_errors = self._apply_empirical_noise_models(
+                    phot,
+                    raw_photometry_names,
+                    empirical_noise_models,
+                    N_scatters=scatter_fluxes,
+                    min_flux_pc_error=min_flux_pc_error,
+                    return_errors=True,
+                    flux_units=phot.units,
+                    normed_flux_units=normed_flux_units
+                )
+                converted = True
+                
+
+                
         else:
             depth_errors = None
 
         if normed_flux_units == "AB":
-            if depth_errors is not None:
-                depth_errors = np.log10(
+            if depth_errors is not None and not converted:
+                upper_errors = np.log10(
                     1 + np.abs(depth_errors.to("uJy").value / phot.to("uJy").value)
                 )  # Technically this is the upper error
-            phot_mag = -2.5 * np.log10(phot.to("uJy").value) + 23.9
+                lower_errors = np.log10(
+                    np.log10( phot.to("uJy").value/(phot.to("uJy").value - depth_errors.to("uJy").value)))
+                # Combine so each error is last dimension
+                depth_errors = np.stack((upper_errors, lower_errors), axis=-1)
+                print(f"Depth errors shape: {depth_errors.shape}")
+                depth_errors = np.nanmax(depth_errors, axis=-1) 
+                print(f"Depth errors after max shape: {depth_errors.shape}")
+                #depth_errors = upper_errors
+                #depth_errors=upper_errors
+            if not converted:
+                phot_mag = -2.5 * np.log10(phot.to("uJy").value) + 23.9
+                mask = phot.to("uJy").value < 0
+            else:
+                phot_mag = phot
+                mask = np.isnan(phot_mag) | np.isinf(phot_mag)
             # Any negative fluxes, just set to the limit
-            phot_mag[phot.to("uJy").value < 0] = norm_mag_limit
+            phot_mag[mask] = norm_mag_limit
             phot = phot_mag
             norm_func = np.subtract
 
         else:
-            phot = phot.to(normed_flux_units).value
-            if depth_errors is not None:
-                depth_errors = depth_errors.to(normed_flux_units).value
+            if not converted:
+                phot = phot.to(normed_flux_units).value
+                if depth_errors is not None:
+                    depth_errors = depth_errors.to(normed_flux_units).value
 
             norm_func = np.divide
 
         delete_rows = []
         # Normalize the photometry grid
         if normalize_method is not None:
-            if normalize_method in self.raw_photometry_names:
-                norm_index = list(self.raw_photometry_names).index(normalize_method)
+            if normalize_method in raw_photometry_names:
+                norm_index = list(raw_photometry_names).index(normalize_method)
 
                 normalization_factor = phot[norm_index, :]
                 norm_factor_original = phot_grid[norm_index, :]
 
                 # Create a copy of the raw photometry names for consistent reference
-                raw_photometry_names = np.array(self.raw_photometry_names)
+                raw_photometry_names = np.array(raw_photometry_names)
                 raw_photometry_names = np.delete(raw_photometry_names, norm_index)
                 phot = np.delete(phot, norm_index, axis=0)
                 if scatter_fluxes:
@@ -593,7 +729,7 @@ class SBI_Fitter:
                         unyt_array(normalization_factor, units=norm_unit).to(normalization_unit_cleaned).value
                     )
 
-                raw_photometry_names = np.array(self.raw_photometry_names)
+                raw_photometry_names = np.array(raw_photometry_names)
 
             else:
                 raise NotImplementedError(
@@ -603,7 +739,8 @@ class SBI_Fitter:
             normed_photometry = phot
             normalization_factor_converted = np.ones(normed_photometry.shape[1])
             normalization_factor = normalization_factor_converted
-            raw_photometry_names = np.array(self.raw_photometry_names)
+            raw_photometry_names = np.array(raw_photometry_names)
+
 
             # Convert the photometry to the desired units
 
@@ -615,6 +752,7 @@ class SBI_Fitter:
         else:
             error_names = []
             error_units = []
+
 
         if np.sum(normalization_factor == 0.0) > 0:
             # delete these indexes from the photometry
@@ -640,6 +778,7 @@ class SBI_Fitter:
 
         norm = 1 if normalize_method is not None else 0
 
+
         length = normed_photometry.shape[1]
         # Create the feature array
         # Photometry + extra features + normalization factor
@@ -652,8 +791,9 @@ class SBI_Fitter:
                 + include_flags_in_feature_array * len(raw_photometry_names),
                 length,
             )
-        )
+        )   
 
+        assert np.shape(feature_array[: len(raw_photometry_names), :]) == np.shape(normed_photometry), f'Shape mismatch: {np.shape(feature_array[: len(raw_photometry_names), :])} != {np.shape(normed_photometry)}'
         # Fill the feature array with the normalized photometry
         feature_array[: len(raw_photometry_names), :] = normed_photometry
 
@@ -728,7 +868,8 @@ class SBI_Fitter:
         if normalize_method is not None:
             # Add the normalization factor name
             feature_names[-1] = f"norm_{normalize_method}_{normalization_unit}"
-
+        
+        self.provided_feature_parameters = []
         # Process extra features if any. Currently extra features don't have uncertainties.
         if len(extra_features) > 0:
             parser = FilterArithmeticParser()
@@ -773,17 +914,18 @@ class SBI_Fitter:
 
         if verbose:
             print("---------------------------------------------")
-            print(f"Features: {self.feature_array.shape[0]} features over {self.feature_array.shape[1]} samples")
+            print(f"Features: {self.feature_array.shape[1]} features over {self.feature_array.shape[0]} samples")
             print("---------------------------------------------")
             print("Feature: Min - Max")
             print("---------------------------------------------")
 
             for pos, feature_name in enumerate(feature_names):
                 print(
-                    f"{feature_name}: {np.min(feature_array[pos]):.3f} - {np.max(feature_array[pos]):.3f} {self.feature_units[pos]}"
+                    f"{feature_name}: {np.min(feature_array[pos]):.6f} - {np.max(feature_array[pos]):.3f} {self.feature_units[pos]}"
                 )
             print("---------------------------------------------")
 
+        
         self.update_parameter_array(delete_rows=delete_rows, n_scatters=scatter_fluxes, parameters_to_remove=parameters_to_remove)
 
         return feature_array, feature_names
@@ -882,6 +1024,40 @@ class SBI_Fitter:
 
         return param_prior
 
+    def create_restricted_priors(
+            self,
+            prior: Optional[ili.utils.Uniform] = None,
+            set_self=True,
+        ):
+
+        '''
+        
+        Create restricted priors for the parameters.
+        
+        '''
+
+        assert self.has_features, "Feature array not created. Please create the feature array first."
+        if prior is None:
+            prior = self.create_priors()
+
+        from sbi.utils import RestrictionEstimator
+
+        X = self.feature_array
+        y = self.fitted_parameter_array
+
+        X= torch.tensor(X, dtype=torch.float32, device=self.device)
+        y = torch.tensor(y, dtype=torch.float32, device=self.device)
+
+        restriction_estimator = RestrictionEstimator(prior=prior)
+        restriction_estimator.append_simulations(y, X)
+        classifier = restriction_estimator.train()
+
+        if set_self:
+            self.restricted_prior = restriction_estimator
+            self.restricted_classifier = classifier
+
+        return restriction_estimator, classifier
+            
     def optimize_sbi(
         self,
         study_name: str,
@@ -1249,10 +1425,15 @@ class SBI_Fitter:
                 raise ValueError("Parameter names not created. Please create the parameter names first.")
 
             if train_indices is None:
-                train_indices, test_indices = self.split_dataset(
-                    train_fraction=train_test_fraction, random_seed=random_seed, verbose=verbose
-                )
-
+                if not hasattr(self, "_train_indices") or not hasattr(self, "_test_indices") or self._train_indices is None or self._test_indices is None:
+                        
+                    train_indices, test_indices = self.split_dataset(
+                        train_fraction=train_test_fraction, random_seed=random_seed, verbose=verbose
+                    )
+                else:
+                    print("Using previously split dataset.")
+                    train_indices = self._train_indices
+                    test_indices = self._test_indices
             # Prepare data
 
             assert len(train_indices) > 0, "Training indices should not be empty."
@@ -1386,8 +1567,8 @@ class SBI_Fitter:
                     "hidden_features": hidden_features[i] if isinstance(hidden_features, list) else hidden_features,
                     "num_transforms": num_transforms[i] if isinstance(num_transforms, list) else num_transforms,
                 }
-                if model_type == "nsf":
-                    model_args["num_bins"] = num_bins
+                #if model_type == "nsf":
+                #    model_args["num_bins"] = num_bins
                     
             elif model_type in ["linear"]:
                 model_args = {}
@@ -2469,6 +2650,8 @@ class SBI_Fitter:
                 if learning_type == "offline":
                     self.fitted_parameter_array = params["parameter_array"]
                     self.feature_array = params["feature_array"]
+                    if self.feature_array is not None:
+                        self.has_features = True
                     self.parameter_array = params["parameter_array"]
                     self._train_indices = params["train_indices"]
                     self._test_indices = params["test_indices"]
