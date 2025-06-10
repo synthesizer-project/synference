@@ -4,7 +4,7 @@ from .grid import (
     generate_sfh_grid, generate_metallicity_distribution, generate_emission_models, 
     generate_sfh_basis, GalaxyBasis, generate_constant_R, CombinedBasis,
     calculate_muv, draw_from_hypercube, GalaxySimulator, generate_random_DB_sfh,
-    EmpiricalUncertaintyModel
+    EmpiricalUncertaintyModel, filter_out_of_distribution, create_uncertainity_models_from_EPOCHS_cat
 )
 
 try:
@@ -29,4 +29,6 @@ __all__ = [
     "GalaxySimulator",
     "generate_random_DB_sfh",
     "EmpiricalUncertaintyModel",
+    "filter_out_of_distribution",
+    "create_uncertainity_models_from_EPOCHS_cat",
 ]
