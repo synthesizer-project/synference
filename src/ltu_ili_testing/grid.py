@@ -29,6 +29,9 @@ import matplotlib.patheffects as PathEffects
 from scipy.interpolate import interp1d
 from scipy import stats
 from scipy.stats import qmc
+from scipy.linalg import inv
+from astropy.table import Table
+
 
 
 warnings.filterwarnings("ignore")
@@ -637,6 +640,7 @@ class GalaxyBasis:
         grid: Grid,
         emission_model: Type[EmissionModel],
         galaxy_params: dict = {},
+        alt_parametrizations: Dict[str, Tuple[str, callable]]  = {},
         sfhs: List[Type[SFH.Common]] = None,
         metal_dists: List[Type[ZDist.Common]] = None,
         cosmo: Type[Cosmology] = Planck18,
@@ -663,6 +667,10 @@ class GalaxyBasis:
             Dictionary of parameters for the emission model.
         galaxy_params : dict
             Dictionary of parameters for the galaxy.
+        alt_parametrizations : dict
+            Dictionary of alternative parametrizations for the galaxy parameters - for parametrizing differently to Synthesizer if
+            wanted. Should be a dictionary with keys as the parameter names and values as tuples of the new parameter name and a function which takes the 
+            parameter dictionary and returns the new parameter value (so it can be calculated from the other parameters if needed).
         metal_dists : List[Type[ZDist.Common]], optional
             List of metallicity distribution objects, by default None
         cosmo : Type[Cosmology], optional
@@ -689,6 +697,7 @@ class GalaxyBasis:
         self.grid = grid
         self.emission_model = emission_model
         self.galaxy_params = galaxy_params
+        self.alt_parametrizations = alt_parametrizations
         self.metal_dists = metal_dists
         self.cosmo = cosmo
         self.instrument = instrument
@@ -805,6 +814,8 @@ class GalaxyBasis:
             }
             param_list = [{column_names[i]: j for i, j in enumerate(row)} for row in varying_param_combinations]
 
+
+
         galaxies = []
         all_parameters = {}
         for i, redshift in tqdm(
@@ -832,6 +843,16 @@ class GalaxyBasis:
                         save_params["redshift"] = redshift
                         save_params.update(sfh_parameters)
                         save_params.update(Z_parameters)
+
+                        if len(self.alt_parametrizations) > 0:
+                            to_remove = []
+                            # Apply alternative parametrizations if provided
+                            for key, (new_key, func) in self.alt_parametrizations.items():
+                                if key in save_params:
+                                    save_params[new_key] = func(save_params)
+                                    to_remove.append(key)
+                            for key in to_remove:
+                                save_params.pop(key)
 
                         # This stores all input parameters for the galaxy so we can work out which parameters
                         # are varying and which are fixed later.
@@ -1004,6 +1025,17 @@ class GalaxyBasis:
             save_params["redshift"] = redshift
             save_params.update(sfh.parameters)
             save_params.update(metal_dist.parameters)
+
+            if len(self.alt_parametrizations) > 0:
+                to_remove = []
+                # Apply alternative parametrizations if provided
+                for key, (new_key, func) in self.alt_parametrizations.items():
+                    if key in save_params:
+                        save_params[new_key] = func(save_params)
+                        to_remove.append(key)
+                for key in to_remove:
+                    save_params.pop(key)
+    
             gal.all_params = save_params
 
             self.galaxies.append(gal)
@@ -1086,9 +1118,12 @@ class GalaxyBasis:
         if n_batches > 1:
             print(f"Splitting galaxies into {n_batches} batches of size {batch_size}.")
             galaxies = [galaxies[i * batch_size : (i + 1) * batch_size] for i in range(n_batches)]
+        else:
+            print("Processing all galaxies in a single batch.")
+            galaxies = [galaxies]
 
-        for batch_i, batch in enumerate(galaxies):
-
+        for batch_i, batch_gals in enumerate(galaxies):
+            skip = False
             if save:
                 if out_dir == "self":
                     out_dir = self.out_dir
@@ -1102,56 +1137,59 @@ class GalaxyBasis:
                 if os.path.exists(final_fullpath):
                     print(f"Skipping batch {batch_i+1} as {final_fullpath} already exists.")
                     galaxies[batch_i] = None  # Clear the batch to free memory
-                    continue
+                    skip = True
                 
+            if not skip:
+                pipeline = Pipeline(
+                    emission_model=self.emission_model,
+                    nthreads=n_proc,
+                    verbose=verbose,
+                )
 
-            pipeline = Pipeline(
-                emission_model=self.emission_model,
-                nthreads=n_proc,
-                verbose=verbose,
-            )
+                for key in self.all_parameters.keys():
+                    pipeline.add_analysis_func(lambda gal, key=key: gal.all_params[key], result_key=key)
 
-            for key in self.all_parameters.keys():
-                pipeline.add_analysis_func(lambda gal, key=key: gal.all_params[key], result_key=key)
+                pipeline.add_analysis_func(lambda gal: gal.stars.initial_mass, result_key="mass")
 
-            pipeline.add_analysis_func(lambda gal: gal.stars.initial_mass, result_key="mass")
+                print("Added analysis functions to pipeline.")
 
-            print("Added analysis functions to pipeline.")
+                # Add any extra analysis functions requested by the user.
 
-            # Add any extra analysis functions requested by the user.
+                for key, params in extra_analysis_functions.items():
+                    if callable(params):
+                        func = params
+                    else:
+                        func = params[0]
+                        params = params[1:]
 
-            for key, params in extra_analysis_functions.items():
-                if callable(params):
-                    func = params
-                else:
-                    func = params[0]
-                    params = params[1:]
+                    pipeline.add_analysis_func(func, f"supp_{key}", *params)
 
-                pipeline.add_analysis_func(func, f"supp_{key}", *params)
+                # pipeline.get_spectra() # Switch off so they aren't saved
+                pipeline.get_observed_spectra(self.cosmo)
 
-            # pipeline.get_spectra() # Switch off so they aren't saved
-            pipeline.get_observed_spectra(self.cosmo)
+                # pipeline.get_photometry_luminosities() # Switch off so they aren't saved
+                pipeline.get_photometry_fluxes(self.instrument)
+                
+                pipeline.add_galaxies(batch_gals)
+                
+                ngal = len(batch_gals)
+                print(f"Running pipeline at {datetime.now()} for {ngal} galaxies")
+                pipeline.run()
+                print(f"Finished running pipeline at {datetime.now()} for {ngal} galaxies")
+                if save:
+                    # Save the pipeline to a file
+                    pipeline.write(fullpath, verbose=0)
 
-            # pipeline.get_photometry_luminosities() # Switch off so they aren't saved
-            pipeline.get_photometry_fluxes(self.instrument)
-            
-            pipeline.add_galaxies(batch)
-            
-            ngal = len(batch)
-            print(f"Running pipeline at {datetime.now()} for {ngal} galaxies")
-            pipeline.run()
-            print(f"Finished running pipeline at {datetime.now()} for {ngal} galaxies")
             if save:
-                # Save the pipeline to a file
-                pipeline.write(fullpath, verbose=0)
-
                 wav = self.grid.lam.to(Angstrom).value
 
-    
                 if n_batches  == 1:
                     final_fullpath = fullpath
 
-                os.rename(init_fullpath, final_fullpath)
+                try:
+                    os.rename(init_fullpath, final_fullpath)
+                except FileNotFoundError:
+                    pass
 
                 with h5py.File(final_fullpath, "r+") as f:
                     # Add the varying and fixed parameters to the file
@@ -1165,8 +1203,11 @@ class GalaxyBasis:
 
                 print(f"Written pipeline to disk at {final_fullpath}.")
 
-            del pipeline  # Clean up the pipeline object to free memory
-            galaxies[batch_i] = None  # Clear the batch to free memory
+            if not skip:
+                del pipeline  # Clean up the pipeline object to free memory
+                galaxies[batch_i] = None  # Clear the batch to free memory
+                import gc
+                gc.collect()  # Force garbage collection to free memory
 
     def plot_random_galaxy(self, masses, **kwargs):
         """
@@ -1368,14 +1409,18 @@ class GalaxyBasis:
 
         self.tmp_redshift = redshift
         self.tmp_time_unit = u.Myr
-        secax = ax[1].secondary_xaxis("top", functions=(self._time_convert, self._z_convert))
-        secax.set_xlabel("Redshift")
+        #secax = ax[1].secondary_xaxis("top", functions=(self._time_convert, self._z_convert))
+        #secax.set_xlabel("Redshift")
 
         # Put a vertical line at maximum redshift
 
-        secax.set_xticks([6, 7, 8, 10, 12, 14, 15, 20])
+        #secax.set_xticks([6, 7, 8, 10, 12, 14, 15, 20])
 
         if save:
+
+            if not os.path.exists(out_dir):
+                os.makedirs(out_dir)
+                
             fig.savefig(f"{out_dir}/{self.model_name}_{idx}.png", dpi=300)
             plt.close(fig)
 
@@ -1466,8 +1511,11 @@ class CombinedBasis:
 
         for i, base in enumerate(self.bases):
             full_out_path = f"{self.out_dir}/{base.model_name}.hdf5"
+            ngalaxies = len(self.total_stellar_masses)
+            total_batches = int(np.ceil(ngalaxies / batch_size))
 
-            if os.path.exists(full_out_path) and not overwrite[i]:
+
+            if os.path.exists(full_out_path) and not overwrite[i] or os.path.exists(f"{self.out_dir}/{base.model_name}_{total_batches}.hdf5"):
                 print(f"File {full_out_path} already exists. Skipping.")
                 continue
             elif os.path.exists(full_out_path) and overwrite[i]:
@@ -1519,7 +1567,7 @@ class CombinedBasis:
                 full_out_paths = [full_out_path]
 
 
-            for j, path in enumerate(full_out_paths):
+            for j, path in tqdm(enumerate(full_out_paths)):
                 properties = {}
                 supp_properties = {}
                 with h5py.File(path, "r") as f:
@@ -3102,6 +3150,7 @@ class CombinedBasis:
         if save:
             self.save_grid(out, overload_out_name=overload_out_name, overwrite=overwrite)
 
+
 class EmpiricalUncertaintyModel:
     """
     A class to model and sample photometric uncertainties based on an empirical
@@ -3123,8 +3172,13 @@ class EmpiricalUncertaintyModel:
         min_samples_per_bin: int = 10,
         flux_unit: str = "AB",
         min_flux_error: Optional[float] = None,
-
-
+        error_type: str = 'empirical',
+        sigma_clip: float = 3.0,
+        upper_limits: bool = False,
+        treat_as_upper_limits_below: Optional[float] = None,
+        upper_limit_flux_behaviour: str = 'scatter_limit',
+        upper_limit_flux_err_behaviour: str = 'flux',
+        max_flux_error: Optional[float] = None,
     ):
         """
         Initializes the model by building interpolators for the mean and
@@ -3143,16 +3197,78 @@ class EmpiricalUncertaintyModel:
                                   This can help avoid issues with very low/zero fluxes.
             min_samples_per_bin: Minimum number of samples required in a bin
                                  for it to be considered valid for interpolation.
+            flux_unit: The unit of the fluxes, e.g., 'AB', 'Jy', etc.
+            min_flux_error: Minimum value for the estimated flux error.
+                             If None, defaults to 0.0.
+            error_type: What kind of error to return. If 'empirical', then sigma_X is the standard deviation of
+                        the Gaussian used to scatter the fluxes. If 'observed' then we re-estimate the errors
+                        based on the scattered fluxes.
+            sigma_clip: The number of standard deviations to clip the sampled uncertainties.
+            upper_limits: If True, treat the observed fluxes as upper limits.
+            treat_as_upper_limits_below: If provided, fluxes below this SNR are treated as upper limits.
+            upper_limit_flux_behaviour: How to handle upper limits fluxes. Options are 'scatter_limit', 'upper_limit',
+                - scatter_limit: Use the upper limit value as the flux and scatter the flux using the model.
+                - upper_limit: Use the upper limit value as the flux with no scattering.
+                - a float/int - Use this value as the upper limit flux.
+            upper_limit_flux_err_behaviour: How to handle upper limits flux errors. Options are 'flux', 'upper_limit'.
+                - flux: Use the flux_err scatter at the flux value.
+                - 'upper_limit': Use the upper limit value as the flux error.
+                - 'max' : Use the maximum flux error set by max_flux_error.
+                - 'sig_{val}': Find the error at a specific value, e.g., 'sig_1' will find the error at 1 sigma.
+            max_flux_error: Maximum flux error to allow. If None, no maximum is applied.
+
+
+
         """
         if len(observed_fluxes) != len(observed_errors):
             raise ValueError("observed_fluxes and observed_errors must have the same length.")
 
+        self.sigma_clip = sigma_clip
+        
         valid_mask = np.isfinite(observed_fluxes) & np.isfinite(observed_errors) & (observed_errors > 0)
         if min_flux_for_binning is not None:
             valid_mask &= (observed_fluxes > min_flux_for_binning)
 
         fluxes = observed_fluxes[valid_mask]
         errors = observed_errors[valid_mask]
+
+        assert error_type in ['empirical', 'observed'], "error_type must be either 'empirical' or 'observed'."
+        self.error_type = error_type
+
+        if upper_limits:
+            assert treat_as_upper_limits_below is not None, (
+                "If upper_limits is True, treat_as_upper_limits_below must be provided."
+            )
+
+        self.max_observed_flux_err = np.max(errors)
+
+        self.upper_limits = upper_limits
+        self.treat_as_upper_limits_below = treat_as_upper_limits_below
+        self.upper_limit_flux_behaviour = upper_limit_flux_behaviour
+        self.upper_limit_flux_err_behaviour = upper_limit_flux_err_behaviour
+
+
+        if upper_limits:
+            if flux_unit == 'AB':
+                # convert fluxes to Jy if they are in AB magnitudes
+                ftemp = 10**(-0.4 * (fluxes + 8.9))  # Convert AB magnitudes to Jy
+                etemp = (errors * np.log(10) * ftemp)/ 2.5  # Convert errors to Jy
+            else:
+                ftemp = fluxes
+                etemp = errors
+
+            
+
+            self.snr_interpolator  = interp1d(ftemp/etemp, ftemp)
+            upper_limit_value = self.snr_interpolator (treat_as_upper_limits_below)
+            # Convert upper_limit_value back to the original flux unit
+            if flux_unit == 'AB':
+                upper_limit_value = -2.5 * np.log10(upper_limit_value) + 8.9
+
+        self.upper_limit_value = upper_limit_value
+
+        self.max_flux_error = max_flux_error if max_flux_error is not None else np.inf
+
 
         if len(fluxes) < min_samples_per_bin * 2 : # Need at least two bins for interpolation
              raise ValueError(
@@ -3215,43 +3331,46 @@ class EmpiricalUncertaintyModel:
         # Use 'bounds_error=False' and 'fill_value' to handle extrapolation.
         # For sigma_sigma_X (std of errors), it should not be negative.
         # We use the value from the closest bin if extrapolating.
-        print(bin_median_errors[0], bin_std_errors[0])
 
         self.mu_sigma_interpolator_clip: Callable[[Union[float, np.ndarray]], Union[float, np.ndarray]] = interp1d(
             self.flux_bins_centers, bin_median_errors, kind='linear',
             bounds_error=False, fill_value=(bin_median_errors[0], bin_median_errors[-1])
         )
-        '''self.mu_sigma_interpolator_extrap: Callable[[Union[float, np.ndarray]], Union[float, np.ndarray]] = interp1d(
+        mu_sigma_interpolator_extrap: Callable[[Union[float, np.ndarray]], Union[float, np.ndarray]] = interp1d(
             self.flux_bins_centers, bin_median_errors, kind='linear',
             bounds_error=False, fill_value='extrapolate'
         )
-
+        
         def mu_sigma_interpolator(flux_values):
             output = np.empty_like(flux_values, dtype=float)
             extrapolate_mask = flux_values > self._max_interp_flux
             output[~extrapolate_mask]  = self.mu_sigma_interpolator_clip(flux_values[~extrapolate_mask])
-            output[extrapolate_mask]  = self.mu_sigma_interpolator_extrap(flux_values[extrapolate_mask])
-            return output'''
+            output[extrapolate_mask]  = mu_sigma_interpolator_extrap(flux_values[extrapolate_mask])
+            return output
         
+        self.mu_sigma_interpolator_extrap = mu_sigma_interpolator
         self.mu_sigma_interpolator = self.mu_sigma_interpolator_clip
 
         self.sigma_sigma_interpolator_clip: Callable[[Union[float, np.ndarray]], Union[float, np.ndarray]] = interp1d(
             self.flux_bins_centers, bin_std_errors, kind='linear',
             bounds_error=False, fill_value=(bin_std_errors[0], bin_std_errors[-1])
         )
-        '''self.sigma_sigma_interpolator_extrap: Callable[[Union[float, np.ndarray]], Union[float, np.ndarray]] = interp1d(
+        sigma_sigma_interpolator_extrap: Callable[[Union[float, np.ndarray]], Union[float, np.ndarray]] = interp1d(
             self.flux_bins_centers, bin_std_errors, kind='linear',
             bounds_error=False, fill_value='extrapolate'
         )
-
+        
         def sigma_sigma_interpolator(flux_values):
 
             output = np.empty_like(flux_values, dtype=float)
             extrapolate_mask = flux_values > self._max_interp_flux
-            output[~extrapolate_mask]  = self.sigma_sigma_interpolator_clip(flux_values[~extrapolate_mask])
-            output[extrapolate_mask]  = self.sigma_sigma_interpolator_extrap(flux_values[extrapolate_mask])
+            output[~extrapolate_mask]  =  self.sigma_sigma_interpolator_clip(flux_values[~extrapolate_mask])
+            output[extrapolate_mask]  = sigma_sigma_interpolator_extrap(flux_values[extrapolate_mask])
             
-                    return output'''
+            return output
+        
+        self.sigma_sigma_interpolator_extrap = sigma_sigma_interpolator
+        
         
         self.sigma_sigma_interpolator = self.sigma_sigma_interpolator_clip
         
@@ -3290,7 +3409,9 @@ class EmpiricalUncertaintyModel:
     def sample_uncertainty(
         self,
         true_flux: Union[float, np.ndarray],
-        max_resamples_for_positive_sigma: int = 5
+        max_resamples_for_positive_sigma: int = 5,
+        sigma_clip = None,
+        extrapolate=False,
     ) -> Union[float, np.ndarray, None]:
         """
         Samples a 'fake' uncertainty (sigma_prime_X) for a given true flux.
@@ -3310,32 +3431,26 @@ class EmpiricalUncertaintyModel:
         flux_array = np.atleast_1d(true_flux)
         sampled_sigmas = np.empty_like(flux_array)
 
-        mu_sigma_values = self.mu_sigma_interpolator(flux_array)
-        sigma_sigma_values = self.sigma_sigma_interpolator(flux_array) # Already ensures non-negativity
+        if sigma_clip is None:
+            sigma_clip = self.sigma_clip
 
-        for i in range(len(flux_array)):
-            mu_s = mu_sigma_values[i]
-            sig_s = sigma_sigma_values[i]
-            
-            # Handle cases where true_flux might be outside the reliable interpolation range
-            # The interpolators use fill_value, but we might want to flag this.
-            # For this example, we proceed with the extrapolated/filled values.
+        if not extrapolate:
+            mu_sigma_values = self.mu_sigma_interpolator(flux_array)
+            sigma_sigma_values = self.sigma_sigma_interpolator(flux_array) # Already ensures non-negativity
+        else:
+            mu_sigma_values = self.mu_sigma_interpolator_extrap(flux_array)
+            sigma_sigma_values = self.sigma_sigma_interpolator_extrap(flux_array)
 
-            sigma_prime_x = -1.0  # Initialize to a non-physical value
-            for _ in range(max_resamples_for_positive_sigma):
-                sigma_prime_x = stats.norm.rvs(loc=mu_s, scale=sig_s)
-                if sigma_prime_x > 0:
-                    break
-            
-            if sigma_prime_x <= 0:
-                # Could raise an error, return a default, or NaN as per literature's removal rule.
-                # Returning NaN indicates the calling code should handle removal.
-                print(f"Warning: Could not sample a positive sigma for flux {flux_array[i]} "
-                       f"(mu_sigma={mu_s:.2e}, sigma_sigma={sig_s:.2e}). Assigning NaN.")
-                sampled_sigmas[i] = np.nan
-            else:
-                sampled_sigmas[i] = sigma_prime_x
-        
+        # redo with normal numpy distribution vectorized            
+        sigma_prime_x = np.random.normal(loc=mu_sigma_values, scale=sigma_sigma_values, size=flux_array.shape)
+
+        # Clip the sampled uncertainties to be within the specified sigma_clip range
+        #sigma_prime_x = np.clip(sigma_prime_x, -sigma_clip * sigma_sigma_values, sigma_clip * sigma_sigma_values)
+
+        # make any negative values NaN
+        sampled_sigmas = np.where(sigma_prime_x > 0, sigma_prime_x, np.nan)
+        #print(np.nanmin(sampled_sigmas))
+
         return sampled_sigmas[0] if is_scalar else sampled_sigmas
 
     def apply_noise_to_flux(
@@ -3358,6 +3473,9 @@ class EmpiricalUncertaintyModel:
             Returns (np.nan, np.nan) for problematic inputs where positive sigma
             could not be determined.
         """
+
+        true_flux = true_flux.copy()
+
         if self.flux_unit != true_flux_units:
             if self.flux_unit == "AB":
                 if not isinstance(true_flux, unyt_array):
@@ -3367,7 +3485,12 @@ class EmpiricalUncertaintyModel:
 
                 true_flux = -2.5 * np.log10(true_flux) + 8.9 
             else:
-                true_flux = unyt_array(true_flux, units=true_flux_units).to(self.flux_unit).value
+                if true_flux_units == "AB":
+                    true_flux = 10 ** (-0.4 * (true_flux-8.9)) * Jy
+                    true_flux = true_flux.to(self.flux_unit).value
+                    
+                else:
+                    true_flux = unyt_array(true_flux, units=true_flux_units).to(self.flux_unit).value
 
                 
         is_scalar = np.isscalar(true_flux)
@@ -3380,27 +3503,134 @@ class EmpiricalUncertaintyModel:
         # Apply minimum flux error
         sampled_sigma_prime[sampled_sigma_prime < self.min_flux_error] = self.min_flux_error
 
-        noisy_flux_array = flux_array + stats.norm.rvs(loc=0, scale=sampled_sigma_prime)
+        
+
+        # If upper limit, calculate a mask here so we don't apply crazy 10+ mag scatters
+        if self.upper_limits:
+            if self.flux_unit == "AB":
+                # Convert to Jy for upper limit calculations
+                temp_flux_array = 10 ** (-0.4 * (flux_array - 8.9)) * Jy
+                temp_sig = (np.log(10) * temp_flux_array * sampled_sigma_prime) / 2.5
+            else:
+                temp_flux_array = unyt_array(flux_array, units=self.flux_unit).to("Jy").value
+                temp_sig = unyt_array(sampled_sigma_prime, units=self.flux_unit).to("Jy").value
+
+            umask = (temp_flux_array / temp_sig < self.treat_as_upper_limits_below ) | (np.isnan(temp_sig) | np.isnan(temp_flux_array))
+            #print(np.sum(umask)/len(umask), "of fluxes are below the upper limit threshold.")
+        else:
+            umask =np.zeros_like(flux_array, dtype=bool)  # No upper limit mask if not set
+
+        noisy_flux_array = flux_array.copy()
+        noisy_flux_array[~umask] = flux_array[~umask] + stats.truncnorm.rvs(loc=0, scale=sampled_sigma_prime[~umask], a=-self.sigma_clip, b=self.sigma_clip)
           # Ensure noise is not below the minimum error
         noisy_flux_array[np.isnan(sampled_sigma_prime)] = np.nan  # Handle NaNs from sampling
 
+        #print('inf', np.sum(np.isinf(noisy_flux_array)), 'nan', np.sum(np.isnan(noisy_flux_array)))
 
+        if self.error_type == 'observed':
+            # Re-estimate the errors based on the scattered fluxes
+            sampled_sigma_prime = self.sample_uncertainty(noisy_flux_array, max_resamples_for_positive_sigma, sigma_clip=1)
+
+        #print('inf', np.sum(np.isinf(noisy_flux_array)), 'nan', np.sum(np.isnan(noisy_flux_array)))
+
+        if self.upper_limits:
+            # If upper limits are set, treat fluxes below the threshold as upper limits
+            # Calculate SNR, and apply upper limit condition. Set all below e.g 2 sigma +- max_err
+            snr_limit = self.treat_as_upper_limits_below
+
+            if self.flux_unit == "AB":
+                temp_flux_array = 10 ** (-0.4 * (noisy_flux_array - 8.9)) * Jy
+                # Convert error back into Jy correctly
+                temp_sigma_prime  = (np.log(10) * temp_flux_array * sampled_sigma_prime)/2.5
+            else:
+                temp_flux_array = unyt_array(noisy_flux_array, units=self.flux_unit).to("Jy").value
+                temp_sigma_prime = unyt_array(sampled_sigma_prime, units=self.flux_unit).to("Jy").value
+
+            #print(np.sum(np.isnan(temp_flux_array)), np.sum(np.isnan(temp_sigma_prime)))
+            #print(np.max(temp_flux_array), np.max(temp_sigma_prime), np.min(temp_flux_array), np.min(temp_sigma_prime))
+
+            snr = temp_flux_array / temp_sigma_prime
+            m = snr < snr_limit
+
+            m = m | umask | ~np.isfinite(temp_flux_array) | np.isinf(noisy_flux_array) | np.isnan(temp_sigma_prime)  # Ensure we mask out NaNs and infinities
+
+            #print('m', np.sum(m))
+            
+            #print(f"{np.sum(m)/len(m):.2%} of fluxes are below the upper limit threshold.")
+           
+            # set max to 
+            val_lim = self.mu_sigma_interpolator(self.upper_limit_value)  # Use the interpolated sigma for the upper limit value but include the scatter
+            scatter_lim = self.sigma_sigma_interpolator(self.upper_limit_value) 
+            
+            # Set upper limit flux behaviour
+            if self.upper_limit_flux_behaviour == 'scatter_limit':
+                samples = stats.truncnorm.rvs(loc=0, scale=scatter_lim, a=-3, b=3, size=np.sum(m))
+                noisy_flux_array[m] = self.upper_limit_value + samples
+            elif self.upper_limit_flux_behaviour == 'upper_limit':
+                noisy_flux_array[m] = self.upper_limit_value
+            elif isinstance(self.upper_limit_flux_behaviour, (int, float)):
+                # If it is a float, use it as the upper limit value
+                noisy_flux_array[m] = float(self.upper_limit_flux_behaviour)
+            else:
+                raise ValueError(f"Unknown upper_limit_flux_behaviour: {self.upper_limit_flux_behaviour}. "
+                                 "Must be 'scatter_limit', 'upper_limit', or a float/int value.")
+
+            # Set upper limit flux error behaviour
+            if self.upper_limit_flux_err_behaviour == 'flux':
+                sampled_sigma_prime[m] = val_lim
+            elif self.upper_limit_flux_err_behaviour == 'upper_limit':
+                sampled_sigma_prime[m] = self.upper_limit_value
+            elif self.upper_limit_flux_err_behaviour == 'max':
+                sampled_sigma_prime[m] = self.max_flux_error
+            elif self.upper_limit_flux_err_behaviour.startswith('sig_'):
+                sig_val = float(self.upper_limit_flux_err_behaviour.split('_')[1])
+                
+                if self.flux_unit == "AB":
+                    # val is in Jy, convert to AB
+                    val = 2.5 / (sig_val * np.log(10))
+                else:
+                    val = self.snr_interpolator(sig_val)
+                    # Find the error at this value
+                    val = self.mu_sigma_interpolator(val)
+                sampled_sigma_prime[m] = val
+
+            else:
+                raise ValueError(f"Unknown upper_limit_flux_err_behaviour: {self.upper_limit_flux_err_behaviour}. "
+                                 "Must be 'flux', 'upper_limit', 'max', or 'sig_{val}'.")
+        
         # convert back to original units if necessary
 
         if out_units is None:
             out_units = true_flux_units
 
+        # print('inf', np.sum(np.isinf(noisy_flux_array)), 'nan', np.sum(np.isnan(noisy_flux_array)))
+
         if self.flux_unit != out_units:
             if self.flux_unit == "AB":
                 raise NotImplementedError()
             else:
-                noisy_flux_array = unyt_array(noisy_flux_array, units=self.flux_unit).to(true_flux_units).value
-                sampled_sigma_prime = unyt_array(sampled_sigma_prime, units=self.flux_unit).to(true_flux_units).value
+                noisy_flux_array = unyt_array(noisy_flux_array, units=self.flux_unit)
+                sampled_sigma_prime = unyt_array(sampled_sigma_prime, units=self.flux_unit)
+                
 
+                if out_units == "AB":
+                    # Convert to AB magnitude
+                    sampled_sigma_prime = -2.5 * noisy_flux_array.to(Jy).value/(np.log(10) * sampled_sigma_prime.to(Jy).value)
+                    noisy_flux_array = -2.5 * np.log10(noisy_flux_array.to(Jy).value) + 8.9
+                else:
+                    sampled_sigma_prime = sampled_sigma_prime.to(true_flux_units).value
+                    noisy_flux_array = noisy_flux_array.to(true_flux_units).value
+
+        # Apply min/max in original units. 
+        sampled_sigma_prime[sampled_sigma_prime < self.min_flux_error] = self.min_flux_error
+        sampled_sigma_prime[sampled_sigma_prime > self.max_flux_error] = self.max_flux_error
+
+
+        #print('inf', np.sum(np.isinf(noisy_flux_array)), 'nan', np.sum(np.isnan(noisy_flux_array)))
         if is_scalar:
             return noisy_flux_array[0], sampled_sigma_prime[0]
         return noisy_flux_array, sampled_sigma_prime
-    
+ 
 class GalaxySimulator(object):
     """
     Photometry Simulator class. Initialize with required model,
@@ -3862,7 +4092,7 @@ class GalaxySimulator(object):
             if flux_units == "AB":
                 # Convert back to AB magnitudes
                 output_arr = -2.5 * np.log10(output_arr.to(Jy).value) + 8.9
-                errors = -2.5 * np.log10(1 + (depths_std / fluxes.to(uJy).value))
+                errors = -2.5 * depths_std /(np.log(10) * fluxes.to(uJy).value)
 
 
             return output_arr, errors
@@ -3903,6 +4133,76 @@ class GalaxySimulator(object):
         return f"PhotometrySimulator({self.sfh_model}, {self.zdist_model}, {self.grid}, {self.instrument}, {self.emission_model}, {self.emission_model_key})"
 
 
+def create_uncertainity_models_from_EPOCHS_cat(file, bands, new_band_names=None, plot=False, **kwargs):
+    if isinstance(bands, str):
+        bands = [bands]
+
+    table = Table.read(file)
+    unc_models = {}
+
+    if new_band_names is not None:
+        assert len(new_band_names) == len(bands), (
+            f"new_band_names length {len(new_band_names)} does not match bands length {len(bands)}. Cannot create uncertainty models."
+        )
+    else:
+        new_band_names = bands
+
+    for band, band_new_name in zip(bands, new_band_names):
+        if f'loc_depth_{band}' not in table.colnames:
+            raise ValueError(f'Column loc_depth_{band} not found in the table.')
+
+        mag = table[f'MAG_APER_{band}_aper_corr'][:, 0]  
+        flux = (u.Jy * table[f"FLUX_APER_{band}_aper_corr_Jy"][:, 0] ).to('Jy').value
+        flux_err = (table[f'loc_depth_{band}'][:, 0] * u.ABmag).to('Jy').value/5
+
+        mag_err = (2.5 * flux_err) / (flux * np.log(10))
+        mask = (mag != -99) & (np.isfinite(mag)) & (mag_err >= 0)
+        mag = mag[mask]
+        mag_err = mag_err[mask]
+
+        unc_kwargs = dict(
+            num_bins=20,
+            log_bins=False,
+            error_type='observed',
+            upper_limits=True,
+            treat_as_upper_limits_below=1,
+            upper_limit_flux_behaviour=40,
+            upper_limit_flux_err_behaviour='sig_1',
+        )
+
+        unc_kwargs.update(kwargs)
+
+
+        # So this behaviour is to mask any fluxes with SNR < 1 either before or after the scattering,
+        #, setting the error to 1 sigma. 
+        noise_model = EmpiricalUncertaintyModel(mag, mag_err, 
+                                                **unc_kwargs,
+                                                )
+        
+        unc_models[band_new_name] = noise_model
+
+        if plot:
+            # bin and plot as contour
+            plt.figure(figsize=(10, 6))
+
+            plt.title(f'Uncertainty Model for {band_new_name}', fontsize=16)
+
+            #plt.hexbin(mag, mag_err, gridsize=50, cmap='Reds', mincnt=1, extent=(23, 31, 0, 1), alpha=0.75, label='Observed Flux Errors')
+            plt.scatter(mag, mag_err, alpha=0.05, color='black', s=0.15, zorder=10)
+
+            plt.ylim(0, 1.2)
+            mag = np.linspace(23, 40, 10000)
+            noisy_flux, sampled_sigma = noise_model.apply_noise_to_flux(mag, true_flux_units='AB')
+
+            #plt.scatter(noisy_flux, sampled_sigma, alpha=0.1, color='green', s=0.1)
+            plt.hexbin(noisy_flux, sampled_sigma, gridsize=50, cmap='Greens', mincnt=1, norm='log', extent=(23, 42, 0, 1.1), alpha=1, label=r'$p\left(\sigma_X \mid f_X\right)$')
+            plt.legend(loc='upper left', fontsize=12)
+
+            plt.xlabel('Magnitude', fontsize=14)
+            plt.ylabel(r'$\sigma_{\rm m, AB}$', fontsize=14)
+            plt.show()
+
+    return unc_models
 
 def calculate_min_max_wav_grid(filterset, max_redshift, min_redshift=0):
     """
@@ -3919,6 +4219,76 @@ def calculate_min_max_wav_grid(filterset, max_redshift, min_redshift=0):
 
     return min_wav, max_wav
 
+
+def filter_out_of_distribution(
+    observed_photometry: np.ndarray,
+    simulated_photometry: np.ndarray,
+    sigma_threshold: float = 5.0
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Identifies and removes samples from a simulated dataset that are
+    out-of-distribution compared to a reference observed dataset.
+
+    The function calculates the Mahalanobis distance for each simulated sample
+    to the mean of the observed samples, accounting for the covariance
+    between filters. Samples with a distance greater than the specified
+    sigma_threshold are considered outliers and are removed.
+
+    Args:
+        observed_photometry (np.ndarray): The reference dataset, expected to
+                                          have a shape of (N_filters, N_obs_samples).
+        simulated_photometry (np.ndarray): The dataset to be filtered, expected
+                                           to have a shape of (N_filters, N_sim_samples).
+        sigma_threshold (float, optional): The number of standard deviations
+                                           (in Mahalanobis distance) to use as the
+                                           outlier threshold. Defaults to 5.0.
+
+    Returns:
+        Tuple[np.ndarray, np.ndarray]:
+            - A NumPy array containing the filtered simulated photometry with outliers removed.
+              The shape will be (N_filters, N_inliers).
+            - A 1D NumPy array containing the indices of the rows (samples) that were
+              identified as outliers and removed from the original simulated_photometry.
+    """
+    if observed_photometry.shape[0] != simulated_photometry.shape[0]:
+        raise ValueError("observed_photometry and simulated_photometry must have the same number of filters (rows).")
+
+    # Transpose data so that samples are rows and filters (features) are columns
+    # Shape becomes (N_samples, N_filters)
+    obs_data = observed_photometry.T
+    sim_data = simulated_photometry.T
+
+    # Calculate the mean vector and inverse covariance matrix of the observed data
+    try:
+        mean_obs = np.mean(obs_data, axis=0)
+        cov_obs = np.cov(obs_data, rowvar=False)
+        inv_cov_obs = inv(cov_obs)
+    except np.linalg.LinAlgError:
+        raise ValueError(
+            "Could not compute the inverse covariance matrix of the observed_photometry. "
+            "This can happen if the data is not full rank (e.g., filters are perfectly correlated)."
+        )
+
+    # Calculate the Mahalanobis distance for each simulated sample from the observed distribution
+    mahalanobis_distances = np.zeros(sim_data.shape[0])
+    for i in range(sim_data.shape[0]):
+        delta = sim_data[i] - mean_obs
+        # Manual calculation of Mahalanobis distance: sqrt(delta' * inv_cov * delta)
+        mahalanobis_distances[i] = np.sqrt(delta @ inv_cov_obs @ delta.T)
+
+    # Identify the indices of outliers
+    outlier_indices = np.where(mahalanobis_distances > sigma_threshold)[0]
+    inlier_indices = np.where(mahalanobis_distances <= sigma_threshold)[0]
+
+    # Filter the original simulated_photometry array using the inlier indices
+    # We filter the original array with shape (N_filters, N_samples)
+    filtered_sim_photometry = simulated_photometry[:, inlier_indices]
+
+    print(f"Original number of simulated samples: {simulated_photometry.shape[1]}")
+    print(f"Number of outliers removed ({sigma_threshold}-sigma): {len(outlier_indices)}")
+    print(f"Number of samples remaining: {filtered_sim_photometry.shape[1]}")
+
+    return filtered_sim_photometry, outlier_indices
 
 
 
