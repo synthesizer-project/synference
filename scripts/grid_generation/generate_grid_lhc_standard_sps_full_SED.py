@@ -11,7 +11,7 @@ from synthesizer.grid import Grid
 from synthesizer.parametric import SFH, ZDist
 from synthesizer.instruments import Instrument, FilterCollection
 
-from unyt import unyt_array, Msun, Myr, dimensionless, K
+from unyt import unyt_array, Msun, Myr, dimensionless, K, Gyr
 from astropy.cosmology import Planck18
 from ltu_ili_testing import (generate_sfh_basis, 
                             generate_constant_R, GalaxyBasis, CombinedBasis,
@@ -82,7 +82,7 @@ av_to_tau_v = 1.086 # conversion factor from Av to tau_v for the dust attenuatio
 
 
 
-Nmodels = 500_000
+Nmodels = 500#_000
 batch_size = 40_000 # number of models to generate in each batch
 redshift = (0.01, 12)
 masses = (6, 12)
@@ -92,7 +92,7 @@ cosmo = Planck18 # cosmology to use for age calculations
 # ---------------------------------------------------------------
 
 
-Av = (0.0, 4.0)
+logAv = (-3, 0.7) # Log-uniform between 0.001 and 5.0 magnitudes
 dust_birth_fraction = (0.5, 2.0) # multiplier for the attenuation av for the birth cloud
 log_zmet = (-3, -1.39) # max of grid (e.g. 0.04)
 
@@ -105,9 +105,9 @@ log_zmet = (-3, -1.39) # max of grid (e.g. 0.04)
 # ssfr = (-12, -7) # log10(sSFR) in yr^-1
 
 sfh_type = SFH.DelayedExponential
-tau = (10, 1000)
-max_age = (0.001, 0.9) # normalized to maximum age of the universe at that redshift. If 0 or 1 we have problems.
-sfh_param_units = [Myr, Myr]
+log_tau = (-2, 1) # log-uniform between 0.01 and 100 Gyr
+max_age = (0.00, 0.99) # normalized to maximum age of the universe at that redshift. If 0 or 1 we have problems.
+sfh_param_units = [Gyr, Gyr]
 
 # ---------------------------------------------------------------
 
@@ -118,10 +118,10 @@ sfh_param_units = [Myr, Myr]
 full_params = {
     'redshift': redshift,
     'masses': masses,
-    'Av': Av,
+    'log_Av': logAv, # Av in magnitudes
     'dust_birth_fraction': dust_birth_fraction,
     'log_zmet': log_zmet,
-    'tau': tau,
+    'log_tau': log_tau,
     'max_age': max_age,
 }
 
@@ -145,6 +145,11 @@ param_grid = draw_from_hypercube(Nmodels, full_params, rng=42)
 all_param_dict = {}
 for i, key in enumerate(full_params.keys()):
     all_param_dict[key] = param_grid[:, i]
+
+if 'log_Av' in all_param_dict:
+    # Convert log_Av to Av
+    all_param_dict['Av'] = 10**all_param_dict['log_Av']
+    all_param_dict.pop('log_Av')
 
 
 # Create the grid
@@ -179,6 +184,11 @@ if isinstance(sfh_type, SFH.DenseBasis):
             all_param_dict[f'sfh_quantile_{100*(j+1)/(Nparam_SFH+1):.0f}'][i] = tx[j]
 else:
         # Pop II SFH
+    if 'log_tau' in all_param_dict:
+        # Convert log_tau to tau
+        all_param_dict['tau'] = 10**all_param_dict['log_tau']
+        all_param_dict.pop('log_tau')
+
     sfh_param_arrays = np.vstack((all_param_dict['tau'], all_param_dict['max_age'])).T
     sfh_models, _ = generate_sfh_basis(
         sfh_type=sfh_type,
@@ -203,8 +213,8 @@ emission_model = BimodalPacmanEmission(
     grid=grid,
     tau_v_ism='tau_v_ism',
     tau_v_birth='tau_v_birth',
-    dust_curve_ism=PowerLaw(slope=-0.7),
-    dust_curve_birth=PowerLaw(slope=-0.7),
+    dust_curve_ism=Calzetti2000(),
+    dust_curve_birth=Calzetti2000(),
     age_pivot=7 * dimensionless,
     dust_emission_ism=dust_emission,
     dust_emission_birth=dust_emission,
@@ -221,9 +231,18 @@ galaxy_params={
     'tau_v_ism': all_param_dict['Av'] / av_to_tau_v, 'tau_v_birth': all_param_dict['Av'] * all_param_dict['dust_birth_fraction'] / av_to_tau_v, # Av to tau_v for the birth cloud
 }
 
+# Dictionary of alternative parametrizations for the galaxy parameters - for parametrizing differently to Synthesizer if
+# wanted. Should be a dictionary with keys as the parameter names and values as tuples of the new parameter name and a function which takes the 
+# parameter dictionary and returns the new parameter value (so it can be calculated from the other parameters if needed).
+
+alt_parametrizations = {'tau_v_birth':('dust_birth_fraction', lambda x: x['tau_v_birth'] / x['tau_v_ism']),
+                        'tau_v_ism': ('Av', lambda x: x['tau_v_ism'] * av_to_tau_v)
+                        }
+
+
 sfh_name = str(sfh_type).split('.')[-1].split("'")[0]
 
-name = f'BPASS_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_Chab_CF00_v1'
+name = f'BPASS_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_Chab_CF00_v2_logAv_logTau'
 
 basis = GalaxyBasis(
     model_name=f'sps_{name}',
@@ -235,6 +254,7 @@ basis = GalaxyBasis(
     instrument=instrument,
     metal_dists=Z_dists,
     galaxy_params=galaxy_params,
+    alt_parametrizations=alt_parametrizations,
     redshift_dependent_sfh=True,
     params_to_ignore=[], # This is dependent on the redshift and should not be included in the basis
     build_grid=False,
@@ -256,8 +276,13 @@ combined_basis = CombinedBasis(
     draw_parameter_combinations=False, # Since we have already drawn the parameters, we don't need to combine them again.
 )
 
+for i in range(10):
+    basis.plot_galaxy(idx=i*10, out_dir=f'/home/tharvey/work/output/plots/{name}/',
+                      stellar_mass=unyt_array(10**all_param_dict['masses'][i*10], units=Msun),
+    )
+
 # Passing in extra analysis function to pipeline to calculate mUV. Any funciton could be passed in. 
-combined_basis.process_bases(overwrite=False, mUV=(calculate_muv, cosmo), n_proc=n_proc, verbose=False, batch_size=batch_size)
+combined_basis.process_bases(overwrite=True, mUV=(calculate_muv, cosmo), n_proc=n_proc, verbose=False, batch_size=batch_size)
 
 # Create grid - kinda overkill for a single case, but it does work.
 combined_basis.create_grid(overwrite=True)
