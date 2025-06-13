@@ -1,57 +1,0 @@
-Training started at 2025-06-10 15:14:05.809283
-Arguments: Args(learning_rate=0.0005, stop_after_epochs=20, training_batch_size=64, validation_fraction=0.1, clip_max_norm=5.0, backend='sbi', engine='NPE', model_types='maf', n_nets=1, model_name='BPASS_Chab_DelayedExpSFH_0.01_z_12_CF00_v1', name_append='sbipp_settings', grid_path='/home/tharvey/work/output/grid_BPASS_DelayedExponential_SFH_0.01_z_12_logN_5.7_Chab_CF00_v1.hdf5', hidden_features=500, num_transforms=15, num_components=10, scatter_fluxes=10.0, include_errors_in_feature_array=True, norm_mag_limit=40.0, drop_dropouts=True, drop_dropout_fraction=0.5, plot=True, additional_model_args=(), data_err_file='/home/tharvey/Downloads/JADES-Deep-GS_MASTER_Sel-f277W+f356W+f444W_v9_loc_depth_masked_10pc_EAZY_matched_selection_ext_src_UV.fits', background=True)
-Removing 24 photometry filters: ['HST/ACS_WFC.F435W' 'HST/ACS_WFC.F475W' 'HST/ACS_WFC.F606W'
- 'JWST/NIRCam.F070W' 'HST/ACS_WFC.F775W' 'HST/ACS_WFC.F814W'
- 'HST/ACS_WFC.F850LP' 'HST/WFC3_IR.F105W' 'HST/WFC3_IR.F110W'
- 'HST/WFC3_IR.F125W' 'JWST/NIRCam.F140M' 'HST/WFC3_IR.F140W'
- 'HST/WFC3_IR.F160W' 'JWST/NIRCam.F162M' 'JWST/NIRCam.F182M'
- 'JWST/NIRCam.F210M' 'JWST/NIRCam.F250M' 'JWST/NIRCam.F300M'
- 'JWST/NIRCam.F360M' 'JWST/NIRCam.F430M' 'JWST/NIRCam.F460M'
- 'JWST/NIRCam.F480M' 'JWST/MIRI.F560W' 'JWST/MIRI.F770W']
-Using empirical noise models with 10.0 scatters per row.
-number of NaN, Inf values in phot_mag: 0 0
-Warning: Dropping 1883800 dropouts where more than 50.0% of bands are at the norm_mag_limit.
----------------------------------------------
-Features: 18 features over 3116200 samples
----------------------------------------------
-Feature: Min - Max
----------------------------------------------
-JWST/NIRCam.F090W: 9.874002 - 40.000 AB
-JWST/NIRCam.F115W: 9.706511 - 40.000 AB
-JWST/NIRCam.F150W: 9.538504 - 40.000 AB
-JWST/NIRCam.F200W: 9.552290 - 40.000 AB
-JWST/NIRCam.F277W: 10.131992 - 40.000 AB
-JWST/NIRCam.F335M: 10.334704 - 40.000 AB
-JWST/NIRCam.F356W: 10.413171 - 40.000 AB
-JWST/NIRCam.F410M: 10.680742 - 40.000 AB
-JWST/NIRCam.F444W: 10.892236 - 40.000 AB
-unc_JWST/NIRCam.F090W: 0.000000 - 1.086 AB
-unc_JWST/NIRCam.F115W: 0.000000 - 1.086 AB
-unc_JWST/NIRCam.F150W: 0.000000 - 1.086 AB
-unc_JWST/NIRCam.F200W: 0.000000 - 1.086 AB
-unc_JWST/NIRCam.F277W: 0.000000 - 1.086 AB
-unc_JWST/NIRCam.F335M: 0.000000 - 1.086 AB
-unc_JWST/NIRCam.F356W: 0.000000 - 1.086 AB
-unc_JWST/NIRCam.F410M: 0.000000 - 1.086 AB
-unc_JWST/NIRCam.F444W: 0.000000 - 1.086 AB
----------------------------------------------
-1883800 rows to delete from parameter array.
-/home/tharvey/work/ltu-ili_testing/models/BPASS_Chab_DelayedExpSFH_0.01_z_12_CF00_v1/BPASS_Chab_DelayedExpSFH_0.01_z_12_CF00_v1sbipp_settings_params.pkl
-Splitting dataset with 3116200 samples into training and testing sets with 0.80 train fraction.
----------------------------------------------
-Prior ranges:
----------------------------------------------
-redshift: 0.01 - 12.00
-log_mass: 6.00 - 12.00
-sps_BPASS_DelayedExponential_SFH_0.01_z_12_logN_5.7_Chab_CF00_v1/tau_v_ism: 0.00 - 3.68
-sps_BPASS_DelayedExponential_SFH_0.01_z_12_logN_5.7_Chab_CF00_v1/tau_v_birth: 0.00 - 7.35
-sps_BPASS_DelayedExponential_SFH_0.01_z_12_logN_5.7_Chab_CF00_v1/tau: 10.01 - 999.99
-sps_BPASS_DelayedExponential_SFH_0.01_z_12_logN_5.7_Chab_CF00_v1/max_age: 188.59 - 13465.06
-sps_BPASS_DelayedExponential_SFH_0.01_z_12_logN_5.7_Chab_CF00_v1/log10metallicity: -3.00 - -1.39
----------------------------------------------
-Creating maf network with NPE engine and sbi backend.
-     hidden_features: 500
-     num_transforms: 15
-dict_keys(['hidden_features', 'num_transforms'])
-[2025-06-10 15:14:18,440] [INFO] [real_accelerator.py:203:get_accelerator] Setting ds_accelerator to cuda (auto detect)
- Training neural network. Epochs trained: 1 Training neural network. Epochs trained: 2 Training neural network. Epochs trained: 3 Training neural network. Epochs trained: 4 Training neural network. Epochs trained: 5 Training neural network. Epochs trained: 6 Training neural network. Epochs trained: 7 Training neural network. Epochs trained: 8 Training neural network. Epochs trained: 9 Training neural network. Epochs trained: 10 Training neural network. Epochs trained: 11 Training neural network. Epochs trained: 12 Training neural network. Epochs trained: 13 Training neural network. Epochs trained: 14 Training neural network. Epochs trained: 15 Training neural network. Epochs trained: 16 Training neural network. Epochs trained: 17 Training neural network. Epochs trained: 18 Training neural network. Epochs trained: 19 Training neural network. Epochs trained: 20
