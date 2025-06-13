@@ -1,0 +1,218 @@
+# ignore warnings for readability
+import numpy as np
+import os
+import sys
+from synthesizer.emission_models import TotalEmission
+from synthesizer.emission_models.attenuation import Calzetti2000, ParametricLi08 #noqa
+from synthesizer.emission_models.dust.emission import Greybody, IR_templates
+from synthesizer.grid import Grid
+from synthesizer.parametric import SFH, ZDist
+from synthesizer.instruments import Instrument, FilterCollection
+
+from unyt import unyt_array, Msun, K
+from astropy.cosmology import Planck18
+from sbifitter import (generate_sfh_basis, 
+                            generate_constant_R, GalaxyBasis, CombinedBasis,
+                            calculate_muv, draw_from_hypercube)
+'''try:
+    from mpi4py import MPI
+    rank = MPI.COMM_WORLD.Get_rank()
+    size = MPI.COMM_WORLD.Get_size()
+
+except ImportError:
+    rank, size = 0, 1'''
+
+# Issues
+# Minimum Age longer than maximum age!
+
+# Filters
+# ---------------------------------------------------------------
+# all medium and wide band filters for JWST NIRCam
+filter_codes = [
+    "JWST/NIRCam.F070W", "JWST/NIRCam.F090W", "JWST/NIRCam.F115W", "JWST/NIRCam.F140M",
+    "JWST/NIRCam.F150W", "JWST/NIRCam.F162M", "JWST/NIRCam.F182M", "JWST/NIRCam.F200W",
+    "JWST/NIRCam.F210M", "JWST/NIRCam.F250M", "JWST/NIRCam.F277W", "JWST/NIRCam.F300M",
+    "JWST/NIRCam.F335M", "JWST/NIRCam.F356W", "JWST/NIRCam.F360M", "JWST/NIRCam.F410M",
+    "JWST/NIRCam.F430M", "JWST/NIRCam.F444W", "JWST/NIRCam.F460M", "JWST/NIRCam.F480M",
+]
+instrument = 'JWST'
+
+path = f'{os.path.dirname(__file__)}/filters/{instrument}.hdf5'
+
+if 'cosma' in path:
+    computer = 'cosma'
+else:
+    computer = 'linux-desktop'
+
+
+if os.path.exists(path):
+    filterset = FilterCollection(path=path)
+else:
+    filterset = FilterCollection(filter_codes=filter_codes)
+
+
+
+# Consistent wavelength grid for both SPS grids and filters
+new_wav = generate_constant_R(R=300, auto_start_stop=True, 
+                            filterset=filterset, max_redshift=15)
+
+filterset.resample_filters(new_lam=new_wav)
+
+instrument = Instrument(instrument, filters=filterset)
+
+
+if computer == 'cosma':
+    grid_dir = '/cosma7/data/dp276/dc-harv3/work/grids/'
+    out_dir =  '/cosma7/data/dp276/dc-harv3/work/sbi/output/'
+
+elif computer == 'linux-desktop':
+    grid_dir = '/home/tharvey/work/synthesizer_grids/'
+    out_dir = '/home/tharvey/work/output/'
+
+
+try:
+    n_proc = int(sys.argv[1])
+except Exception:
+    n_proc = 6
+
+# params
+
+Nmodels = 5
+redshift = (5, 12)
+masses = (6, 11.5)
+max_redshift = 20 # gives maximum age of SFH at a given redshift
+cosmo = Planck18 # cosmology to use for age calculations
+fesc = 0.0 # escape fraction of ionizing photons
+fesc_ly_alpha = 0.0 # escape fraction of Ly-alpha photons
+dust_emission = None # No dust emission model for this grid, but can be added later.
+dust_curve = Calzetti2000() # Dust attenuation curve to use for the grid.
+# ---------------------------------------------------------------
+# Pop II
+
+tau_v = (0.0, 2.0)
+log_zmet = (-3, -1.39) # max of grid (e.g. 0.04)
+
+# SFH
+sfh_type = SFH.LogNormal
+tau = (0.05, 2.5)
+peak_age = (0, 0.99) # normalized to maximum age of the universe at that redshift. Clipped to help prior leakage.
+sfh_param_units = [None, None]
+
+# ---------------------------------------------------------------
+
+# Generate the grid. Could also seperate hyper-parameters for each model. 
+
+full_params = {
+    'redshift': redshift,
+    'masses': masses,
+    'tau_v': tau_v,
+    'log_zmet': log_zmet,
+    'tau': tau,
+    'peak_age': peak_age,
+}
+
+# Generate the grid
+
+param_grid = draw_from_hypercube(Nmodels, full_params, rng=42)
+
+# Unpack the parameters
+
+all_param_dict = {}
+for i, key in enumerate(full_params.keys()):
+    all_param_dict[key] = param_grid[:, i]
+
+
+grid = Grid('bpass-2.2.1-bin_chabrier03-0.1,300.0_cloudy-c23.01-sps.hdf5',
+            grid_dir=grid_dir,
+            new_lam=new_wav)
+
+
+# Metallicity 
+Z_dists = [ZDist.DeltaConstant(log10metallicity=log_z) for log_z in all_param_dict['log_zmet']]
+
+# Redshifts
+redshifts = np.array(all_param_dict['redshift'])
+
+# Pop II SFH
+sfh_param_arrays = np.vstack((all_param_dict['tau'], all_param_dict['peak_age'])).T
+sfh_models, _ = generate_sfh_basis(
+    sfh_type=sfh_type,
+    sfh_param_names=['tau', 'peak_age_norm'],
+    sfh_param_arrays=sfh_param_arrays,
+    redshifts=redshifts,
+    max_redshift=max_redshift,
+    cosmo=cosmo,
+    sfh_param_units=sfh_param_units,
+    iterate_redshifts=False,
+    calculate_min_age=False,
+)
+# dust emission
+'''
+dust_emission_grid = Grid(
+    'draine_li_dust_emission_grid_MW_3p1',
+    grid_dir=grid_dir,
+    new_lam=new_wav,
+    read_lines=False,
+)
+
+ir_templates =IR_templates(dust_emission_grid,
+                           mdust=1e6*Msun)
+
+dust_emission = IR_templates'''
+
+
+# Emission parameters
+emission_model = TotalEmission(
+    grid=grid,
+    fesc=fesc,
+    fesc_ly_alpha=fesc_ly_alpha,
+    dust_curve=dust_curve,#ParametricLi08(model='SMC'),
+    dust_emission_model=dust_emission,
+)
+
+# List of other varying or fixed parameters. Either a distribution to pull from or a list.
+# Can be any parameter which can be property of emitter or galaxy and processed by the emission model.
+galaxy_params={
+    'tau_v': all_param_dict['tau_v'],
+}
+
+sfh_name = str(sfh_type).split('.')[-1].split("'")[0]
+
+name = f'Pop_II_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_BPASS_Chab_Calzetti_v1_fesc0.0'
+
+popII_basis = GalaxyBasis(
+    model_name=f'sps_{name}',
+    redshifts=redshifts,
+    grid=grid,
+    emission_model=emission_model,
+    sfhs=sfh_models,
+    cosmo=cosmo,
+    instrument=instrument,
+    metal_dists=Z_dists,
+    galaxy_params=galaxy_params,
+    redshift_dependent_sfh=True,
+    params_to_ignore=['max_age'], # This is dependent on the redshift and should not be included in the basis
+    build_grid=False,
+)
+
+# This will plot some of the SEDs as an example.
+# for i in range(30):
+#    popII_basis.plot_random_galaxy(out_dir='/home/tharvey/work/ltu-ili_testing/plots',
+#                                    masses=10**all_param_dict['masses'])
+
+combined_basis = CombinedBasis(
+    bases=[popII_basis],
+    total_stellar_masses=unyt_array(10**all_param_dict['masses'], units=Msun),
+    base_emission_model_keys=['total'],
+    combination_weights=None,
+    redshifts=redshifts,
+    out_name=f'grid_{name}',
+    out_dir=out_dir,
+    draw_parameter_combinations=False, # Since we have already drawn the parameters, we don't need to combine them again.
+)
+
+# Passing in extra analysis function to pipeline to calculate mUV. Any funciton could be passed in. 
+combined_basis.process_bases(overwrite=False, mUV=(calculate_muv, cosmo), n_proc=n_proc, verbose=False)
+
+# Create grid - kinda overkill for a single case, but it does work.
+combined_basis.create_grid(overwrite=True)
