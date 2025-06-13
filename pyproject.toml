@@ -13,7 +13,7 @@ dependencies = [
     "lampe",
     "ltu-ili @ git+https://github.com/maho3/ltu-ili#egg=ltu-ili",
     "tarp @ git+https://github.com/maho3/tarp.git",
-    "synthesizer @ git+https://github.com/synthesizer-project/synthesizer",
+    "cosmos-synthesizer",
     "scikit-learn",
     "sbi>=0.22.0",
     "h5py",
