@@ -1,47 +1,47 @@
-import os
-import h5py
+import copy
 import inspect
-import numpy as np
+import os
+from collections import defaultdict
 from datetime import datetime
+from typing import Any, Callable, Dict, List, Optional, Tuple, Type, Union
+
+import astropy.units as u
+import h5py
+import matplotlib.patheffects as PathEffects
 import matplotlib.pyplot as plt
-from synthesizer.parametric import Galaxy
+import numpy as np
+from astropy.cosmology import Cosmology, Planck18, z_at_value
+from astropy.table import Table
+from matplotlib.ticker import FuncFormatter, ScalarFormatter
+from scipy import stats
+from scipy.interpolate import interp1d
+from scipy.linalg import inv
+from scipy.stats import qmc
+from synthesizer.conversions import lnu_to_fnu
 from synthesizer.emission_models import EmissionModel
+from synthesizer.emission_models.attenuation import Inoue14
 from synthesizer.emissions import plot_spectra
 from synthesizer.grid import Grid
-from synthesizer.parametric import SFH, Stars, ZDist
-from synthesizer.instruments import Instrument, FilterCollection
+from synthesizer.instruments import FilterCollection, Instrument
+from synthesizer.parametric import SFH, Galaxy, Stars, ZDist
 from synthesizer.particle.stars import sample_sfzh
-from synthesizer.conversions import lnu_to_fnu
-from typing import Dict, Any, List, Tuple, Union, Optional, Type, Callable
-from collections import defaultdict
-import copy
+from synthesizer.pipeline import Pipeline
+from tqdm import tqdm
 from unyt import (
-    unyt_array,
-    unyt_quantity,
     Angstrom,
-    um,
-    nJy,
+    Jy,
+    Mpc,
     Msun,
     Myr,
-    yr,
     Unit,
-    Mpc,
     dimensionless,
-    Jy,
+    nJy,
     uJy,
+    um,
+    unyt_array,
+    unyt_quantity,
+    yr,
 )
-from astropy.cosmology import Planck18, Cosmology, z_at_value
-from synthesizer.emission_models.attenuation import Inoue14
-import astropy.units as u
-from matplotlib.ticker import ScalarFormatter, FuncFormatter
-from tqdm import tqdm
-from synthesizer.pipeline import Pipeline
-import matplotlib.patheffects as PathEffects
-from scipy.interpolate import interp1d
-from scipy import stats
-from scipy.stats import qmc
-from scipy.linalg import inv
-from astropy.table import Table
 
 from .utils import (
     list_parameters,
@@ -92,8 +92,7 @@ def generate_sfh_grid(
     max_redshift: float = 15,
     cosmo: Type[Cosmology] = Planck18,
 ) -> Tuple[List[Type[SFH.Common]], np.ndarray]:
-    """
-    Generate a grid of star formation histories based on prior distributions for redshift and SFH parameters.
+    """Generate a grid of star formation histories based on prior distributions for redshift and SFH parameters.
 
     This function creates a grid of SFH models by combining possible parameter values, which can
     depend explicitly on the redshift. It first draws redshifts, calculates maximum stellar ages at each
@@ -123,19 +122,18 @@ def generate_sfh_grid(
     cosmo : Type[Cosmology], optional
         Cosmology to use for age calculations, by default Planck18
 
-    Returns
+    Returns:
     -------
     Tuple[List[SFH], np.ndarray]
         - List of SFH objects with parameters drawn from the priors
         - Array of parameter combinations, where the first column is redshift followed by SFH parameters
 
-    Notes
+    Notes:
     -----
     For parameters that depend on redshift (marked with 'depends_on': 'max_redshift'),
     the maximum allowed value will be dynamically adjusted based on the age of the universe
     at that redshift.
     """
-
     # Draw redshifts
     if isinstance(redshift, dict):
         redshifts = redshift["prior"].rvs(
@@ -243,8 +241,7 @@ def generate_metallicity_distribution(
         "units": None,
     },
 ):
-    """
-    Generate a grid of metallicity distributions based on prior distributions.
+    """Generate a grid of metallicity distributions based on prior distributions.
 
     Parameters
     ----------
@@ -259,7 +256,6 @@ def generate_metallicity_distribution(
         - 'units': unyt unit (optional)
         - 'name': parameter name for constructor (optional, defaults to the key)
     """
-
     # choose values based on prior. Can provide metallicity as either metallicity or log10metallicity
 
     if isinstance(zmet, dict):
@@ -297,8 +293,7 @@ def generate_emission_models(
     grid: Grid,
     fixed_params: dict = None,
 ):
-    """
-    Generate a grid of emission models based on varying parameters.
+    """Generate a grid of emission models based on varying parameters.
     Parameters
     ----------
 
@@ -321,7 +316,6 @@ def generate_emission_models(
         - 'units': unyt unit (optional)
         - 'name': parameter name for constructor (optional, defaults to the key)
     """
-
     # Create parameter combinations using meshgrid
     varying_param_arrays = []
     for key, param_data in varying_params.items():
@@ -389,8 +383,7 @@ def draw_from_hypercube(
     model: Type[qmc.QMCEngine] = qmc.LatinHypercube,
     rng: Optional[np.random.Generator] = None,
 ):
-    """
-    Draw N samples from a hypercube defined by the parameter ranges.
+    """Draw N samples from a hypercube defined by the parameter ranges.
 
     Parameters
     ----------
@@ -402,12 +395,11 @@ def draw_from_hypercube(
         The sampling model to use, by default LatinHypercube.
     rng : Optional[np.random.Generator], optional
 
-    Returns
+    Returns:
     -------
     np.ndarray
         Array of shape (N, len(param_ranges)) containing the drawn samples.
     """
-
     # Create a Latin Hypercube sampler
     sampler = model(d=len(param_ranges), rng=rng)
 
@@ -425,20 +417,18 @@ def draw_from_hypercube(
 
 
 def load_hypercube_from_npy(file_path: str):
-    """
-    Load a hypercube from a .npy file.
+    """Load a hypercube from a .npy file.
 
     Parameters
     ----------
     file_path : str
         Path to the .npy file containing the hypercube data.
 
-    Returns
+    Returns:
     -------
     np.ndarray
         Array of shape (N, M) containing the loaded hypercube data.
     """
-
     # Load the hypercube data from the .npy file
     hypercube = np.load(file_path)
 
@@ -457,8 +447,7 @@ def generate_sfh_basis(
     cosmo: Type[Cosmology] = Planck18,
     iterate_redshifts: bool = True,
 ) -> Tuple[List[Type[SFH.Common]], np.ndarray]:
-    """
-    Generate a grid of the N basis SFHs based on prior distributions for redshift, and pairs of parameters.
+    """Generate a grid of the N basis SFHs based on prior distributions for redshift, and pairs of parameters.
 
     Parameters
     ----------
@@ -489,14 +478,14 @@ def generate_sfh_basis(
     iterate_redshifts : bool, optional
         If True, iterate over redshifts and create SFH for each, by default True
         If False, assume input redshift SFH param array is a 1:1 mapping of redshift to SFH parameters.
-    Returns
+
+    Returns:
     -------
     Tuple[List[SFH], np.ndarray]
         - List of SFH objects with parameters drawn from the priors
         - Array of parameter combinations, where the first column is redshift followed by SFH parameters
 
     """
-
     if isinstance(redshifts, dict):
         redshifts = redshifts["prior"].rvs(
             size=int(redshifts["size"]),
@@ -653,8 +642,7 @@ class GalaxyBasis:
         params_to_ignore: List[str] = [],
         build_grid: bool = True,
     ) -> None:
-        """
-        Initialize the GalaxyBasis object with SFHs, redshifts, and other parameters.
+        """Initialize the GalaxyBasis object with SFHs, redshifts, and other parameters.
 
         Parameters
         ----------
@@ -693,7 +681,6 @@ class GalaxyBasis:
             If False, assume all dimensions of parameters are the same size and build the grid from the parameters.
             # I.e don't generate combinations of parameters, just use the parameters as they are.
         """
-
         self.model_name = model_name
         self.sfhs = sfhs
         self.redshifts = redshifts
@@ -787,20 +774,18 @@ class GalaxyBasis:
     def create_galaxies(
         self, base_masses: Union[unyt_array, unyt_quantity] = 1e9 * Msun
     ) -> List[Type[Galaxy]]:
-        """
-        Create galaxies with the specified SFHs, redshifts, and other parameters.
+        """Create galaxies with the specified SFHs, redshifts, and other parameters.
 
         Parameters
         ----------
         base_masses : unyt_quantity
             Default mass (or mass array) to use for the galaxies. If not provided, will use self.stellar_masses.
 
-        Returns
+        Returns:
         -------
         List[Type[Galaxy]]
             List of Galaxy objects.
         """
-
         if not self.build_grid:
             raise Exception(
                 "You probably meant to call create_matched_galaxies instead of create_galaxies. "
@@ -958,9 +943,7 @@ class GalaxyBasis:
         stellar_mass: Union[unyt_array, unyt_quantity] = 1e9 * Msun,
         **galaxy_kwargs,
     ) -> Type[Galaxy]:
-        """
-        Create a new galaxy with the specified parameters.
-        """
+        """Create a new galaxy with the specified parameters."""
         # Initialise the parametric Stars object
 
         single_mass = (
@@ -1008,11 +991,9 @@ class GalaxyBasis:
     def create_matched_galaxies(
         self, base_masses: unyt_quantity = 1e9 * Msun
     ) -> List[Type[Galaxy]]:
-        """
-        Equivalent of create_galaxies but assumes that we don't need to draw
+        """Equivalent of create_galaxies but assumes that we don't need to draw
         parameter combinations.
         """
-
         if len(self.metal_dists) == 1:
             # Just reference the first one
             self.metal_dists = [self.metal_dists[0]] * len(self.sfhs)
@@ -1287,10 +1268,7 @@ class GalaxyBasis:
                 gc.collect()  # Force garbage collection to free memory
 
     def plot_random_galaxy(self, masses, **kwargs):
-        """
-        Plot a random galaxy from the list of galaxies.
-        """
-
+        """Plot a random galaxy from the list of galaxies."""
         if not self.build_grid:
             idx = np.random.randint(0, len(self.redshifts))
             mass = masses[idx]
@@ -1304,10 +1282,7 @@ class GalaxyBasis:
         emission_model_keys: List[str] = ["total"],
         out_dir="./",
     ):
-        """
-        Plot the galaxy with the given index.
-        """
-
+        """Plot the galaxy with the given index."""
         galaxy_params = {}
         for param in self.galaxy_params.keys():
             if isinstance(self.galaxy_params[param], dict):
@@ -1588,8 +1563,7 @@ class CombinedBasis:
         batch_size: int = 40_000,
         **extra_analysis_functions,
     ) -> None:
-        """
-        Process the bases and save the output to files.
+        """Process the bases and save the output to files.
         Parameters
         ----------
         n_proc : int
@@ -1880,12 +1854,10 @@ class CombinedBasis:
         overload_out_name: str = "",
         overwrite: bool = False,
     ) -> dict:
-        """
-        Create a grid of SEDs for the given bases and stellar masses from the pipeline outputs.
+        """Create a grid of SEDs for the given bases and stellar masses from the pipeline outputs.
         Can override the instrument used to compute the SEDs if you want to subset which filters are used in the grid.
         E.g. the base model is run for all NIRCam wide and medium filters, but you want to create a grid for just the wide filters.
         """
-
         if not self.draw_parameter_combinations:
             return self.create_full_grid(
                 override_instrument,
@@ -2213,8 +2185,7 @@ class CombinedBasis:
         overwrite: bool = False,
         grid_params_to_save=["model_name"],
     ) -> None:
-        """
-        Save the grid to a file.
+        """Save the grid to a file.
         Parameters
         ----------
         grid_dict : dict
@@ -2317,11 +2288,7 @@ class CombinedBasis:
         show: bool = True,
         save: bool = False,
     ):
-        """
-        Given an index, plot the galaxy from the grid. Open the relevant hdf5 files and load the spectra.
-
-        """
-
+        """Given an index, plot the galaxy from the grid. Open the relevant hdf5 files and load the spectra."""
         if self.grid_photometry is None:
             raise ValueError(
                 "Grid photometry not created. Run create_grid() first."
@@ -2521,13 +2488,13 @@ class CombinedBasis:
         self,
         file_path: str,
     ) -> dict:
-        """
-        Load the grid from a file.
+        """Load the grid from a file.
         Parameters
         ----------
         file_path : str
             Path to the HDF5 file containing the grid data.
-        Returns
+
+        Returns:
         -------
         dict
             Dictionary containing the grid data.
@@ -2554,8 +2521,7 @@ class CombinedBasis:
         overload_out_name: str = "",
         overwrite: bool = False,
     ) -> None:
-        """
-        Create a complete grid of spectral energy distributions (SEDs) by combining galaxy bases.
+        """Create a complete grid of spectral energy distributions (SEDs) by combining galaxy bases.
 
         This method handles both single-base and multi-base scenarios, properly scaling according to
         masses and weights. It constructs a grid without sampling, generating the full set of
@@ -2956,8 +2922,7 @@ class CombinedBasis:
 
 
 class EmpiricalUncertaintyModel:
-    """
-    A class to model and sample photometric uncertainties based on an empirical
+    """A class to model and sample photometric uncertainties based on an empirical
     distribution derived from observed fluxes and their uncertainties.
 
     The model estimates p(sigma_X | f_X) as a Gaussian N(mu_sigma_X(f_X), sigma_sigma_X(f_X)),
@@ -2984,8 +2949,7 @@ class EmpiricalUncertaintyModel:
         upper_limit_flux_err_behaviour: str = "flux",
         max_flux_error: Optional[float] = None,
     ):
-        """
-        Initializes the model by building interpolators for the mean and
+        """Initializes the model by building interpolators for the mean and
         standard deviation of observed errors as a function of flux.
 
         Args:
@@ -3293,8 +3257,7 @@ class EmpiricalUncertaintyModel:
         sigma_clip=None,
         extrapolate=False,
     ) -> Union[float, np.ndarray, None]:
-        """
-        Samples a 'fake' uncertainty (sigma_prime_X) for a given true flux.
+        """Samples a 'fake' uncertainty (sigma_prime_X) for a given true flux.
 
         Args:
             true_flux: The true flux value(s) for which to sample an uncertainty.
@@ -3306,7 +3269,6 @@ class EmpiricalUncertaintyModel:
             or an array with np.nan for problematic inputs if a positive sigma
             cannot be sampled after max_resamples.
         """
-
         is_scalar = np.isscalar(true_flux)
         flux_array = np.atleast_1d(true_flux)
         sampled_sigmas = np.empty_like(flux_array)
@@ -3348,8 +3310,7 @@ class EmpiricalUncertaintyModel:
         max_resamples_for_positive_sigma: int = 5,
         out_units: Optional[str] = None,
     ) -> Tuple[Union[float, np.ndarray, None], Union[float, np.ndarray, None]]:
-        """
-        Applies noise to a true flux by first sampling an uncertainty
+        """Applies noise to a true flux by first sampling an uncertainty
         and then adding Gaussian noise.
 
         Args:
@@ -3361,7 +3322,6 @@ class EmpiricalUncertaintyModel:
             Returns (np.nan, np.nan) for problematic inputs where positive sigma
             could not be determined.
         """
-
         true_flux = true_flux.copy()
 
         if self.flux_unit != true_flux_units:
@@ -3598,8 +3558,7 @@ class EmpiricalUncertaintyModel:
     def serialize_to_hdf5(
         self, hdf5_file: str, group_name: str = "empirical_uncertainty_model"
     ):
-        """
-        Serializes the model to an HDF5 file.
+        """Serializes the model to an HDF5 file.
 
         Args:
             hdf5_file: Path to the HDF5 file where the model will be saved.
@@ -3644,8 +3603,7 @@ class EmpiricalUncertaintyModel:
     def deserialize_from_hdf5(
         cls, hdf5_file: str, group_name: str = "empirical_uncertainty_model"
     ):
-        """
-        Deserializes the model from an HDF5 file.
+        """Deserializes the model from an HDF5 file.
 
         Args:
             hdf5_file: Path to the HDF5 file from which the model will be loaded.
@@ -3697,8 +3655,7 @@ class EmpiricalUncertaintyModel:
 
 
 class GalaxySimulator(object):
-    """
-    Photometry Simulator class. Initialize with required model,
+    """Photometry Simulator class. Initialize with required model,
     then take an array or dictionary of parameters and return a dictionary of photometry.
     A seperate function will handle normalization and scaling of the photometry.
 
@@ -3729,8 +3686,7 @@ class GalaxySimulator(object):
         noise_models: Union[None, Dict[str, EmpiricalUncertaintyModel]] = None,
         fixed_params: dict = {},
     ) -> None:
-        """
-        Parameters
+        """Parameters
 
         ----------
 
@@ -3785,7 +3741,6 @@ class GalaxySimulator(object):
             This is used to fix parameters in the simulation. If None, no parameters are fixed. Default is None.
 
         """
-
         assert isinstance(grid, Grid), (
             f"Grid must be a subclass of Grid. Got {type(grid)} instead."
         )
@@ -4165,11 +4120,9 @@ class GalaxySimulator(object):
         fluxes: np.ndarray,
         flux_units: str = "nJy",
     ):
-        """
-        Given a set of depths, convert to photometry unit and use as standard deviations
+        """Given a set of depths, convert to photometry unit and use as standard deviations
         to generate a scattered photometry array of shape (m*n_scatters, n) from photometry array
         """
-
         if self.depths is not None:
             depths = self.depths
             if depths is None:
@@ -4355,8 +4308,7 @@ def test_out_of_distribution(
     simulated_photometry: np.ndarray,
     sigma_threshold: float = 5.0,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Identifies and removes samples from a simulated dataset that are
+    """Identifies and removes samples from a simulated dataset that are
     out-of-distribution compared to a reference observed dataset.
 
     The function calculates the Mahalanobis distance for each simulated sample
@@ -4380,7 +4332,6 @@ def test_out_of_distribution(
             - A 1D NumPy array containing the indices of the rows (samples) that were
               identified as outliers and removed from the original simulated_photometry.
     """
-
     if (
         observed_photometry.shape[1] == simulated_photometry.shape[1]
         and observed_photometry.shape[0] != simulated_photometry.shape[0]
