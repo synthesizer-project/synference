@@ -29,4 +29,6 @@ new_wav = generate_constant_R(R=300)
 
 filterset = FilterCollection(filter_codes, new_lam=new_wav)
 
-filterset.write_filters('/cosma7/data/dp276/dc-harv3/work/ltu-ili_testing/scripts/filters/JWST.hdf5')
+filterset.write_filters(
+    "/cosma7/data/dp276/dc-harv3/work/ltu-ili_testing/scripts/filters/JWST.hdf5"
+)
