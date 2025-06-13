@@ -1,13 +1,13 @@
-from sbifitter import GalaxySimulator, SBI_Fitter, calculate_muv
-
 import numpy as np
 import torch
 from synthesizer.emission_models import TotalEmission
 from synthesizer.emission_models.attenuation import Calzetti2000
 from synthesizer.grid import Grid
+from synthesizer.instruments import FilterCollection, Instrument
 from synthesizer.parametric import SFH, ZDist
-from synthesizer.instruments import Instrument, FilterCollection
 from unyt import Myr
+
+from sbifitter import GalaxySimulator, SBI_Fitter, calculate_muv
 
 device = "cuda"
 
@@ -59,7 +59,8 @@ emission_model = TotalEmission(
     dust_emission_model=None,
 )
 
-# This tells the emission model we will have a parameter called 'tau_v' on the stellar emitter.
+# This tells the emission model we will have a parameter called 'tau_v'
+# on the stellar emitter.
 emitter_params = {"stellar": ["tau_v"]}
 
 
@@ -98,9 +99,7 @@ def run_simulator(params, return_type="tensor"):
 
     phot = simulator(params)
     if return_type == "tensor":
-        return torch.tensor(phot[np.newaxis, :], dtype=torch.float32).to(
-            device
-        )
+        return torch.tensor(phot[np.newaxis, :], dtype=torch.float32).to(device)
     else:
         return phot
 

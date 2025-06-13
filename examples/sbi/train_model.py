@@ -1,16 +1,14 @@
-from sbifitter import SBI_Fitter, create_uncertainity_models_from_EPOCHS_cat
-from unyt import Jy
-import numpy as np
-from astropy.table import Table
-from simple_parsing import ArgumentParser
-from dataclasses import dataclass
-from ast import literal_eval
 import datetime
-import torch
 import multiprocessing as mp
 import sys
-import time
+from ast import literal_eval
+from dataclasses import dataclass
 
+import torch
+from astropy.table import Table
+from simple_parsing import ArgumentParser
+
+from sbifitter import SBI_Fitter, create_uncertainity_models_from_EPOCHS_cat
 
 try:
     mp.set_start_method("spawn", force=True)
@@ -37,7 +35,10 @@ class Args:
     n_nets: int = 1
     model_name: str = "BPASS_Chab_DelayedExpSFH_0.01_z_12_CF00_v1"
     name_append: str = ""
-    grid_path: str = "/home/tharvey/work/output/grid_BPASS_DelayedExponential_SFH_0.01_z_12_logN_5.7_Chab_CF00_v1.hdf5"
+    grid_path: str = (
+        """/home/tharvey/work/output/
+        grid_BPASS_DelayedExponential_SFH_0.01_z_12_logN_5.7_Chab_CF00_v1.hdf5""",
+    )
     hidden_features: int = 64
     num_transforms: int = 6
     num_components: int = 10
@@ -48,7 +49,10 @@ class Args:
     drop_dropout_fraction: float = 0.5
     plot: bool = True
     additional_model_args: tuple = ()
-    data_err_file: str = "/home/tharvey/Downloads/JADES-Deep-GS_MASTER_Sel-f277W+f356W+f444W_v9_loc_depth_masked_10pc_EAZY_matched_selection_ext_src_UV.fits"
+    data_err_file: str = (
+        """/home/tharvey/Downloads/
+    JADES-Deep-GS_MASTER_Sel-f277W+f356W+f444W_v9_loc_depth_masked_10pc_EAZY_matched_selection_ext_src_UV.fits""",
+    )
     background: bool = False
 
 
@@ -69,19 +73,16 @@ def main_task(args: Args) -> None:
     # If running in the background, redirect output to log files.
     if args.background:
         print(
-            f"Background process started. Logging to sbi_training.log and sbi_training_error.log"
+            """Background process started.
+            Logging to sbi_training.log and sbi_training_error.log"""
         )
         sys.stdout = open("sbi_training.log", "a", buffering=1)
         sys.stderr = open("sbi_training_error.log", "a", buffering=1)
-        print(
-            f"Training started at {datetime.datetime.now()}", file=sys.stdout
-        )
+        print(f"Training started at {datetime.datetime.now()}", file=sys.stdout)
         print(f"Arguments: {args}", file=sys.stdout)
 
     table = Table.read(args.data_err_file, format="fits")
-    bands = [
-        i.split("_")[-1] for i in table.colnames if i.startswith("loc_depth")
-    ]
+    bands = [i.split("_")[-1] for i in table.colnames if i.startswith("loc_depth")]
     new_band_names = ["HST/ACS_WFC.F606W"] + [
         f"JWST/NIRCam.{band.upper()}" for band in bands[1:]
     ]
@@ -162,9 +163,7 @@ if __name__ == "__main__":
         print("Starting the task in a background process...")
         process = mp.Process(target=main_task, args=(args,))
         process.start()
-        print(
-            f"Process started with PID: {process.pid}. The script will now exit."
-        )
+        print(f"Process started with PID: {process.pid}. The script will now exit.")
         sys.exit(0)
     else:
         # Run in the foreground as normal
