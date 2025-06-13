@@ -565,7 +565,6 @@ class TestSBIFitter:
             "SBIFitter did not initialize with the correct grid file."
         )
 
-        return fitter
 
     def test_sbifitter_feature_array_creation(self, test_sbi_grid):
         """Test that SBIFitter can create a basic feature array from the grid."""

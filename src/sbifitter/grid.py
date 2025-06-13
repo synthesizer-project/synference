@@ -1176,6 +1176,10 @@ class GalaxyBasis:
                     out_name = self.model_name
 
                 fullpath = os.path.join(out_dir, out_name)
+
+                if not os.path.exists(out_dir):
+                    os.makedirs(out_dir)
+
                 final_fullpath = fullpath.replace(
                     ".hdf5", f"_{batch_i + 1}.hdf5"
                 )
@@ -1234,6 +1238,7 @@ class GalaxyBasis:
                     f"Finished running pipeline at {datetime.now()} for {ngal} galaxies"
                 )
                 if save:
+
                     # Save the pipeline to a file
                     pipeline.write(fullpath, verbose=0)
 
