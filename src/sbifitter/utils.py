@@ -1,4 +1,3 @@
-
 from unyt import Angstrom
 import numpy as np
 import scipy.stats
@@ -8,7 +7,6 @@ import operator
 import os
 import h5py
 from typing import List, Dict, Union, Callable
-
 
 
 def load_grid_from_hdf5(
@@ -60,8 +58,12 @@ def load_grid_from_hdf5(
             supplementary_parameter_names = f.attrs[supp_attr]
             supplementary_parameter_units = f.attrs[supp_units_attr]
             output["supplementary_parameters"] = supplementary_parameters
-            output["supplementary_parameter_names"] = supplementary_parameter_names
-            output["supplementary_parameter_units"] = supplementary_parameter_units
+            output["supplementary_parameter_names"] = (
+                supplementary_parameter_names
+            )
+            output["supplementary_parameter_units"] = (
+                supplementary_parameter_units
+            )
 
     return output
 
@@ -82,7 +84,14 @@ def calculate_min_max_wav_grid(filterset, max_redshift, min_redshift=0):
     return min_wav, max_wav
 
 
-def generate_constant_R(R=300, start=1 * Angstrom, end=9e5 * Angstrom, auto_start_stop=False, filterset=None, **kwargs):
+def generate_constant_R(
+    R=300,
+    start=1 * Angstrom,
+    end=9e5 * Angstrom,
+    auto_start_stop=False,
+    filterset=None,
+    **kwargs,
+):
     if auto_start_stop and filterset is not None:
         start, end = calculate_min_max_wav_grid(filterset, **kwargs)
 
@@ -113,7 +122,9 @@ def list_parameters(distribution):
     elif distribution.name in scipy.stats._continuous_distns._distn_names:
         parameters += ["loc", "scale"]
     else:
-        sys.exit("Distribution name not found in discrete or continuous lists.")
+        sys.exit(
+            "Distribution name not found in discrete or continuous lists."
+        )
     return parameters
 
 
@@ -168,7 +179,12 @@ class FilterArithmeticParser:
     """
 
     def __init__(self):
-        self.operators = {"+": operator.add, "-": operator.sub, "*": operator.mul, "/": operator.truediv}
+        self.operators = {
+            "+": operator.add,
+            "-": operator.sub,
+            "*": operator.mul,
+            "/": operator.truediv,
+        }
 
         # Regular expression pattern for tokenizing
         self.pattern = r"(\d*\.\d+|\d+|[A-Za-z]\d+[A-Za-z]+|\+|\-|\*|\/|\(|\))"
@@ -190,7 +206,11 @@ class FilterArithmeticParser:
         """Check if token is a filter name."""
         return bool(re.match(r"^[A-Za-z]\d+[A-Za-z]+$", token))
 
-    def evaluate(self, tokens: List[str], filter_data: Dict[str, Union[float, np.ndarray]]) -> Union[float, np.ndarray]:
+    def evaluate(
+        self,
+        tokens: List[str],
+        filter_data: Dict[str, Union[float, np.ndarray]],
+    ) -> Union[float, np.ndarray]:
         """
         Evaluate a list of tokens using provided filter data.
 
@@ -215,16 +235,21 @@ class FilterArithmeticParser:
 
             elif token == ")":
                 while operator_stack and operator_stack[-1] != "(":
-                    self._apply_operator(operator_stack, output_stack, filter_data)
+                    self._apply_operator(
+                        operator_stack, output_stack, filter_data
+                    )
                 operator_stack.pop()  # Remove '('
 
             elif token in self.operators:
                 while (
                     operator_stack
                     and operator_stack[-1] != "("
-                    and precedence.get(operator_stack[-1], 0) >= precedence[token]
+                    and precedence.get(operator_stack[-1], 0)
+                    >= precedence[token]
                 ):
-                    self._apply_operator(operator_stack, output_stack, filter_data)
+                    self._apply_operator(
+                        operator_stack, output_stack, filter_data
+                    )
                 operator_stack.append(token)
 
             else:  # Number or filter name
@@ -232,7 +257,9 @@ class FilterArithmeticParser:
                     value = float(token)
                 elif self.is_filter(token):
                     if token not in filter_data:
-                        raise ValueError(f"Filter {token} not found in provided data")
+                        raise ValueError(
+                            f"Filter {token} not found in provided data"
+                        )
                     value = filter_data[token]
                 else:
                     raise ValueError(f"Invalid token: {token}")
@@ -303,4 +330,3 @@ def create_sqlite_db(db_path: str):
     print(storage_name)
 
     return storage_name
-
