@@ -1,12 +1,15 @@
-from unyt import Angstrom
-import numpy as np
-import scipy.stats
-import sys
-import re
+"""Utility functions for SBIFitter."""
+
 import operator
 import os
+import re
+import sys
+from typing import Dict, List, Union
+
 import h5py
-from typing import List, Dict, Union, Callable
+import numpy as np
+import scipy.stats
+from unyt import Angstrom
 
 
 def load_grid_from_hdf5(
@@ -20,16 +23,22 @@ def load_grid_from_hdf5(
     supp_units_attr: str = "SupplementaryParameterUnits",
     phot_unit_attr: str = "PhotometryUnits",
 ) -> dict:
-    """
-    Load a grid from an HDF5 file.
+    """Load a grid from an HDF5 file.
 
-    Args:
+    Parameters:
         hdf5_path: Path to the HDF5 file.
+        photometry_key: Key for the photometry dataset in the HDF5 file.
+        parameters_key: Key for the parameters dataset in the HDF5 file.
+        filter_codes_attr: Attribute name for filter codes in the HDF5 file.
+        parameters_attr: Attribute name for parameter names in the HDF5 file.
+        supp_key: Key for supplementary parameters in the HDF5 file.
+        supp_attr: Attribute name for supplementary parameter names in the HDF5 file.
+        supp_units_attr: Attribute name for supplementary parameter units in HDF5 file.
+        phot_unit_attr: Attribute name for photometry units in the HDF5 file.
 
     Returns:
         The loaded grid.
     """
-
     if not os.path.exists(hdf5_path):
         raise FileNotFoundError(f"HDF5 file not found: {hdf5_path}")
 
@@ -58,20 +67,14 @@ def load_grid_from_hdf5(
             supplementary_parameter_names = f.attrs[supp_attr]
             supplementary_parameter_units = f.attrs[supp_units_attr]
             output["supplementary_parameters"] = supplementary_parameters
-            output["supplementary_parameter_names"] = (
-                supplementary_parameter_names
-            )
-            output["supplementary_parameter_units"] = (
-                supplementary_parameter_units
-            )
+            output["supplementary_parameter_names"] = supplementary_parameter_names
+            output["supplementary_parameter_units"] = supplementary_parameter_units
 
     return output
 
 
 def calculate_min_max_wav_grid(filterset, max_redshift, min_redshift=0):
-    """
-    Calculate the minimum and maximum wavelengths for a given redshift.
-    """
+    """Calculate the minimum and maximum wavelengths for a given redshift."""
     # Get the filter limits
     filter_lims = filterset.get_non_zero_lam_lims()
 
@@ -92,6 +95,19 @@ def generate_constant_R(
     filterset=None,
     **kwargs,
 ):
+    """Generate a constant R wavelength grid.
+
+    Parameters:
+        R: The resolution of the grid.
+        start: The starting wavelength of the grid.
+        end: The ending wavelength of the grid.
+        auto_start_stop: If True, calculate start and end from the filterset.
+        filterset: A filter set to calculate the start and end wavelengths.
+        **kwargs: Additional keyword arguments for filterset calculations.
+
+    Returns:
+        A numpy array of wavelengths in Angstroms.
+    """
     if auto_start_stop and filterset is not None:
         start, end = calculate_min_max_wav_grid(filterset, **kwargs)
 
@@ -105,9 +121,11 @@ def generate_constant_R(
 
 def list_parameters(distribution):
     """List parameters for scipy.stats.distribution.
-    # Arguments
+
+    Parameters
         distribution: a string or scipy.stats distribution object.
-    # Returns
+
+    Returns:
         A list of distribution parameter strings.
     # from https://stackoverflow.com/questions/30453097/getting-the-parameter-names-of-scipy-stats-distributions
     """
@@ -122,15 +140,12 @@ def list_parameters(distribution):
     elif distribution.name in scipy.stats._continuous_distns._distn_names:
         parameters += ["loc", "scale"]
     else:
-        sys.exit(
-            "Distribution name not found in discrete or continuous lists."
-        )
+        sys.exit("Distribution name not found in discrete or continuous lists.")
     return parameters
 
 
 def rename_overlapping_parameters(lists_dict):
-    """
-    Check if N lists have any overlapping parameters and rename them if they do.
+    """Check if N lists have any overlapping parameters and rename them if they do.
 
     Args:
         lists_dict: Dictionary where keys are list names and values are the lists
@@ -161,8 +176,7 @@ def rename_overlapping_parameters(lists_dict):
 
 
 class FilterArithmeticParser:
-    """
-    Stolen from my own code - https://github.com/tHarvey303/BD-Finder/blob/main/src/BDFit/StarFit.py
+    """Parser for filter arithmetic expressions.
 
     Parser for filter arithmetic expressions.
     Supports operations like:
@@ -179,6 +193,7 @@ class FilterArithmeticParser:
     """
 
     def __init__(self):
+        """Initialize the FilterArithmeticParser."""
         self.operators = {
             "+": operator.add,
             "-": operator.sub,
@@ -211,8 +226,7 @@ class FilterArithmeticParser:
         tokens: List[str],
         filter_data: Dict[str, Union[float, np.ndarray]],
     ) -> Union[float, np.ndarray]:
-        """
-        Evaluate a list of tokens using provided filter data.
+        """Evaluate a list of tokens using provided filter data.
 
         Args:
             tokens: List of tokens from the expression
@@ -235,21 +249,16 @@ class FilterArithmeticParser:
 
             elif token == ")":
                 while operator_stack and operator_stack[-1] != "(":
-                    self._apply_operator(
-                        operator_stack, output_stack, filter_data
-                    )
+                    self._apply_operator(operator_stack, output_stack, filter_data)
                 operator_stack.pop()  # Remove '('
 
             elif token in self.operators:
                 while (
                     operator_stack
                     and operator_stack[-1] != "("
-                    and precedence.get(operator_stack[-1], 0)
-                    >= precedence[token]
+                    and precedence.get(operator_stack[-1], 0) >= precedence[token]
                 ):
-                    self._apply_operator(
-                        operator_stack, output_stack, filter_data
-                    )
+                    self._apply_operator(operator_stack, output_stack, filter_data)
                 operator_stack.append(token)
 
             else:  # Number or filter name
@@ -257,9 +266,7 @@ class FilterArithmeticParser:
                     value = float(token)
                 elif self.is_filter(token):
                     if token not in filter_data:
-                        raise ValueError(
-                            f"Filter {token} not found in provided data"
-                        )
+                        raise ValueError(f"Filter {token} not found in provided data")
                     value = filter_data[token]
                 else:
                     raise ValueError(f"Invalid token: {token}")
@@ -290,8 +297,7 @@ class FilterArithmeticParser:
     def parse_and_evaluate(
         self, expression: str, filter_data: Dict[str, Union[float, np.ndarray]]
     ) -> Union[float, np.ndarray]:
-        """
-        Parse and evaluate a filter arithmetic expression.
+        """Parse and evaluate a filter arithmetic expression.
 
         Args:
             expression: String containing the filter arithmetic expression
@@ -316,6 +322,11 @@ class TimeoutException(Exception):
 
 
 def create_sqlite_db(db_path: str):
+    """Create a SQLite database at the specified path.
+
+    Parameters:
+        db_path: Path to the SQLite database file.
+    """
     import sqlite3
 
     if not db_path.endswith(".db"):
