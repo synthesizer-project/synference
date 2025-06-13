@@ -1,3 +1,8 @@
+[![workflow](https://github.com/synthesizer-project/actions/workflows/python-app.yml/badge.svg)](https://github.com/synthesizer-project/sbifitter/actions)
+[![pre-commit](https://img.shields.io/badge/pre--commit-enabled-brightgreen?logo=pre-commit&logoColor=white)](https://github.com/pre-commit/pre-commit)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![License: GPLv3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+
 Repo trakcing progress of basic Synthesizer-based SBI SED fitting. Specifically aiming to do model comparison through direct comparison of Bayesian evidence using LtU-ILI. Early work in progress.
 
 Current features:
