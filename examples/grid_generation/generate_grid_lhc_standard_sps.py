@@ -1,26 +1,25 @@
 # ignore warnings for readability
-import numpy as np
 import os
 import sys
+
+import numpy as np
+from astropy.cosmology import Planck18
 from synthesizer.emission_models import TotalEmission
 from synthesizer.emission_models.attenuation import (
     Calzetti2000,
-    ParametricLi08,
 )  # noqa
-from synthesizer.emission_models.dust.emission import Greybody, IR_templates
 from synthesizer.grid import Grid
+from synthesizer.instruments import FilterCollection, Instrument
 from synthesizer.parametric import SFH, ZDist
-from synthesizer.instruments import Instrument, FilterCollection
+from unyt import Msun, unyt_array
 
-from unyt import unyt_array, Msun, K
-from astropy.cosmology import Planck18
 from sbifitter import (
-    generate_sfh_basis,
-    generate_constant_R,
-    GalaxyBasis,
     CombinedBasis,
+    GalaxyBasis,
     calculate_muv,
     draw_from_hypercube,
+    generate_constant_R,
+    generate_sfh_basis,
 )
 
 """try:
@@ -108,9 +107,7 @@ max_redshift = 20  # gives maximum age of SFH at a given redshift
 cosmo = Planck18  # cosmology to use for age calculations
 fesc = 0.0  # escape fraction of ionizing photons
 fesc_ly_alpha = 0.0  # escape fraction of Ly-alpha photons
-dust_emission = (
-    None  # No dust emission model for this grid, but can be added later.
-)
+dust_emission = None  # No dust emission model for this grid, but can be added later.
 dust_curve = Calzetti2000()  # Dust attenuation curve to use for the grid.
 # ---------------------------------------------------------------
 # Pop II
@@ -124,7 +121,7 @@ tau = (0.05, 2.5)
 peak_age = (
     0,
     0.99,
-)  # normalized to maximum age of the universe at that redshift. Clipped to help prior leakage.
+)  # normalized to maximum age of the universe at that redshift.
 sfh_param_units = [None, None]
 
 # ---------------------------------------------------------------
@@ -160,17 +157,14 @@ grid = Grid(
 
 # Metallicity
 Z_dists = [
-    ZDist.DeltaConstant(log10metallicity=log_z)
-    for log_z in all_param_dict["log_zmet"]
+    ZDist.DeltaConstant(log10metallicity=log_z) for log_z in all_param_dict["log_zmet"]
 ]
 
 # Redshifts
 redshifts = np.array(all_param_dict["redshift"])
 
 # Pop II SFH
-sfh_param_arrays = np.vstack(
-    (all_param_dict["tau"], all_param_dict["peak_age"])
-).T
+sfh_param_arrays = np.vstack((all_param_dict["tau"], all_param_dict["peak_age"])).T
 sfh_models, _ = generate_sfh_basis(
     sfh_type=sfh_type,
     sfh_param_names=["tau", "peak_age_norm"],
@@ -207,14 +201,16 @@ emission_model = TotalEmission(
 )
 
 # List of other varying or fixed parameters. Either a distribution to pull from or a list.
-# Can be any parameter which can be property of emitter or galaxy and processed by the emission model.
+# Can be any parameter which can be property of emitter or galaxy
+# and processed by the emission model.
 galaxy_params = {
     "tau_v": all_param_dict["tau_v"],
 }
 
 sfh_name = str(sfh_type).split(".")[-1].split("'")[0]
 
-name = f"Pop_II_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_BPASS_Chab_Calzetti_v1_fesc0.0"
+name = f"""Pop_II_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_
+{np.log10(Nmodels):.1f}_BPASS_Chab_Calzetti_v1_fesc0.0"""
 
 popII_basis = GalaxyBasis(
     model_name=f"sps_{name}",
@@ -240,18 +236,16 @@ popII_basis = GalaxyBasis(
 
 combined_basis = CombinedBasis(
     bases=[popII_basis],
-    total_stellar_masses=unyt_array(
-        10 ** all_param_dict["masses"], units=Msun
-    ),
+    total_stellar_masses=unyt_array(10 ** all_param_dict["masses"], units=Msun),
     base_emission_model_keys=["total"],
     combination_weights=None,
     redshifts=redshifts,
     out_name=f"grid_{name}",
     out_dir=out_dir,
-    draw_parameter_combinations=False,  # Since we have already drawn the parameters, we don't need to combine them again.
+    draw_parameter_combinations=False,
 )
 
-# Passing in extra analysis function to pipeline to calculate mUV. Any funciton could be passed in.
+# Passing in extra analysis function to pipeline to calculate mUV.
 combined_basis.process_bases(
     overwrite=False, mUV=(calculate_muv, cosmo), n_proc=n_proc, verbose=False
 )

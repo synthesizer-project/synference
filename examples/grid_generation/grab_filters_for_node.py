@@ -1,4 +1,5 @@
 from synthesizer.instruments import FilterCollection
+
 from sbifitter import generate_constant_R
 
 filter_codes = [

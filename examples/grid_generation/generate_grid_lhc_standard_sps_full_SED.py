@@ -1,35 +1,31 @@
 # ignore warnings for readability
-import numpy as np
 import os
 import sys
-from tqdm import tqdm
-from synthesizer.emission_models import TotalEmission
+
+import numpy as np
+from astropy.cosmology import Planck18
 from synthesizer.emission_models.attenuation import (
     Calzetti2000,
-    ParametricLi08,
-    PowerLaw,
-)  # noqa
-from synthesizer.emission_models.stellar.pacman_model import (
-    CharlotFall2000,
-    BimodalPacmanEmission,
 )  # noqa
 from synthesizer.emission_models.dust.emission import Greybody, IR_templates  # noqa
+from synthesizer.emission_models.stellar.pacman_model import (
+    BimodalPacmanEmission,
+)  # noqa
 from synthesizer.grid import Grid
+from synthesizer.instruments import FilterCollection, Instrument
 from synthesizer.parametric import SFH, ZDist
-from synthesizer.instruments import Instrument, FilterCollection
+from tqdm import tqdm
+from unyt import Gyr, K, Msun, dimensionless, unyt_array
 
-from unyt import unyt_array, Msun, Myr, dimensionless, K, Gyr
-from astropy.cosmology import Planck18
 from sbifitter import (
-    generate_sfh_basis,
-    generate_constant_R,
-    GalaxyBasis,
     CombinedBasis,
+    GalaxyBasis,
     calculate_muv,
     draw_from_hypercube,
+    generate_constant_R,
     generate_random_DB_sfh,
+    generate_sfh_basis,
 )
-
 
 # Filters
 # ---------------------------------------------------------------
@@ -109,9 +105,7 @@ try:
 except Exception:
     n_proc = 6
 
-av_to_tau_v = (
-    1.086  # conversion factor from Av to tau_v for the dust attenuation curve
-)
+av_to_tau_v = 1.086  # conversion factor from Av to tau_v for the dust attenuation curve
 # params
 
 # Two component dust law
@@ -146,7 +140,7 @@ log_tau = (-2, 1)  # log-uniform between 0.01 and 100 Gyr
 max_age = (
     0.00,
     0.99,
-)  # normalized to maximum age of the universe at that redshift. If 0 or 1 we have problems.
+)  # normalized to maximum age of the universe at that redshift.
 sfh_param_units = [Gyr, Gyr]
 
 # ---------------------------------------------------------------
@@ -203,8 +197,7 @@ grid = Grid(
 
 # Metallicity
 Z_dists = [
-    ZDist.DeltaConstant(log10metallicity=log_z)
-    for log_z in all_param_dict["log_zmet"]
+    ZDist.DeltaConstant(log10metallicity=log_z) for log_z in all_param_dict["log_zmet"]
 ]
 
 # Redshifts
@@ -230,9 +223,9 @@ if isinstance(sfh_type, SFH.DenseBasis):
         sfh_models.append(sfh)
         # Reassign parameters
         for j in range(Nparam_SFH):
-            all_param_dict[
-                f"sfh_quantile_{100 * (j + 1) / (Nparam_SFH + 1):.0f}"
-            ][i] = tx[j]
+            all_param_dict[f"sfh_quantile_{100 * (j + 1) / (Nparam_SFH + 1):.0f}"][i] = (
+                tx[j]
+            )
 else:
     # Pop II SFH
     if "log_tau" in all_param_dict:
@@ -240,9 +233,7 @@ else:
         all_param_dict["tau"] = 10 ** all_param_dict["log_tau"]
         all_param_dict.pop("log_tau")
 
-    sfh_param_arrays = np.vstack(
-        (all_param_dict["tau"], all_param_dict["max_age"])
-    ).T
+    sfh_param_arrays = np.vstack((all_param_dict["tau"], all_param_dict["max_age"])).T
     sfh_models, _ = generate_sfh_basis(
         sfh_type=sfh_type,
         sfh_param_names=["tau", "max_age_norm"],
@@ -276,7 +267,8 @@ emission_model = BimodalPacmanEmission(
 
 
 # List of other varying or fixed parameters. Either a distribution to pull from or a list.
-# Can be any parameter which can be property of emitter or galaxy and processed by the emission model.
+# Can be any parameter which can be property of emitter or
+# galaxy and processed by the emission model.
 galaxy_params = {
     "tau_v_ism": all_param_dict["Av"] / av_to_tau_v,
     "tau_v_birth": all_param_dict["Av"]
@@ -284,9 +276,12 @@ galaxy_params = {
     / av_to_tau_v,  # Av to tau_v for the birth cloud
 }
 
-# Dictionary of alternative parametrizations for the galaxy parameters - for parametrizing differently to Synthesizer if
-# wanted. Should be a dictionary with keys as the parameter names and values as tuples of the new parameter name and a function which takes the
-# parameter dictionary and returns the new parameter value (so it can be calculated from the other parameters if needed).
+# Dictionary of alternative parametrizations for the galaxy parameters -
+# for parametrizing differently to Synthesizer if
+# wanted. Should be a dictionary with keys as the parameter names and values as tuples of
+# the new parameter name and a function which takes the
+# parameter dictionary and returns the new parameter value (so it can be calculated from
+# the other parameters if needed).
 
 alt_parametrizations = {
     "tau_v_birth": (
@@ -299,7 +294,8 @@ alt_parametrizations = {
 
 sfh_name = str(sfh_type).split(".")[-1].split("'")[0]
 
-name = f"BPASS_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_Chab_CF00_v2_logAv_logTau"
+name = f"""BPASS_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}
+        _logN_{np.log10(Nmodels):.1f}_Chab_CF00_v2_logAv_logTau"""
 
 basis = GalaxyBasis(
     model_name=f"sps_{name}",
@@ -313,7 +309,7 @@ basis = GalaxyBasis(
     galaxy_params=galaxy_params,
     alt_parametrizations=alt_parametrizations,
     redshift_dependent_sfh=True,
-    params_to_ignore=[],  # This is dependent on the redshift and should not be included in the basis
+    params_to_ignore=[],
     build_grid=False,
 )
 
@@ -324,27 +320,25 @@ basis = GalaxyBasis(
 
 combined_basis = CombinedBasis(
     bases=[basis],
-    total_stellar_masses=unyt_array(
-        10 ** all_param_dict["masses"], units=Msun
-    ),
+    total_stellar_masses=unyt_array(10 ** all_param_dict["masses"], units=Msun),
     base_emission_model_keys=["total"],
     combination_weights=None,
     redshifts=redshifts,
     out_name=f"grid_{name}",
     out_dir=out_dir,
-    draw_parameter_combinations=False,  # Since we have already drawn the parameters, we don't need to combine them again.
+    draw_parameter_combinations=False,  # Since we have already drawn the parameters,
+    # we don't need to combine them again.
 )
 
 for i in range(10):
     basis.plot_galaxy(
         idx=i * 10,
         out_dir=f"/home/tharvey/work/output/plots/{name}/",
-        stellar_mass=unyt_array(
-            10 ** all_param_dict["masses"][i * 10], units=Msun
-        ),
+        stellar_mass=unyt_array(10 ** all_param_dict["masses"][i * 10], units=Msun),
     )
 
-# Passing in extra analysis function to pipeline to calculate mUV. Any funciton could be passed in.
+# Passing in extra analysis function to pipeline to calculate mUV.
+# Any function could be passed in.
 combined_basis.process_bases(
     overwrite=True,
     mUV=(calculate_muv, cosmo),

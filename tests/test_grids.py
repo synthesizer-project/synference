@@ -1,26 +1,28 @@
+"""This module contains fixtures and tests for the grid generation classes."""
+
 import os
+import subprocess
+from unittest.mock import MagicMock
+
+import h5py
 import numpy as np
 import pytest
-from unittest.mock import MagicMock
-import subprocess
-import h5py
-
-from unyt import unyt_array, Msun, Myr, nJy, Jy
-from synthesizer.parametric import SFH, ZDist, Stars, Galaxy
-from synthesizer.instruments import Instrument, FilterCollection
-from synthesizer.emission_models import TotalEmission, IncidentEmission
-from synthesizer.grid import Grid
-from synthesizer.emission_models.attenuation import Calzetti2000
 from astropy.cosmology import Planck18
 from scipy.stats import uniform
+from synthesizer.emission_models import IncidentEmission, TotalEmission
+from synthesizer.emission_models.attenuation import Calzetti2000
+from synthesizer.grid import Grid
+from synthesizer.instruments import FilterCollection, Instrument
+from synthesizer.parametric import SFH, Galaxy, Stars, ZDist
+from unyt import Jy, Msun, Myr, nJy, unyt_array
 
 from sbifitter import (
-    GalaxyBasis,
     CombinedBasis,
+    GalaxyBasis,
+    SBI_Fitter,
+    calculate_muv,
     draw_from_hypercube,
     generate_sfh_basis,
-    calculate_muv,
-    SBI_Fitter,
 )
 
 test_dir = os.path.dirname(os.path.abspath(__file__))
@@ -29,6 +31,7 @@ test_dir = os.path.dirname(os.path.abspath(__file__))
 # Fixtures for common test objects
 @pytest.fixture
 def test_grid():
+    """Fixture to create a test Grid object."""
     if not os.path.exists(f"{test_dir}/test_grids/test_grid.hdf5"):
         subprocess.run(
             [
@@ -45,6 +48,7 @@ def test_grid():
 
 @pytest.fixture
 def mock_instrument():
+    """Fixture to create a mock Instrument object with JWST filters."""
     filter_codes = [
         "JWST/NIRCam.F070W",
         "JWST/NIRCam.F090W",
@@ -61,6 +65,7 @@ def mock_instrument():
 
 @pytest.fixture
 def mock_emission_model(test_grid):
+    """Fixture to create a mock TotalEmission model for testing."""
     return TotalEmission(
         grid=test_grid,
         fesc=0.1,
@@ -72,11 +77,13 @@ def mock_emission_model(test_grid):
 
 @pytest.fixture
 def simple_sfh():
+    """Fixture to create a simple SFH model."""
     return SFH.LogNormal(tau=0.5, peak_age=100 * Myr, max_age=300 * Myr)
 
 
 @pytest.fixture
 def simple_zdist():
+    """Fixture to create a simple metallicity distribution."""
     return ZDist.DeltaConstant(log10metallicity=-1.0)
 
 
@@ -84,6 +91,7 @@ def simple_zdist():
 def grid_basis_params(
     test_grid, mock_emission_model, mock_instrument, simple_sfh, simple_zdist
 ):
+    """Fixture to create parameters for GalaxyBasis with a grid."""
     return {
         "model_name": "test_basis",
         "redshifts": np.array([6.0, 7.0, 8.0]),
@@ -101,6 +109,7 @@ def grid_basis_params(
 
 @pytest.fixture
 def lhc_grid(lhc_prior, n_params=1e2):
+    """Fixture to create a Latin Hypercube sample grid for testing."""
     return draw_from_hypercube(N=int(n_params), param_ranges=lhc_prior, rng=42)
 
 
@@ -119,11 +128,13 @@ def lhc_prior():
 
 @pytest.fixture
 def test_sfh():
+    """Fixture to create a simple SFH model for testing."""
     return SFH.LogNormal
 
 
 @pytest.fixture
 def test_zmet():
+    """Fixture to create a simple metallicity distribution for testing."""
     return ZDist.DeltaConstant
 
 
@@ -138,17 +149,13 @@ def lhc_basis_params(
     test_sfh,
     n_params=1e2,
 ):
+    """Fixture to create parameters for GalaxyBasis with LHC sampling."""
     all_param_dict = {}
     for i, key in enumerate(lhc_prior.keys()):
         all_param_dict[key] = lhc_grid[:, i]
 
-    Z_dists = [
-        test_zmet(log10metallicity=log_z)
-        for log_z in all_param_dict["log_zmet"]
-    ]
-    sfh_param_arrays = np.vstack(
-        (all_param_dict["tau"], all_param_dict["peak_age"])
-    ).T
+    Z_dists = [test_zmet(log10metallicity=log_z) for log_z in all_param_dict["log_zmet"]]
+    sfh_param_arrays = np.vstack((all_param_dict["tau"], all_param_dict["peak_age"])).T
 
     sfh_models, _ = generate_sfh_basis(
         sfh_type=test_sfh,
@@ -202,22 +209,21 @@ def test_parametric_galaxies(test_parametric_galaxy, Ngalaxies=10):
 
 def check_hdf5(hfile, expected_keys, expected_attrs=None):
     """Check that the synthesizer pipeline HDF5 file contains the expected keys."""
-
     with h5py.File(hfile, "r") as f:
         for key in expected_keys:
             assert key in f, f"Key '{key}' not found in HDF5 file."
 
         if expected_attrs is not None:
             for key, attrs in expected_attrs.items():
-                assert key in f.attrs, (
-                    f"Attribute '{key}' not found in HDF5 file."
-                )
+                assert key in f.attrs, f"Attribute '{key}' not found in HDF5 file."
                 assert np.all(f.attrs[key] == attrs), (
                     f"Attribute '{key}' does not match expected value."
                 )
 
 
 class TestGalaxyBasis:
+    """Test suite for the GalaxyBasis class."""
+
     def test_init_grid(self, grid_basis_params):
         """Test that GalaxyBasis initializes correctly with valid parameters."""
         basis = GalaxyBasis(**grid_basis_params)
@@ -312,8 +318,7 @@ class TestGalaxyBasis:
         assert hasattr(basis, "fixed_param_names")
 
     def test_process_galaxies_grid(self, grid_basis_params):
-        """Test that process_galaxies correctly processes galaxies and returns a pipeline."""
-
+        """Test that process_galaxies correctly processes galaxies."""
         basis = GalaxyBasis(**grid_basis_params)
 
         galaxies = basis.create_galaxies(base_masses=1e9 * Msun)
@@ -339,7 +344,6 @@ class TestGalaxyBasis:
 
     def test_process_galaxies_lhc(self, lhc_basis_params):
         """Test that process_galaxies correctly processes galaxies for LHC parameters."""
-
         basis = GalaxyBasis(**lhc_basis_params)
         galaxies = basis.create_matched_galaxies()
 
@@ -374,12 +378,12 @@ class TestGalaxyBasis:
         assert fig is not None, "Plotting function did not return a figure."
         # Check that the plot file was created
         plot_file = f"{test_dir}/test_output/test_basis_0.png"
-        assert os.path.exists(plot_file), (
-            f"Plot file {plot_file} was not created."
-        )
+        assert os.path.exists(plot_file), f"Plot file {plot_file} was not created."
 
 
 class TestCombinedBasis:
+    """Test suite for the CombinedBasis class."""
+
     @pytest.fixture
     def combined_grid_basis_params(self, grid_basis_params):
         """Fixture to create parameters for CombinedBasis."""
@@ -456,13 +460,12 @@ class TestCombinedBasis:
 
         assert combined.out_name == "test_combined"
         assert len(combined.bases) == 2
-        assert np.array_equal(
-            combined.redshifts, combined_grid_basis_params["redshifts"]
-        )
+        assert np.array_equal(combined.redshifts, combined_grid_basis_params["redshifts"])
         assert combined.base_emission_model_keys == ["total", "total"]
         assert combined.out_dir == f"{test_dir}/test_output/"
 
     def test_process_bases(self, combined_grid_basis_params):
+        """Test that process_bases correctly processes the bases."""
         # Call process_bases to ensure it runs without errors
 
         combined = CombinedBasis(**combined_grid_basis_params)
@@ -480,18 +483,15 @@ class TestCombinedBasis:
         """Test that create_grid correctly creates a combined grid."""
         combined = CombinedBasis(**combined_grid_basis_params)
 
-        # Passing in extra analysis function to pipeline to calculate mUV. Any funciton could be passed in.
-        combined.process_bases(
-            overwrite=True, mUV=(calculate_muv, Planck18), n_proc=1
-        )
+        # Passing in extra analysis function to pipeline to calculate mUV.
+        # Any funciton could be passed in.
+        combined.process_bases(overwrite=True, mUV=(calculate_muv, Planck18), n_proc=1)
 
         combined.create_grid()
 
         # Check that the output file exists
         out_file = f"{combined.out_dir}/{combined.out_name}.hdf5"
-        assert os.path.exists(out_file), (
-            f"Output file {out_file} was not created."
-        )
+        assert os.path.exists(out_file), f"Output file {out_file} was not created."
 
         # Check that the expected keys are in the output file
         expected_keys = [
@@ -516,17 +516,13 @@ class TestCombinedBasis:
         """Test that create_grid correctly creates a combined grid for LHC parameters."""
         combined = CombinedBasis(**combined_lhc_basis_params)
 
-        combined.process_bases(
-            overwrite=True, mUV=(calculate_muv, Planck18), n_proc=1
-        )
+        combined.process_bases(overwrite=True, mUV=(calculate_muv, Planck18), n_proc=1)
 
         combined.create_grid()
 
         # Check that the output file exists
         out_file = f"{combined.out_dir}/{combined.out_name}.hdf5"
-        assert os.path.exists(out_file), (
-            f"Output file {out_file} was not created."
-        )
+        assert os.path.exists(out_file), f"Output file {out_file} was not created."
 
         # Check that the expected keys are in the output file
         expected_keys = [
@@ -550,40 +546,37 @@ class TestCombinedBasis:
 
 @pytest.fixture
 def test_sbi_grid():
+    """Fixture to create a test SBI grid for testing SBIFitter."""
     return f"{test_dir}/test_grids/sbi_test_grid.hdf5"
 
 
 class TestSBIFitter:
+    """Test suite for the SBI_Fitter class."""
+
     def test_init_sbifitter_from_grid(self, test_sbi_grid):
         """Test that SBIFitter initializes correctly with a valid grid."""
-
-        fitter = SBI_Fitter.init_from_hdf5(
-            model_name="test_sbi", hdf5_path=test_sbi_grid
-        )
+        fitter = SBI_Fitter.init_from_hdf5(model_name="test_sbi", hdf5_path=test_sbi_grid)
 
         assert fitter.grid_path == test_sbi_grid, (
             "SBIFitter did not initialize with the correct grid file."
         )
 
-
     def test_sbifitter_feature_array_creation(self, test_sbi_grid):
         """Test that SBIFitter can create a basic feature array from the grid."""
-
-        fitter = SBI_Fitter.init_from_hdf5(
-            model_name="test_sbi", hdf5_path=test_sbi_grid
-        )
+        fitter = SBI_Fitter.init_from_hdf5(model_name="test_sbi", hdf5_path=test_sbi_grid)
 
         fitter.create_feature_array_from_raw_photometry()
 
         assert fitter.has_features, (
             "SBIFitter did not create a feature array from the raw photometry."
         )
-        assert len(fitter.simple_fitted_parameter_names) > 0, (
-            "SBIFitter simple fitted parameter names are empty after feature array creation."
+        assert (
+            len(fitter.simple_fitted_parameter_names) > 0
+        ), """SBIFitter simple fitted parameter names are empty
+             after feature array creation."""
+        assert np.shape(fitter.feature_array)[0] == len(fitter.fitted_parameter_array), (
+            "SBIFitter feature array shape does not match the expected shape."
         )
-        assert np.shape(fitter.feature_array)[0] == len(
-            fitter.fitted_parameter_array
-        ), "SBIFitter feature array shape does not match the expected shape."
 
         # Test no normalization
         fitter.create_feature_array_from_raw_photometry(normalize_method=None)
@@ -595,17 +588,17 @@ class TestSBIFitter:
         fitter.create_feature_array_from_raw_photometry(
             extra_features=["redshift", "log_mass"]
         )
-        assert "redshift" in fitter.feature_names, (
-            f"Redshift not found in simple fitted parameter names after adding as extra feature, got {fitter.simple_fitted_parameter_names}"
-        )
-        assert "log_mass" in fitter.feature_names, (
-            f"Mass not found in simple fitted parameter names after adding as extra feature, got {fitter.simple_fitted_parameter_names}"
-        )
+        assert (
+            "redshift" in fitter.feature_names
+        ), f"""Redshift not found in simple fitted parameter names after adding as
+            extra feature, got {fitter.simple_fitted_parameter_names}"""
+        assert (
+            "log_mass" in fitter.feature_names
+        ), f"""Mass not found in simple fitted parameter names after adding as
+            extra feature, got {fitter.simple_fitted_parameter_names}"""
 
         # Test adding a color feature
-        fitter.create_feature_array_from_raw_photometry(
-            extra_features=["F200W - F070W"]
-        )
+        fitter.create_feature_array_from_raw_photometry(extra_features=["F200W - F070W"])
 
         # Test a different unit
         fitter.create_feature_array_from_raw_photometry(normed_flux_units=nJy)
@@ -638,9 +631,7 @@ class TestSBIFitter:
         )
 
         # Test removing a parameter
-        fitter.create_feature_array_from_raw_photometry(
-            parameters_to_remove=["mass"]
-        )
+        fitter.create_feature_array_from_raw_photometry(parameters_to_remove=["mass"])
 
         # Test removing a feature
         fitter.create_feature_array_from_raw_photometry(
@@ -652,9 +643,7 @@ class TestSBIFitter:
             AssertionError,
             match="photometry_to_remove must be a list of filter names to remove.",
         ):
-            fitter.create_feature_array_from_raw_photometry(
-                photometry_to_remove=123
-            )
+            fitter.create_feature_array_from_raw_photometry(photometry_to_remove=123)
 
         # Test a different limit
         fitter.create_feature_array_from_raw_photometry(norm_mag_limit=100)
@@ -789,38 +778,6 @@ def test_full_pipeline_integration(tmp_path):
     combined.load_bases.assert_called_once()
     combined.save_grid.assert_called_once()
 
-
-'''
-# Tests for error handling and edge cases
-class TestErrorHandling:
-    def test_invalid_redshift_dependent_sfh(self, grid_basis_params):
-        """Test that an error is raised when redshift_dependent_sfh is True but SFHs don't have redshift attributes."""
-        params = grid_basis_params.copy()
-        params["redshift_dependent_sfh"] = True
-        
-        with pytest.raises(ValueError, match="SFH must have a redshift attribute"):
-            GalaxyBasis(**params)
-    
-    def test_missing_stellar_masses(self, grid_basis_params):
-        """Test that an error is raised when stellar_masses is not provided."""
-        params = grid_basis_params.copy()
-        params.pop("stellar_masses")
-        
-        basis = GalaxyBasis(**params)
-        
-        with pytest.raises(ValueError, match="stellar_masses must be provided"):
-            basis.create_galaxies()
-    
-    def test_mismatched_filters(self, combined_grid_basis_params):
-        """Test that an error is raised when bases have different filters."""
-        combined = CombinedBasis(**combined_grid_basis_params)
-        
-        # Change filters for the second basis
-        combined.bases[1].instrument.filters.filter_codes = ["Different/Filter.1", "Different/Filter.2"]
-        
-        with pytest.raises(ValueError, match="has different filters"):
-            combined.create_grid()
-'''
 
 # Run the tests
 

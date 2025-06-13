@@ -1,67 +1,31 @@
 # ignore warnings for readability
-import warnings
-import numpy as np
 import os
 import sys
-import matplotlib.pyplot as plt
-import matplotlib.colors as mcolors
-import synthesizer
-from synthesizer.parametric import Galaxy
-from synthesizer.emission_models.attenuation import Inoue14, Madau96
-from synthesizer.emission_models import (
-    PacmanEmission,
-    TotalEmission,
-    EmissionModel,
-    IntrinsicEmission,
-    StellarEmissionModel,
-    STELLAR_MODELS,
-    IncidentEmission,
-)
-from synthesizer.emission_models.attenuation import PowerLaw, Calzetti2000
-from synthesizer.emissions import plot_spectra
-from synthesizer.emission_models.dust.emission import Greybody
-from synthesizer.grid import Grid
-from synthesizer.parametric import SFH, Stars, ZDist
-from synthesizer import check_openmp
-from synthesizer.instruments import Instrument, FilterCollection
 
-from typing import Dict, Any, List, Tuple, Union, Optional, Type
-from abc import ABC, abstractmethod
-import copy
-from scipy.stats import uniform, loguniform
-from astropy.io import ascii
+import numpy as np
+from astropy.cosmology import Planck18
+from synthesizer.emission_models import (
+    EmissionModel,
+    IncidentEmission,
+    TotalEmission,
+)
+from synthesizer.emission_models.attenuation import Calzetti2000
+from synthesizer.grid import Grid
+from synthesizer.instruments import FilterCollection, Instrument
+from synthesizer.parametric import SFH, ZDist
 from unyt import (
-    unyt_array,
-    unyt_quantity,
-    erg,
-    cm,
-    s,
-    Angstrom,
-    um,
-    Hz,
-    m,
-    nJy,
-    K,
     Msun,
     Myr,
-    yr,
-    Unit,
-    kg,
+    unyt_array,
 )
-from unyt.equivalencies import SpectralEquivalence
-from astropy.cosmology import Planck18, Cosmology, z_at_value
-import astropy.units as u
-from matplotlib.ticker import ScalarFormatter, FuncFormatter
-from tqdm import tqdm
+
 from sbifitter import (
-    generate_emission_models,
-    generate_sfh_basis,
-    generate_metallicity_distribution,
-    generate_constant_R,
-    GalaxyBasis,
     CombinedBasis,
+    GalaxyBasis,
     calculate_muv,
     draw_from_hypercube,
+    generate_constant_R,
+    generate_sfh_basis,
 )
 
 """try:
@@ -132,7 +96,7 @@ elif computer == "linux-desktop":
 
 try:
     n_proc = int(sys.argv[1])
-except:
+except Exception:
     n_proc = 6
 
 # params
@@ -203,16 +167,13 @@ grid = Grid(
 
 # Metallicity
 Z_dists = [
-    ZDist.DeltaConstant(log10metallicity=log_z)
-    for log_z in all_param_dict["log_zmet"]
+    ZDist.DeltaConstant(log10metallicity=log_z) for log_z in all_param_dict["log_zmet"]
 ]
 
 redshifts = np.array(all_param_dict["redshift"])
 
 # Pop II SFH
-sfh_param_arrays = np.vstack(
-    (all_param_dict["tau"], all_param_dict["peak_age"])
-).T
+sfh_param_arrays = np.vstack((all_param_dict["tau"], all_param_dict["peak_age"])).T
 sfh_models, _ = generate_sfh_basis(
     sfh_type=sfh_type,
     sfh_param_names=["tau", "peak_age_norm"],
@@ -235,7 +196,8 @@ emission_model = TotalEmission(
 )
 
 # List of other varying or fixed parameters. Either a distribution to pull from or a list.
-# Can be any parameter which can be property of emitter or galaxy and processed by the emission model.
+# Can be any parameter which can be property of emitter or galaxy
+# and processed by the emission model.
 galaxy_params = {
     "tau_v": all_param_dict["tau_v"],
 }
@@ -310,7 +272,8 @@ else:
         grid=popIII_grid,
     )
 
-name = f"{popIII_grid.grid_name}_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_v1"
+name = f"""{popIII_grid.grid_name}_{redshift[0]}_z_{redshift[1]}
+        _logN_{np.log10(Nmodels):.1f}_v1"""
 
 popIII_basis = GalaxyBasis(
     model_name=f"sps_{name}",
@@ -333,21 +296,18 @@ weights = np.array([np.array([i, 1 - i]) for i in all_param_dict["weights"]])
 
 combined_basis = CombinedBasis(
     bases=[popII_basis, popIII_basis],
-    total_stellar_masses=unyt_array(
-        10 ** all_param_dict["masses"], units=Msun
-    ),
+    total_stellar_masses=unyt_array(10 ** all_param_dict["masses"], units=Msun),
     base_emission_model_keys=["total", popIII_emission_model.label],
     combination_weights=weights,
     redshifts=redshifts,
     out_name="LHC_sampled",
     out_dir=out_dir,
-    draw_parameter_combinations=False,  # Since we have already drawn the parameters, we don't need to combine them again.
+    draw_parameter_combinations=False,
 )
 
-# Passing in extra analysis function to pipeline to calculate mUV. Any funciton could be passed in.
-combined_basis.process_bases(
-    overwrite=False, mUV=(calculate_muv, cosmo), n_proc=n_proc
-)
+# Passing in extra analysis function to pipeline to calculate mUV.
+# Any function could be passed in.
+combined_basis.process_bases(overwrite=False, mUV=(calculate_muv, cosmo), n_proc=n_proc)
 
 combined_basis.create_grid(
     overwrite=True,
