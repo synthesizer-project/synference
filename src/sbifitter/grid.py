@@ -1,3 +1,5 @@
+"""File containing Synthesizer grid generation and galaxy creation utilities."""
+
 import copy
 import inspect
 import os
@@ -49,6 +51,20 @@ from .utils import (
 
 
 def calculate_muv(galaxy, cosmo=Planck18):
+    """Calculate the MUV magnitude of a galaxy.
+
+    Parameters
+    ----------
+    galaxy : Galaxy
+        The galaxy object containing stellar spectra.
+    cosmo : Cosmology, optional
+        The cosmology to use for redshift calculations, by default Planck18.
+
+    Returns:
+    -------
+    dict
+        Dictionary containing the MUV magnitude for each stellar spectrum in the galaxy.
+    """
     z = galaxy.redshift
     tophats = {
         "MUV": {"lam_eff": 1500 * Angstrom, "lam_fwhm": 100 * Angstrom},
@@ -74,6 +90,35 @@ def generate_random_DB_sfh(
     logmass=8,
     logsfr=-1,
 ):
+    """Generate a random Dense Basis SFH.
+
+    This function generates a random star formation history (SFH) using a dense basis
+    representation. It creates a star formation history with a specified number of
+    parameters, a Dirichlet distribution for the time series, and allows for customization
+    of the log mass and log SFR.
+
+    Parameters
+    ----------
+    size : int, optional
+        Number of SFHs to generate, by default 1
+    Nparam : int, optional
+        Number of parameters for the SFH, by default 3
+    tx_alpha : float, optional
+        Concentration parameter for the Dirichlet distribution, by default 5
+    redshift : float, optional
+        Redshift of the SFH, by default 6
+    logmass : float, optional
+        Logarithm of the stellar mass in solar masses, by default 8
+    logsfr : float, optional
+        Logarithm of the star formation rate in solar masses per year, by default -1
+
+    Returns:
+    -------
+    SFH.DenseBasis
+        A DenseBasis SFH object with the generated parameters.
+    np.ndarray
+        An array of time series parameters for the SFH.
+    """
     txs = np.cumsum(
         np.random.dirichlet(np.ones((Nparam + 1,)) * tx_alpha, size=size),
         axis=1,
@@ -92,10 +137,11 @@ def generate_sfh_grid(
     max_redshift: float = 15,
     cosmo: Type[Cosmology] = Planck18,
 ) -> Tuple[List[Type[SFH.Common]], np.ndarray]:
-    """Generate a grid of star formation histories based on prior distributions for redshift and SFH parameters.
+    """Generate a grid of SFHs based on prior distributions.
 
-    This function creates a grid of SFH models by combining possible parameter values, which can
-    depend explicitly on the redshift. It first draws redshifts, calculates maximum stellar ages at each
+    This function creates a grid of SFH models by combining possible parameter
+    values, which can depend explicitly on the redshift. It first draws
+    redshifts, calculates maximum stellar ages at each
     redshift, and then creates parameter combinations within valid ranges.
 
     Parameters
@@ -126,13 +172,14 @@ def generate_sfh_grid(
     -------
     Tuple[List[SFH], np.ndarray]
         - List of SFH objects with parameters drawn from the priors
-        - Array of parameter combinations, where the first column is redshift followed by SFH parameters
+        - Array of parameter combinations, where the first column is redshift followed
+            by SFH parameters
 
     Notes:
     -----
     For parameters that depend on redshift (marked with 'depends_on': 'max_redshift'),
-    the maximum allowed value will be dynamically adjusted based on the age of the universe
-    at that redshift.
+    the maximum allowed value will be dynamically adjusted based on
+    the age of the universe at that redshift.
     """
     # Draw redshifts
     if isinstance(redshift, dict):
@@ -159,10 +206,7 @@ def generate_sfh_grid(
         param_max = param_data["max"]
 
         # If parameter depends on redshift, adjust for each redshift
-        if (
-            "depends_on" in param_data
-            and param_data["depends_on"] == "max_redshift"
-        ):
+        if "depends_on" in param_data and param_data["depends_on"] == "max_redshift":
             # Create parameter values for each redshift
             all_values = []
             for z, max_age in zip(redshifts, max_ages):
@@ -185,21 +229,17 @@ def generate_sfh_grid(
             # Combine values from all redshifts
             param_values = np.concatenate(all_values)
         else:
-            # Parameter doesn't depend on redshift, draw from the same distribution for all
+            # Parameter doesn't depend on redshift, draw from the same distribution
             param_values = param_data["prior"].rvs(
                 size=param_size, loc=param_min, scale=param_max - param_min
             )
 
         param_arrays.append(param_values)
-        param_names.append(
-            param_data.get("name", key)
-        )  # Use specified name or key
+        param_names.append(param_data.get("name", key))  # Use specified name or key
 
     # Create parameter combinations using meshgrid
     mesh_arrays = np.meshgrid(*param_arrays, indexing="ij")
-    param_combinations = np.stack(
-        [arr.flatten() for arr in mesh_arrays], axis=1
-    )
+    param_combinations = np.stack([arr.flatten() for arr in mesh_arrays], axis=1)
 
     # Create SFH objects for each parameter combination
     sfhs = []
@@ -209,16 +249,12 @@ def generate_sfh_grid(
 
         # Create parameter dictionary for SFH constructor
         sfh_params = {
-            param_names[i + 1]: params[i + 1]
-            for i in range(len(param_names) - 1)
+            param_names[i + 1]: params[i + 1] for i in range(len(param_names) - 1)
         }
 
         # Apply units if not None
         for key, value in sfh_params.items():
-            if (
-                "units" in sfh_priors[key]
-                and sfh_priors[key]["units"] is not None
-            ):
+            if "units" in sfh_priors[key] and sfh_priors[key]["units"] is not None:
                 sfh_params[key] = value * sfh_priors[key]["units"]
 
         # Add max_age parameter
@@ -246,9 +282,10 @@ def generate_metallicity_distribution(
     Parameters
     ----------
     zmet_dist : Type[ZDist]
-        The metallicity distribution class to instantiate. E.g., ZDist.DeltaConstant or ZDist.Normal
+        The metallicity distribution class to instantiate.
+        E.g., ZDist.DeltaConstant or ZDist.Normal
     z : dict
-        Dictionary of prior distributions for metallicity parameters. Each parameter should have:
+        Dictionary of prior distributions for zmet parameters. Each parameter should have:
         - 'prior': scipy.stats distribution
         - 'min': minimum value
         - 'max': maximum value
@@ -256,8 +293,6 @@ def generate_metallicity_distribution(
         - 'units': unyt unit (optional)
         - 'name': parameter name for constructor (optional, defaults to the key)
     """
-    # choose values based on prior. Can provide metallicity as either metallicity or log10metallicity
-
     if isinstance(zmet, dict):
         zmet_values = zmet["prior"].rvs(
             size=int(zmet["size"]),
@@ -294,6 +329,7 @@ def generate_emission_models(
     fixed_params: dict = None,
 ):
     """Generate a grid of emission models based on varying parameters.
+
     Parameters
     ----------
 
@@ -301,7 +337,7 @@ def generate_emission_models(
         The emission model class to instantiate. E.g., TotalEmission or PacmanEmission
 
     varying_params : dict
-        Dictionary of varying parameters for the emission model. Each parameter should have:
+        Dictionary of varying parameters for emission model. Each parameter should have:
         - 'prior': scipy.stats distribution
         - 'min': minimum value
         - 'max': maximum value
@@ -351,9 +387,7 @@ def generate_emission_models(
     out_params = {}
     for i, params in tqdm(enumerate(varying_param_combinations)):
         # Create parameter dictionary for emission model constructor
-        emission_params = {
-            key: params[j] for j, key in enumerate(varying_params.keys())
-        }
+        emission_params = {key: params[j] for j, key in enumerate(varying_params.keys())}
 
         # Apply units if not None
         for key, value in emission_params.items():
@@ -390,7 +424,7 @@ def draw_from_hypercube(
     N : int
         Number of samples to draw.
     param_ranges : dict, optional
-        Dictionary where keys are parameter names and values are tuples (min, max) defining the ranges.
+        Dictionary where keys are parameter names and values are tuples (min, max).
     model : Type[qmc], optional
         The sampling model to use, by default LatinHypercube.
     rng : Optional[np.random.Generator], optional
@@ -447,19 +481,18 @@ def generate_sfh_basis(
     cosmo: Type[Cosmology] = Planck18,
     iterate_redshifts: bool = True,
 ) -> Tuple[List[Type[SFH.Common]], np.ndarray]:
-    """Generate a grid of the N basis SFHs based on prior distributions for redshift, and pairs of parameters.
+    """Generate a grid of SFHs based on parameter arrays and redshifts.
 
     Parameters
     ----------
-
     sfh_type : Type[SFH]
         The star formation history class to instantiate
     sfh_param_names : List[str]
         List of parameter names for SFH constructor
     sfh_param_arrays : List[np.ndarray]
         List of parameter arrays for SFH constructor.
-        Should have the same length in the first dimension as sfh_param_names. If values are lambda functions the
-        input will be the maximum age given the max_redshift.
+        Should have the same length in the first dimension as sfh_param_names.
+        if values are lambda functions the input will be the max age given max_redshift.
     redshifts : Union[Dict[str, Any], float]
         Either a single redshift value, an array of redshifts, or a dictionary with:
         - 'prior': scipy.stats distribution
@@ -472,18 +505,21 @@ def generate_sfh_basis(
         Cosmology to use for age calculations, by default Planck18
 
     calculate_min_age : bool, optional
-        If True, calculate the lookback time at which only min_age_frac of total mass is formed, by default True
+        If True, calculate the lookback time at which only min_age_frac of total mass
+        is formed, by default True
     min_age_frac : float, optional
         Fraction of total mass formed to calculate the minimum age, by default 0.001
     iterate_redshifts : bool, optional
         If True, iterate over redshifts and create SFH for each, by default True
-        If False, assume input redshift SFH param array is a 1:1 mapping of redshift to SFH parameters.
+        If False, assume input redshift SFH param array is a 1:1 mapping of
+            redshift to SFH parameters.
 
     Returns:
     -------
     Tuple[List[SFH], np.ndarray]
         - List of SFH objects with parameters drawn from the priors
-        - Array of parameter combinations, where the first column is redshift followed by SFH parameters
+        - Array of parameter combinations, where the first column is redshift
+            followed by SFH parameters
 
     """
     if isinstance(redshifts, dict):
@@ -497,9 +533,7 @@ def generate_sfh_basis(
     elif isinstance(redshifts, np.ndarray):
         redshifts = redshifts
     else:
-        raise ValueError(
-            "redshifts must be a dictionary, float, or numpy array"
-        )
+        raise ValueError("redshifts must be a dictionary, float, or numpy array")
 
     # Calculate maximum ages at each redshift
 
@@ -542,9 +576,7 @@ def generate_sfh_basis(
 
                 # Add max_age parameter
                 if "max_age" in sfh_param_names:
-                    sfh_params["max_age"] = min(
-                        max_ages[i] * Myr, sfh_params["max_age"]
-                    )
+                    sfh_params["max_age"] = min(max_ages[i] * Myr, sfh_params["max_age"])
                 else:
                     sfh_params["max_age"] = max_ages[i] * Myr
                 # Create and append SFH instance
@@ -554,9 +586,10 @@ def generate_sfh_basis(
                 sfhs.append(sfh)
                 all_redshifts.append(redshift)
     else:
-        assert len(redshifts) == len(sfh_param_arrays), (
-            "If iterate_redshifts is False, redshifts and sfh_param_arrays must be the same length"
-        )
+        assert len(redshifts) == len(
+            sfh_param_arrays
+        ), """If iterate_redshifts is False, len(redshifts)
+            must equal len(sfh_param_arrays)"""
         for i, redshift in tqdm(enumerate(redshifts), desc="Creating SFHs"):
             params = copy.deepcopy(sfh_param_arrays[i])
             row_params = {}
@@ -566,7 +599,7 @@ def generate_sfh_basis(
                     # Call the function with the maximum age
                     row_params[j] = param(max_ages[i])
                 elif sfh_param_names[j].endswith("_norm"):
-                    # If the parameter is normalized to the maximum age, multiply by max_age
+                    # If the parameter is normalized to max age, multiply by max_age
                     row_params[j] = param * max_ages[i] * Myr
                 else:
                     # Otherwise, just use the parameter value
@@ -579,8 +612,7 @@ def generate_sfh_basis(
             # Create parameter dictionary for SFH constructor
 
             sfh_params = {
-                param_names_i[sf]: row_params[sf]
-                for sf in range(len(param_names_i))
+                param_names_i[sf]: row_params[sf] for sf in range(len(param_names_i))
             }
 
             # remove _norm from parameter names
@@ -592,9 +624,7 @@ def generate_sfh_basis(
 
             # Add max_age parameter
             if "max_age" in sfh_param_names:
-                sfh_params["max_age"] = min(
-                    max_ages[i] * Myr, sfh_params["max_age"]
-                )
+                sfh_params["max_age"] = min(max_ages[i] * Myr, sfh_params["max_age"])
             else:
                 sfh_params["max_age"] = max_ages[i] * Myr
             # Create and append SFH instance
@@ -609,9 +639,7 @@ def generate_sfh_basis(
         for i, sfh in enumerate(sfhs):
             max_age = sfh.max_age
             # Calculate the cumulative mass formed
-            age, sfr = sfh.calculate_sfh(
-                t_range=(0, 1.1 * max_age), dt=1e6 * yr
-            )
+            age, sfr = sfh.calculate_sfh(t_range=(0, 1.1 * max_age), dt=1e6 * yr)
             sfr = sfr / sfr.max()
             mass_formed = np.cumsum(sfr[::-1])[::-1] / np.sum(sfr)
             total_mass = mass_formed[0]
@@ -625,6 +653,23 @@ def generate_sfh_basis(
 
 
 class GalaxyBasis:
+    """Class to create a basis of galaxies with different SFHs, redshifts, and parameters.
+
+    It can support two modes of operation.
+
+    The first case in the simplest - you have some set of priors controlling e.g. mass,
+    redshift, SFH parameters, and metallicity distribution parameters, which you draw
+    randomly or from a Latin hypercube, and then you create a galaxy for each set of
+    parameters. So if you are drawing 1000 galaxies, you would pass in 1000 redshifts,
+    1000 SFHs, 1000 metallicity distributions, and 1000 sets of galaxy parameters.
+
+    If however you are sampling on a grid, or want dependent priors, you can instead
+    pass in a few basis SFHs, redshifts, and metallicity distributions, and then
+    the class will generate a grid of galaxies by combining every combination of
+    SFH, redshift, and metallicity distributions. This can reduce the number of
+    galaxies created.
+    """
+
     def __init__(
         self,
         model_name: str,
@@ -659,9 +704,11 @@ class GalaxyBasis:
         galaxy_params : dict
             Dictionary of parameters for the galaxy.
         alt_parametrizations : dict
-            Dictionary of alternative parametrizations for the galaxy parameters - for parametrizing differently to Synthesizer if
-            wanted. Should be a dictionary with keys as the parameter names and values as tuples of the new parameter name and a function which takes the
-            parameter dictionary and returns the new parameter value (so it can be calculated from the other parameters if needed).
+            Dictionary of alternative parametrizations for the galaxy parameters -
+            for parametrizing differently to Synthesizer if wanted. Should be a dictionary
+            with keys as the parameter names and values as tuples of the new parameter
+            name and a function which takes the parameter dictionary and returns the new
+            parameter value (so it can be calculated from the other parameters if needed).
         metal_dists : List[Type[ZDist.Common]], optional
             List of metallicity distribution objects, by default None
         cosmo : Type[Cosmology], optional
@@ -671,15 +718,18 @@ class GalaxyBasis:
         stellar_masses : unyt_array, optional
             Array of stellar masses for the galaxies, by default None
         redshift_dependent_sfh : bool, optional
-            If True, the SFH will depend on redshift, by default False. If True, expect each
-            SFH to have a redshift attribute.
+            If True, the SFH will depend on redshift, by default False. If True, expect
+            each SFH to have a redshift attribute.
         params_to_ignore : List[str], optional
-            List of parameters to ignore as being different when calculating which parameters are varying.
-            E.g. max_age may be dependent on redshift, so we don't want to include it in the varying parameters as the model can learn this.
+            List of parameters to ignore as being different when calculating
+            which parameters are varying.
+            E.g. max_age may be dependent on redshift, so we don't want to include it
+                in the varying parameters as the model can learn this.
         build_grid : bool, optional
             If True, build the grid of galaxies, by default True.
-            If False, assume all dimensions of parameters are the same size and build the grid from the parameters.
-            # I.e don't generate combinations of parameters, just use the parameters as they are.
+            If False, assume all dimensions of parameters are the same size and
+            build the grid from the parameters. I.e don't generate combinations of
+            parameters, just use the parameters as they are.
         """
         self.model_name = model_name
         self.sfhs = sfhs
@@ -705,7 +755,7 @@ class GalaxyBasis:
 
         self.per_particle = False
 
-        # Check if any galaxy parameters are dictionaries with keys like 'prior', 'min', 'max', etc.
+        # Check if any galaxy parameters are dictionaries with keys like 'prior', 'min'
         for key, value in galaxy_params.items():
             if isinstance(value, dict):
                 # If the value is a dictionary, process it as a prior
@@ -718,7 +768,7 @@ class GalaxyBasis:
             for sfh in self.sfhs:
                 if not hasattr(sfh, "redshift"):
                     raise ValueError(
-                        "SFH must have a redshift attribute if redshift_dependent_sfh is True"
+                        "SFH must have a redshift attr if redshift_dependent_sfh==True"
                     )
 
             if not isinstance(self.redshifts, np.ndarray):
@@ -745,6 +795,18 @@ class GalaxyBasis:
         self,
         prior_dict: Dict[str, Any],
     ) -> unyt_array:
+        """Process priors from dictionary.
+
+        Parameters
+        ----------
+        prior_dict : Dict[str, Any]
+            Dictionary containing prior information. Must contain:
+            - 'prior': scipy.stats distribution
+            - 'size': number of samples to draw
+            - 'units': unyt unit (optional)
+            - other parameters required by the distribution
+
+        """
         assert isinstance(prior_dict, dict), "prior_dict must be a dictionary"
 
         assert "prior" in prior_dict, "prior_dict must contain a 'prior' key"
@@ -755,16 +817,12 @@ class GalaxyBasis:
         # Check required parameters are present
         params = {}
         for param in stats_params:
-            assert param in prior_dict, (
-                f"prior_dict must contain a '{param}' key"
-            )
+            assert param in prior_dict, f"prior_dict must contain a '{param}' key"
             params[param] = prior_dict[param]
 
         # draw values for this parameter
 
-        values = prior_dict["prior"].rvs(
-            size=int(prior_dict["size"]), **params
-        )
+        values = prior_dict["prior"].rvs(size=int(prior_dict["size"]), **params)
 
         if "units" in prior_dict and prior_dict["units"] is not None:
             values = unyt_array(values, units=prior_dict["units"])
@@ -779,7 +837,7 @@ class GalaxyBasis:
         Parameters
         ----------
         base_masses : unyt_quantity
-            Default mass (or mass array) to use for the galaxies. If not provided, will use self.stellar_masses.
+            Default mass (or mass array) to use for the galaxies.
 
         Returns:
         -------
@@ -787,14 +845,10 @@ class GalaxyBasis:
             List of Galaxy objects.
         """
         if not self.build_grid:
-            raise Exception(
-                "You probably meant to call create_matched_galaxies instead of create_galaxies. "
-            )
+            raise Exception("You probably meant to call create_matched_galaxies instead.")
 
         varying_param_values = [
-            i
-            for i in self.galaxy_params.values()
-            if type(i) in [list, np.ndarray]
+            i for i in self.galaxy_params.values() if type(i) in [list, np.ndarray]
         ]
         # generate all combinations of the varying parameters
         if len(varying_param_values) == 0:
@@ -807,9 +861,7 @@ class GalaxyBasis:
             ).T.reshape(-1, len(varying_param_values))
             column_names = [
                 i
-                for i, j in zip(
-                    self.galaxy_params.keys(), varying_param_values
-                )
+                for i, j in zip(self.galaxy_params.keys(), varying_param_values)
                 if type(j) in [list, np.ndarray]
             ]
             fixed_params = {
@@ -864,7 +916,8 @@ class GalaxyBasis:
                             for key in to_remove:
                                 save_params.pop(key)
 
-                        # This stores all input parameters for the galaxy so we can work out which parameters
+                        # This stores all input parameters for the galaxy
+                        # so we can work out which parameters
                         # are varying and which are fixed later.
                         gal.all_params = save_params
 
@@ -921,7 +974,8 @@ class GalaxyBasis:
 
         if len(hashes) != len(set(hashes)):
             raise ValueError(
-                "Varying parameters are not unique across galaxies. Check your input parameters."
+                """Varying parameters are not unique across galaxies.
+                Check your input parameters."""
             )
 
         self.varying_param_names = varying_param_names
@@ -946,9 +1000,7 @@ class GalaxyBasis:
         """Create a new galaxy with the specified parameters."""
         # Initialise the parametric Stars object
 
-        single_mass = (
-            stellar_mass[0] if stellar_mass.size > 1 else stellar_mass
-        )
+        single_mass = stellar_mass[0] if stellar_mass.size > 1 else stellar_mass
 
         param_stars = Stars(
             log10ages=self.grid.log10ages,
@@ -991,24 +1043,36 @@ class GalaxyBasis:
     def create_matched_galaxies(
         self, base_masses: unyt_quantity = 1e9 * Msun
     ) -> List[Type[Galaxy]]:
-        """Equivalent of create_galaxies but assumes that we don't need to draw
-        parameter combinations.
+        """Creates galaxies where all parameters have been sampled.
+
+        A galaxy is created for each SFH, redshift, and metallicity distribution
+        supplied.
+
+        Parameters
+        ----------
+        base_masses : unyt_quantity, optional
+            Default mass (or mass array) to use for the galaxies, by default 1e9 * Msun
+
+        Returns:
+        -------
+        List[Type[Galaxy]]
+            List of Galaxy objects created with the specified parameters.
         """
         if len(self.metal_dists) == 1:
             # Just reference the first one
             self.metal_dists = [self.metal_dists[0]] * len(self.sfhs)
 
-        assert len(self.sfhs) == len(self.redshifts), (
-            f"If iterate_redshifts is False, sfhs and redshifts must be the same length, got {len(self.sfhs)} and {len(self.redshifts)}"
-        )
-        assert len(self.sfhs) == len(self.metal_dists), (
-            f"If iterate_redshifts is False, sfhs and metal_dists must be the same length, got {len(self.sfhs)} and {len(self.metal_dists)}"
-        )
+        assert len(self.sfhs) == len(
+            self.redshifts
+        ), f"""If iterate_redshifts is False, sfhs and redshifts must be the same length,
+            got {len(self.sfhs)} and {len(self.redshifts)}"""
+        assert len(self.sfhs) == len(
+            self.metal_dists
+        ), f"""If iterate_redshifts is False, sfhs and metal_dists must be the same
+            length, got {len(self.sfhs)} and {len(self.metal_dists)}"""
 
         varying_param_values = [
-            i
-            for i in self.galaxy_params.values()
-            if type(i) in [list, np.ndarray]
+            i for i in self.galaxy_params.values() if type(i) in [list, np.ndarray]
         ]
 
         # generate all combinations of the varying parameters
@@ -1023,16 +1087,12 @@ class GalaxyBasis:
                 if type(value) not in [list, np.ndarray]
             }
             varying_param_names = [
-                i
-                for i in self.galaxy_params.keys()
-                if i not in fixed_params.keys()
+                i for i in self.galaxy_params.keys() if i not in fixed_params.keys()
             ]
             assert all(
-                len(self.galaxy_params[i]) == len(self.sfhs)
-                for i in varying_param_names
-            ), (
-                f"All varying parameters must be the same length, got {len(self.sfhs)} and {len(self.galaxy_params)}"
-            )
+                len(self.galaxy_params[i]) == len(self.sfhs) for i in varying_param_names
+            ), f"""All varying parameters must be the same length,
+                got {len(self.sfhs)} and {len(self.galaxy_params)}"""
 
         for i in tqdm(range(len(self.sfhs)), desc="Creating galaxies."):
             sfh = self.sfhs[i]
@@ -1091,9 +1151,7 @@ class GalaxyBasis:
                 self.all_parameters[key].add(value)
 
         # Convert sets to lists at the end if needed
-        self.all_parameters = {
-            k: list(v) for k, v in self.all_parameters.items()
-        }
+        self.all_parameters = {k: list(v) for k, v in self.all_parameters.items()}
 
         # Remove any paremters which are just [None]
         to_remove = []
@@ -1137,6 +1195,43 @@ class GalaxyBasis:
         batch_size: int = 40_000,
         **extra_analysis_functions,
     ) -> Pipeline:
+        """Processes galaxies through Synthesizer pipeline.
+
+        Parameters
+        ----------
+        galaxies : List[Type[Galaxy]]
+            List of Galaxy objects to process.
+        out_name : str, optional
+            Name of the output file to save the pipeline results, by default "auto".
+            If "auto", uses the model_name.
+        out_dir : str, optional
+            Directory to save the output file, by default "internal".
+            If "internal", saves to the Synthesizer grids directory.
+        n_proc : int, optional
+            Number of processes to use for parallel processing, by default 4.
+        verbose : int, optional
+            Verbosity level for the pipeline, by default 1.
+        save : bool, optional
+            If True, saves the pipeline results to disk, by default True.
+        emission_model_keys : List[str], optional
+            List of emission model keys to save spectra for, by default None.
+            If None, saves all spectra.
+        batch_galaxies : bool, optional
+            If True, processes galaxies in batches, by default True.
+            If False, processes all galaxies in a single batch.
+        batch_size : int, optional
+            Size of each batch of galaxies to process, by default 40,000.
+        extra_analysis_functions : dict, optional
+            Additional analysis functions to add to the pipeline.
+            Should be a dictionary where keys are function names and values are tuples
+            of the function and its parameters.
+
+        Returns:
+        -------
+        Pipeline
+            The pipeline object after processing the galaxies.
+
+        """
         self.emission_model.set_per_particle(self.per_particle)
 
         if emission_model_keys is not None:
@@ -1150,12 +1245,9 @@ class GalaxyBasis:
         n_batches = int(np.ceil(len(galaxies) / batch_size))
 
         if n_batches > 1:
-            print(
-                f"Splitting galaxies into {n_batches} batches of size {batch_size}."
-            )
+            print(f"Splitting galaxies into {n_batches} batches of size {batch_size}.")
             galaxies = [
-                galaxies[i * batch_size : (i + 1) * batch_size]
-                for i in range(n_batches)
+                galaxies[i * batch_size : (i + 1) * batch_size] for i in range(n_batches)
             ]
         else:
             print("Processing all galaxies in a single batch.")
@@ -1166,9 +1258,7 @@ class GalaxyBasis:
             if save:
                 if out_dir == "internal":
                     out_dir = os.path.join(
-                        os.path.dirname(
-                            os.path.dirname(os.path.dirname(__file__))
-                        ),
+                        os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
                         "grids/",
                     )
 
@@ -1180,13 +1270,12 @@ class GalaxyBasis:
                 if not os.path.exists(out_dir):
                     os.makedirs(out_dir)
 
-                final_fullpath = fullpath.replace(
-                    ".hdf5", f"_{batch_i + 1}.hdf5"
-                )
+                final_fullpath = fullpath.replace(".hdf5", f"_{batch_i + 1}.hdf5")
                 init_fullpath = fullpath.replace(".hdf5", "_0.hdf5")
                 if os.path.exists(final_fullpath):
                     print(
-                        f"Skipping batch {batch_i + 1} as {final_fullpath} already exists."
+                        f"""Skipping batch {batch_i + 1} as
+                        {final_fullpath} already exists."""
                     )
                     galaxies[batch_i] = None  # Clear the batch to free memory
                     skip = True
@@ -1230,15 +1319,12 @@ class GalaxyBasis:
                 pipeline.add_galaxies(batch_gals)
 
                 ngal = len(batch_gals)
-                print(
-                    f"Running pipeline at {datetime.now()} for {ngal} galaxies"
-                )
+                print(f"Running pipeline at {datetime.now()} for {ngal} galaxies")
                 pipeline.run()
                 print(
                     f"Finished running pipeline at {datetime.now()} for {ngal} galaxies"
                 )
                 if save:
-
                     # Save the pipeline to a file
                     pipeline.write(fullpath, verbose=0)
 
@@ -1257,8 +1343,6 @@ class GalaxyBasis:
                     # Add the varying and fixed parameters to the file
                     f.attrs["varying_param_names"] = self.varying_param_names
                     f.attrs["fixed_param_names"] = self.fixed_param_names
-
-                    # Store grid wavelengths since I can't see them in the pipeline output (the filter wavelength array doesn't match)
 
                     f.create_dataset("Wavelengths", data=wav)
                     f["Wavelengths"].attrs["Units"] = "Angstrom"
@@ -1291,9 +1375,7 @@ class GalaxyBasis:
         galaxy_params = {}
         for param in self.galaxy_params.keys():
             if isinstance(self.galaxy_params[param], dict):
-                galaxy_params[param] = self.process_priors(
-                    self.galaxy_params[param]
-                )
+                galaxy_params[param] = self.process_priors(self.galaxy_params[param])
             elif isinstance(self.galaxy_params[param], (list, np.ndarray)):
                 galaxy_params[param] = self.galaxy_params[param][idx]
             else:
@@ -1321,9 +1403,7 @@ class GalaxyBasis:
 
         fig, ax = plt.subplots(1, 2, figsize=(10, 5), layout="constrained")
 
-        plot_dict = {
-            key: galaxy.stars.spectra[key] for key in emission_model_keys
-        }
+        plot_dict = {key: galaxy.stars.spectra[key] for key in emission_model_keys}
 
         colors = {
             key: plt.cm.viridis(i / len(emission_model_keys))
@@ -1382,9 +1462,7 @@ class GalaxyBasis:
                 phot.photo_fnu,
                 "+",
                 color=colors[emission_model],
-                path_effects=[
-                    PathEffects.withStroke(linewidth=4, foreground="white")
-                ],
+                path_effects=[PathEffects.withStroke(linewidth=4, foreground="white")],
             )
 
             # Get the redshift
@@ -1392,9 +1470,7 @@ class GalaxyBasis:
 
             # Get the SFH
             stars_sfh = galaxy.stars.get_sfh()
-            stars_sfh = (
-                stars_sfh / np.diff(10 ** (self.grid.log10age), prepend=0) / yr
-            )
+            stars_sfh = stars_sfh / np.diff(10 ** (self.grid.log10age), prepend=0) / yr
             t, sfh = galaxy.stars.sf_hist_func.calculate_sfh()
 
             ax[1].plot(
@@ -1418,9 +1494,10 @@ class GalaxyBasis:
                 age = galaxy.stars.calculate_mean_age()
                 zmet = galaxy.stars.calculate_mean_metallicity()
 
-                text_gal[emission_model] = (
-                    rf"{emission_model}     \\nAge {age.to(Myr):.0f}\\n$\log_{{10}}$Z: {np.log10(zmet.value):.2f}\\nM$_\star$: {np.log10(mass):.1f} M$_\odot$"
-                )
+                text_gal[emission_model] = rf"""{emission_model}     \\nAge
+                     {age.to(Myr):.0f}\\n$\log_{{10}}
+                     $Z: {np.log10(zmet.value):.2f}\\nM$_\star$:
+                       {np.log10(mass):.1f} M$_\odot$"""
 
         ax[0].legend(loc="upper right", fontsize=6, ncols=3)
         # Set the x-axis limits
@@ -1483,10 +1560,9 @@ class GalaxyBasis:
 
         self.tmp_redshift = redshift
         self.tmp_time_unit = u.Myr
-        # secax = ax[1].secondary_xaxis("top", functions=(self._time_convert, self._z_convert))
+        # secax = ax[1].secondary_xaxis("top",
+        # functions=(self._time_convert, self._z_convert))
         # secax.set_xlabel("Redshift")
-
-        # Put a vertical line at maximum redshift
 
         # secax.set_xticks([6, 7, 8, 10, 12, 14, 15, 20])
 
@@ -1514,16 +1590,34 @@ class GalaxyBasis:
         time_unit = getattr(self, "tmp_time_unit", u.yr)
 
         return (
-            (
-                self.cosmo.lookback_time(z)
-                - self.cosmo.lookback_time(self.tmp_redshift)
-            )
+            (self.cosmo.lookback_time(z) - self.cosmo.lookback_time(self.tmp_redshift))
             .to(time_unit)
             .value
         )
 
 
 class CombinedBasis:
+    """Class to create a photometry array from Synthesizer pipeline outputs.
+
+    This class combines multiple GalaxyBasis objects, processes them,
+    and saves the output to HDF5 files. The simplest operation is a
+    single base, where we would provide a single GalaxyBasis object
+    and this class will handle running the Synthesizer pipeline,
+    processing the output and saving the results. The reason this
+    is seperated is because we can combine multiple bases.
+
+    So when the GalaxyBasis is run, we determine photometry/spectra
+    with a filler mass (normalization). Then this class will renormalize
+    the photometry/spectra to the total stellar masses provided,
+    and optionally weight them by the combination of bases. This is done
+    so that you can have a case where there is e.g. two bases with
+    different SPS grids, and we can build a galaxy where 15% of the mass
+    is from the first base, and 85% is from the second base. It can
+    also allow flexiblity when generating galaxies in the pipeline,
+    as the stellar mass dimension could be neglected in e.g. the LHC
+    and applied afterwards.
+    """
+
     def __init__(
         self,
         bases: List[Type[GalaxyBasis]],
@@ -1536,6 +1630,30 @@ class CombinedBasis:
         base_masses: unyt_array = 1e9 * Msun,
         draw_parameter_combinations: bool = True,
     ) -> None:
+        """Initialize the CombinedBasis object.
+
+        Parameters
+        ----------
+        bases : List[Type[GalaxyBasis]]
+            List of GalaxyBasis objects to combine.
+        total_stellar_masses : unyt_array
+            Array of total stellar masses to renormalize fluxes for.
+        redshifts : np.ndarray
+            Array of redshifts for the bases.
+        base_emission_model_keys : List[str]
+            List of emission model keys for each base.
+        combination_weights : np.ndarray
+            Array of combination weights for the bases.
+        out_name : str
+            Name of the output file.
+        out_dir : str
+            Directory to save the output files.
+        base_masses : unyt_array
+            Default mass (or mass array) to use for the galaxies.
+        draw_parameter_combinations : bool
+            If True, draw parameter combinations for the galaxies.
+            If False, create matched galaxies with the same parameters.
+        """
         self.bases = bases
         self.total_stellar_masses = total_stellar_masses
         self.redshifts = redshifts
@@ -1550,16 +1668,6 @@ class CombinedBasis:
             assert len(self.bases) == 1
             self.combination_weights = [1.0] * len(redshifts)
 
-        # stellar mass just scales the basis SED. So computing spectra/photometry for each mass/combination is just a weighted sum of the basis SEDs.
-        # We can just compute the basis SEDs for a single mass, and then scale them by the combination weights.
-
-        # Based on total stellar masses and combination weights, calculate the stellar masses we need to
-        # compute for each basis
-        # combination weights would look like this:
-        # [[0.1, 0.9], [0.2, 0.8], [0.3, 0.7], [0.4, 0.6], [0.5, 0.5]] for 2 bases, or [[0.1, 0.1, 0.1, 0.1, 0.5], [...]] for 5 bases
-        # stellar masses is e.g. [1e5, 1e6, 1e7, 1e8, 1e9] * Msun.
-        # Calculate the stellar masses for each basis
-
     def process_bases(
         self,
         n_proc: int = 6,
@@ -1569,25 +1677,33 @@ class CombinedBasis:
         **extra_analysis_functions,
     ) -> None:
         """Process the bases and save the output to files.
+
         Parameters
         ----------
         n_proc : int
             Number of processes to use for the pipeline.
         overwrite : bool or list of bools
-            If True, overwrite the existing files. If False, skip the files that already exist.
-            If a list of bools is provided, it should have the same length as the number of bases.
+            If True, overwrite the existing files.
+            If False, skip the files that already exist.
+            If a list of bools is provided,
+            it should have the same length as the number of bases.
         extra_analysis_functions : dict
-            Extra analysis functions to add to the pipeline. The keys should be the names of the functions,
-            and the values should be the functions themselves, or a tuple of (function, args). The function
-            should take a Galaxy object as the first argument, and the args should be the arguments to pass to the function.
-            The function should return a single value, an array of values, or a dictionary of values (with the same keys for all galaxies).
+            Extra analysis functions to add to the pipeline.
+            The keys should be the names of the functions,
+            and the values should be the functions themselves,
+            or a tuple of (function, args). The function
+            should take a Galaxy object as the first argument,
+            and the args should be the arguments to pass to the function.
+            The function should return a single value, an array of values,
+            or a dictionary of values (with the same keys for all galaxies).
         """
         if not isinstance(overwrite, (tuple, list, np.ndarray)):
             overwrite = [overwrite] * len(self.bases)
         else:
             if len(overwrite) != len(self.bases):
                 raise ValueError(
-                    "overwrite must be a boolean or a list of booleans with the same length as bases"
+                    """overwrite must be a boolean or a
+                    list of booleans with the same length as bases"""
                 )
 
         for i, base in enumerate(self.bases):
@@ -1610,17 +1726,12 @@ class CombinedBasis:
             elif not os.path.exists(self.out_dir):
                 os.makedirs(self.out_dir)
 
-            # Create galaxies for each base. Only create for one mass. We will scale later.
             if self.draw_parameter_combinations:
                 galaxies = base.create_galaxies(base_masses=self.base_masses)
             else:
-                galaxies = base.create_matched_galaxies(
-                    base_masses=self.base_masses
-                )
+                galaxies = base.create_matched_galaxies(base_masses=self.base_masses)
 
-            print(
-                f"Created {len(galaxies)} galaxies for base {base.model_name}"
-            )
+            print(f"Created {len(galaxies)} galaxies for base {base.model_name}")
             # Process the galaxies
             base.process_galaxies(
                 galaxies,
@@ -1635,12 +1746,25 @@ class CombinedBasis:
             )
 
     def load_bases(self, load_spectra=False) -> dict:
-        # Load the bases from the files
+        """Load the processed bases from the output directory.
 
+        Parameters
+        ----------
+        load_spectra : bool
+            If True, load the observed spectra from the output files.
+            If False, only load the properties and photometry.
+
+        Returns:
+        -------
+        dict
+            A dictionary with the base model names as keys and a dictionary
+            of properties, observed spectra, wavelengths, and observed photometry.
+        """
         outputs = {}
         for i, base in enumerate(self.bases):
             print(
-                f"Emission model key for base {base.model_name}: {self.base_emission_model_keys[i]}"
+                f"""Emission model key for base {base.model_name}:
+                {self.base_emission_model_keys[i]}"""
             )
 
             full_out_path = f"{self.out_dir}/{base.model_name}.hdf5"
@@ -1649,9 +1773,7 @@ class CombinedBasis:
                     import glob
 
                     # Check if there are multiple files for this base
-                    full_out_paths = glob.glob(
-                        f"{self.out_dir}/{base.model_name}_*.hdf5"
-                    )
+                    full_out_paths = glob.glob(f"{self.out_dir}/{base.model_name}_*.hdf5")
                     print(
                         f"Found {len(full_out_paths)} files for base {base.model_name}."
                     )
@@ -1689,14 +1811,10 @@ class CombinedBasis:
                         if isinstance(galaxies[key], h5py.Group):
                             dic[use_key] = {}
                             for subkey in galaxies[key].keys():
-                                dic[use_key][subkey] = galaxies[key][subkey][
-                                    ()
-                                ]
+                                dic[use_key][subkey] = galaxies[key][subkey][()]
                                 if hasattr(galaxies[key][subkey], "attrs"):
                                     if "Units" in galaxies[key][subkey].attrs:
-                                        unit = galaxies[key][subkey].attrs[
-                                            "Units"
-                                        ]
+                                        unit = galaxies[key][subkey].attrs["Units"]
                                         dic[use_key][subkey] = unyt_array(
                                             dic[use_key][subkey], unit
                                         )
@@ -1705,23 +1823,16 @@ class CombinedBasis:
                             if hasattr(galaxies[key], "attrs"):
                                 if "Units" in galaxies[key].attrs:
                                     unit = galaxies[key].attrs["Units"]
-                                    dic[use_key] = unyt_array(
-                                        dic[use_key], unit
-                                    )
+                                    dic[use_key] = unyt_array(dic[use_key], unit)
 
                     if load_spectra:
                         # Get the spectra
-                        spec = galaxies["Stars"]["Spectra"][
-                            "SpectralFluxDensities"
-                        ]
+                        spec = galaxies["Stars"]["Spectra"]["SpectralFluxDensities"]
                         assert (
                             self.base_emission_model_keys[i] in spec.keys()
-                        ), (
-                            f"Emission model key {self.base_emission_model_keys[i]} not found in {spec.keys()}"
-                        )
-                        observed_spectra = spec[
-                            self.base_emission_model_keys[i]
-                        ]
+                        ), f"""Emission model key {self.base_emission_model_keys[i]}
+                            not found in {spec.keys()}"""
+                        observed_spectra = spec[self.base_emission_model_keys[i]]
                         observed_spectra = unyt_array(
                             observed_spectra,
                             units=observed_spectra.attrs["Units"],
@@ -1729,9 +1840,9 @@ class CombinedBasis:
                     else:
                         observed_spectra = {}
 
-                    observed_photometry = galaxies["Stars"]["Photometry"][
-                        "Fluxes"
-                    ][self.base_emission_model_keys[i]]
+                    observed_photometry = galaxies["Stars"]["Photometry"]["Fluxes"][
+                        self.base_emission_model_keys[i]
+                    ]
 
                     phot = {}
                     for observatory in observed_photometry:
@@ -1756,51 +1867,33 @@ class CombinedBasis:
                     else:
                         # Combine the outputs for this base with the previous ones
                         for key in properties.keys():
-                            outputs[base.model_name]["properties"][key] = (
-                                np.concatenate(
-                                    (
-                                        outputs[base.model_name]["properties"][
-                                            key
-                                        ],
-                                        properties[key],
-                                    )
+                            outputs[base.model_name]["properties"][key] = np.concatenate(
+                                (
+                                    outputs[base.model_name]["properties"][key],
+                                    properties[key],
                                 )
                             )
 
                         for key in phot.keys():
-                            if (
-                                key
-                                not in outputs[base.model_name][
-                                    "observed_photometry"
-                                ]
-                            ):
-                                outputs[base.model_name][
-                                    "observed_photometry"
-                                ][key] = []
-                            outputs[base.model_name]["observed_photometry"][
-                                key
-                            ] = np.concatenate(
-                                (
-                                    outputs[base.model_name][
-                                        "observed_photometry"
-                                    ][key],
-                                    phot[key],
+                            if key not in outputs[base.model_name]["observed_photometry"]:
+                                outputs[base.model_name]["observed_photometry"][key] = []
+                            outputs[base.model_name]["observed_photometry"][key] = (
+                                np.concatenate(
+                                    (
+                                        outputs[base.model_name]["observed_photometry"][
+                                            key
+                                        ],
+                                        phot[key],
+                                    )
                                 )
                             )
                         if load_spectra:
                             # Combine the observed spectra
-                            if (
-                                "observed_spectra"
-                                not in outputs[base.model_name]
-                            ):
-                                outputs[base.model_name][
-                                    "observed_spectra"
-                                ] = {}
+                            if "observed_spectra" not in outputs[base.model_name]:
+                                outputs[base.model_name]["observed_spectra"] = {}
                             if (
                                 self.base_emission_model_keys[i]
-                                not in outputs[base.model_name][
-                                    "observed_spectra"
-                                ]
+                                not in outputs[base.model_name]["observed_spectra"]
                             ):
                                 outputs[base.model_name]["observed_spectra"][
                                     self.base_emission_model_keys[i]
@@ -1809,41 +1902,34 @@ class CombinedBasis:
                                 self.base_emission_model_keys[i]
                             ] = np.concatenate(
                                 (
-                                    outputs[base.model_name][
-                                        "observed_spectra"
-                                    ][self.base_emission_model_keys[i]],
+                                    outputs[base.model_name]["observed_spectra"][
+                                        self.base_emission_model_keys[i]
+                                    ],
                                     observed_spectra,
                                 )
                             )
 
                         # Combine supplementary properties
                         for key in supp_properties.keys():
-                            if (
-                                key
-                                not in outputs[base.model_name][
-                                    "supp_properties"
-                                ]
-                            ):
-                                outputs[base.model_name]["supp_properties"][
-                                    key
-                                ] = {}
+                            if key not in outputs[base.model_name]["supp_properties"]:
+                                outputs[base.model_name]["supp_properties"][key] = {}
                             for subkey in supp_properties[key].keys():
                                 if (
                                     subkey
-                                    not in outputs[base.model_name][
-                                        "supp_properties"
-                                    ][key]
+                                    not in outputs[base.model_name]["supp_properties"][
+                                        key
+                                    ]
                                 ):
-                                    outputs[base.model_name][
-                                        "supp_properties"
-                                    ][key][subkey] = []
-                                outputs[base.model_name]["supp_properties"][
-                                    key
-                                ][subkey] = np.concatenate(
+                                    outputs[base.model_name]["supp_properties"][key][
+                                        subkey
+                                    ] = []
+                                outputs[base.model_name]["supp_properties"][key][
+                                    subkey
+                                ] = np.concatenate(
                                     (
-                                        outputs[base.model_name][
-                                            "supp_properties"
-                                        ][key][subkey],
+                                        outputs[base.model_name]["supp_properties"][key][
+                                            subkey
+                                        ],
                                         supp_properties[key][subkey],
                                     )
                                 )
@@ -1859,9 +1945,26 @@ class CombinedBasis:
         overload_out_name: str = "",
         overwrite: bool = False,
     ) -> dict:
-        """Create a grid of SEDs for the given bases and stellar masses from the pipeline outputs.
-        Can override the instrument used to compute the SEDs if you want to subset which filters are used in the grid.
-        E.g. the base model is run for all NIRCam wide and medium filters, but you want to create a grid for just the wide filters.
+        """Creates a grid of SEDs for the given Synthesizer outputs.
+
+        Parameters
+        ----------
+
+        override_instrument : Instrument, optional
+            If provided, overrides the instrument used for the grid.
+        save : bool, optional
+            If True, saves the grid to a file.
+        overload_out_name : str, optional
+            If provided, overrides the output name for the grid.
+        overwrite : bool, optional
+            If True, overwrites the existing grid file if it exists.
+
+        Returns:
+        -------
+        dict
+            A dictionary containing the grid of SEDs, photometry, and properties.
+        -----------
+
         """
         if not self.draw_parameter_combinations:
             return self.create_full_grid(
@@ -1883,21 +1986,12 @@ class CombinedBasis:
 
         pipeline_outputs = self.load_bases()
 
-        # Pipeline
-
-        # given the true self.total_stellar_masses and self.combination_weights, create a grid of photometry. All masses
-        # for computed photometry are given in pipeline_outputs['properties']['mass']. Need to calculate scaling factor
-        # to account for both total mass and mass split between bases.
-
-        # create the output array. It should be (size(base1) * size(base2) * ... * size(basen) * len(self.combination_weights), len(self.filters))
-
-        # calculate size of every combination of bases
-
         base_filters = self.bases[0].instrument.filters.filter_codes
         for i, base in enumerate(self.bases):
             if base.instrument.filters.filter_codes != base_filters:
                 raise ValueError(
-                    f"Base {i} has different filters to base 0. Cannot combine bases with different filters."
+                    f"""Base {i} has different filters to base 0.
+                    Cannot combine bases with different filters."""
                 )
 
         if override_instrument is not None:
@@ -1905,7 +1999,8 @@ class CombinedBasis:
             for filter_code in override_instrument.filters.filter_codes:
                 if filter_code not in base_filters:
                     raise ValueError(
-                        f"Filter {filter_code} not found in base filters. Cannot override instrument."
+                        f"""Filter {filter_code} not found in base filters.
+                        Cannot override instrument."""
                     )
 
             filter_codes = override_instrument.filters.filter_codes
@@ -1928,32 +2023,26 @@ class CombinedBasis:
                 if i not in ignore_keys
             ]
             params = pipeline_outputs[base.model_name]["properties"]
-            rename_keys = [
-                i for i in base.varying_param_names if i not in ignore_keys
-            ]
+            rename_keys = [i for i in base.varying_param_names if i not in ignore_keys]
             for key in list(params.keys()):
                 if key in rename_keys:
                     # rename the key to be the base name + parameter name
                     params[f"{base.model_name}/{key}"] = params[key]
 
         supp_param_keys = list(
-            pipeline_outputs[self.bases[0].model_name][
-                "supp_properties"
-            ].keys()
+            pipeline_outputs[self.bases[0].model_name]["supp_properties"].keys()
         )
         assert all(
             [
-                i
-                in pipeline_outputs[self.bases[0].model_name][
-                    "supp_properties"
-                ]
+                i in pipeline_outputs[self.bases[0].model_name]["supp_properties"]
                 for i in supp_param_keys
             ]
-        ), (
-            f"Not all bases have the same supplementary parameters. {supp_param_keys} not found in {pipeline_outputs[self.bases[0].model_name]['supp_properties'].keys()}"
-        )
+        ), f"""Not all bases have the same supplementary parameters.
+            {supp_param_keys} not found in
+            {pipeline_outputs[self.bases[0].model_name]["supp_properties"].keys()}"""
 
-        # Deal with any supplementary model parameters. Currently we require that all bases have the same supplementary parameters and add them
+        # Deal with any supplementary model parameters.
+        # Currently we require that all bases have the same supplementary parameters
         supp_params = {}
         supp_param_units = {}
         for i, base in enumerate(self.bases):
@@ -1964,22 +2053,21 @@ class CombinedBasis:
                     dict,
                 ):
                     subkeys = list(
-                        pipeline_outputs[base.model_name]["supp_properties"][
-                            key
-                        ].keys()
+                        pipeline_outputs[base.model_name]["supp_properties"][key].keys()
                     )
                     # Check if the emission model key is in the subkeys
                     if self.base_emission_model_keys[i] not in subkeys:
                         raise ValueError(
-                            f"Emission model key {self.base_emission_model_keys[i]} not found in {subkeys}. Don't know how to deal with dictionary supplementary parameters with other keys."
+                            f"""Emission model key {self.base_emission_model_keys[i]}
+                            not found in {subkeys}.
+                            Don't know how to deal with
+                            dictionary supplementary parameters with other keys."""
                         )
-                    value = pipeline_outputs[base.model_name][
-                        "supp_properties"
-                    ][key][self.base_emission_model_keys[i]]
+                    value = pipeline_outputs[base.model_name]["supp_properties"][key][
+                        self.base_emission_model_keys[i]
+                    ]
                 else:
-                    value = pipeline_outputs[base.model_name][
-                        "supp_properties"
-                    ][key]
+                    value = pipeline_outputs[base.model_name]["supp_properties"][key]
 
                 supp_params[base.model_name][key] = value
 
@@ -2015,9 +2103,9 @@ class CombinedBasis:
                         scaling_factors = mass_weights[i] / mass
                         base_photometry = np.array(
                             [
-                                pipeline_outputs[base.model_name][
-                                    "observed_photometry"
-                                ][filter_code][mask]
+                                pipeline_outputs[base.model_name]["observed_photometry"][
+                                    filter_code
+                                ][mask]
                                 for filter_code in filter_codes
                             ],
                             dtype=np.float32,
@@ -2030,26 +2118,22 @@ class CombinedBasis:
 
                         # Get the varying parameters for this base
                         base_params = {}
-                        for param_name in total_property_names[
-                            base.model_name
-                        ]:
+                        for param_name in total_property_names[base.model_name]:
                             # Extract the original parameter name without the base prefix
                             orig_param = param_name.split("/")[-1]
-                            if (
-                                f"{base.model_name}/{orig_param}"
-                                in outputs["properties"]
-                            ):
-                                base_params[param_name] = outputs[
-                                    "properties"
-                                ][f"{base.model_name}/{orig_param}"][mask]
+                            if f"{base.model_name}/{orig_param}" in outputs["properties"]:
+                                base_params[param_name] = outputs["properties"][
+                                    f"{base.model_name}/{orig_param}"
+                                ][mask]
                             elif orig_param in outputs["properties"]:
-                                base_params[param_name] = outputs[
-                                    "properties"
-                                ][orig_param][mask]
+                                base_params[param_name] = outputs["properties"][
+                                    orig_param
+                                ][mask]
 
                         base_param_values.append(base_params)
                         # Get the supplementary parameters for this base
-                        # For any supp params that are a flux or luminosity, scale them by the scaling factor
+                        # For any supp params that are a flux or luminosity,
+                        # scale them by the scaling factor
                         scaled_supp_params = {}
                         for key, value in supp_params[base.model_name].items():
                             # print(key, value)
@@ -2061,9 +2145,7 @@ class CombinedBasis:
                                             subvalue[mask] * scaling_factors
                                         )
                                     else:
-                                        scaled_supp_params[key][subkey] = (
-                                            subvalue[mask]
-                                        )
+                                        scaled_supp_params[key][subkey] = subvalue[mask]
                             else:
                                 if isinstance(value, unyt_array):
                                     scaled_supp_params[key] = (
@@ -2075,13 +2157,9 @@ class CombinedBasis:
                         supp_params_values.append(scaled_supp_params)
 
                     # Calculate the total number of combinations
-                    dimension = np.prod(
-                        [i.shape[-1] for i in scaled_photometries]
-                    )
+                    dimension = np.prod([i.shape[-1] for i in scaled_photometries])
 
-                    output_array = np.zeros(
-                        (scaled_photometries[0].shape[0], dimension)
-                    )
+                    output_array = np.zeros((scaled_photometries[0].shape[0], dimension))
                     params_array = np.zeros((len(param_columns), dimension))
                     supp_array = np.zeros((len(supp_param_keys), dimension))
 
@@ -2120,34 +2198,24 @@ class CombinedBasis:
 
                         # Add all varying parameters from each base
                         for j, base in enumerate(self.bases):
-                            for param_name in total_property_names[
-                                base.model_name
-                            ]:
+                            for param_name in total_property_names[base.model_name]:
                                 if param_name in base_param_values[j]:
-                                    params_array[param_idx, i] = (
-                                        base_param_values[j][param_name][
-                                            combo_indices[j]
-                                        ]
-                                    )
+                                    params_array[param_idx, i] = base_param_values[j][
+                                        param_name
+                                    ][combo_indices[j]]
                                 param_idx += 1
 
                         # Add supplementary parameters. Sum parameters from all bases
                         for j, base in enumerate(self.bases):
                             for k, param_name in enumerate(supp_param_keys):
-                                data = supp_params_values[j][param_name][
-                                    combo_indices[j]
-                                ]
+                                data = supp_params_values[j][param_name][combo_indices[j]]
                                 if isinstance(data, unyt_array):
                                     if j == 0:
-                                        supp_param_units[param_name] = str(
-                                            data.units
-                                        )
+                                        supp_param_units[param_name] = str(data.units)
                                     data = data.value
                                 else:
                                     if j == 0:
-                                        supp_param_units[param_name] = str(
-                                            dimensionless
-                                        )
+                                        supp_param_units[param_name] = str(dimensionless)
 
                                 supp_array[k, i] += data
 
@@ -2179,9 +2247,7 @@ class CombinedBasis:
         self.grid_supplementary_parameter_names = supp_param_keys
 
         if save:
-            self.save_grid(
-                out, overload_out_name=out_name, overwrite=overwrite
-            )
+            self.save_grid(out, overload_out_name=out_name, overwrite=overwrite)
 
     def save_grid(
         self,
@@ -2191,11 +2257,13 @@ class CombinedBasis:
         grid_params_to_save=["model_name"],
     ) -> None:
         """Save the grid to a file.
+
         Parameters
         ----------
         grid_dict : dict
             Dictionary containing the grid data.
-            Expected keys are 'photometry', 'parameters', 'parameter_names', and 'filter_codes'.
+            Expected keys are 'photometry', 'parameters', 'parameter_names',
+            and 'filter_codes'.
 
         out_name : str, optional
             Name of the output file, by default 'grid.hdf5'
@@ -2239,7 +2307,6 @@ class CombinedBasis:
                     data=grid_dict["supplementary_parameters"],
                     compression="gzip",
                 )
-            # grid_group['Parameters'].attrs['Units'] = grid_dict['parameters'].units # no units stored
 
             # Create a dataset for the parameter names
             f.attrs["ParameterNames"] = grid_dict["parameter_names"]
@@ -2281,9 +2348,7 @@ class CombinedBasis:
                     ):
                         f.attrs[key] = value
                     else:
-                        grid_group.create_dataset(
-                            key, data=value, compression="gzip"
-                        )
+                        grid_group.create_dataset(key, data=value, compression="gzip")
                         if isinstance(value, (unyt_array, unyt_quantity)):
                             grid_group[key].attrs["Units"] = value.units
 
@@ -2293,11 +2358,19 @@ class CombinedBasis:
         show: bool = True,
         save: bool = False,
     ):
-        """Given an index, plot the galaxy from the grid. Open the relevant hdf5 files and load the spectra."""
+        """Plot a galaxy at a grid index.
+
+        Parameters
+        ----------
+        index : int
+            Index of the galaxy in the grid.
+        show : bool, optional
+            If True, shows the plot. Defaults to True.
+        save : bool, optional
+            If True, saves the plot. Defaults to False.
+        """
         if self.grid_photometry is None:
-            raise ValueError(
-                "Grid photometry not created. Run create_grid() first."
-            )
+            raise ValueError("Grid photometry not created. Run create_grid() first.")
 
         if not hasattr(self, "pipeline_outputs"):
             self.load_bases()
@@ -2312,7 +2385,7 @@ class CombinedBasis:
         filter_codes = [f"JWST/{i}" for i in self.grid_filter_codes]
         filterset = FilterCollection(filter_codes, verbose=False)
 
-        # For each basis, look at which parameters for that basis and match to the spectra.
+        # For each basis, look at which parameters for that basis and match to spectra.
 
         combined_spectra = []
         total_wavelengths = []
@@ -2335,36 +2408,29 @@ class CombinedBasis:
 
             total_mask = np.ones(
                 len(
-                    self.pipeline_outputs[base.model_name]["properties"][
-                        basis_params[0]
-                    ]
+                    self.pipeline_outputs[base.model_name]["properties"][basis_params[0]]
                 ),
                 dtype=bool,
             )
             for key in base_params.keys():
                 if key not in basis_params:
                     continue
-                all_values = self.pipeline_outputs[base.model_name][
-                    "properties"
-                ][key]
+                all_values = self.pipeline_outputs[base.model_name]["properties"][key]
                 _i = all_values == base_params[key]
                 total_mask = np.logical_and(total_mask, _i)
 
-            assert np.sum(total_mask) == 1, (
-                f"Found {np.sum(total_mask)} matches for {base.model_name} with parameters {base_params}. Expected 1 match."
-            )
+            assert (
+                np.sum(total_mask) == 1
+            ), f"""Found {np.sum(total_mask)} matches for {base.model_name}
+                with parameters {base_params}. Expected 1 match."""
             j = np.where(total_mask)[0][0]
 
             # Get the spectra for this index
-            spectra = self.pipeline_outputs[base.model_name][
-                "observed_spectra"
-            ][j]
+            spectra = self.pipeline_outputs[base.model_name]["observed_spectra"][j]
 
             flux_unit = spectra.units
-            # get the mass of the spectra and the expected mass, and renormalise the spectra
-            mass = self.pipeline_outputs[base.model_name]["properties"][
-                "mass"
-            ][j]
+            # get the mass of the spectra and the expected mass to renormalise the spectra
+            mass = self.pipeline_outputs[base.model_name]["properties"]["mass"][j]
             expected_mass = 10 ** params[1] * Msun
             scaling_factor = expected_mass / mass
             spectra = spectra * scaling_factor
@@ -2373,13 +2439,13 @@ class CombinedBasis:
             wavs = self.pipeline_outputs[base.model_name]["wavelengths"]
             total_wavelengths.append(wavs)
 
-        # Assert wavelengths for all bases are the same for now (could refactor this to resample later)
         for i, wavs in enumerate(total_wavelengths):
             if i == 0:
                 continue
-            assert np.all(wavs == total_wavelengths[0]), (
-                f"Wavelengths for base {i} do not match base 0. {wavs} != {total_wavelengths[0]}"
-            )
+            assert np.all(
+                wavs == total_wavelengths[0]
+            ), f"""Wavelengths for base {i} do not match base 0.
+                {wavs} != {total_wavelengths[0]}"""
 
         weight_pos = "weight_fraction" == self.grid_parameter_names
         weights = params[weight_pos]
@@ -2387,7 +2453,8 @@ class CombinedBasis:
         # Only works for combining 2 bases at the moment
         weights = np.array((weights[0], 1 - weights[0]))
 
-        # Stack the spectra according to the combination weights. Spectra has shape (wav, n_bases)
+        # Stack the spectra according to the combination weights.
+        # Spectra has shape (wav, n_bases)
         combined_spectra = np.array(combined_spectra)
 
         combined_spectra = combined_spectra * weights[:, np.newaxis]
@@ -2408,9 +2475,7 @@ class CombinedBasis:
             label="Photometry",
             color="red",
             s=10,
-            path_effects=[
-                PathEffects.withStroke(linewidth=4, foreground="white")
-            ],
+            path_effects=[PathEffects.withStroke(linewidth=4, foreground="white")],
         )
 
         ax.plot(
@@ -2494,6 +2559,7 @@ class CombinedBasis:
         file_path: str,
     ) -> dict:
         """Load the grid from a file.
+
         Parameters
         ----------
         file_path : str
@@ -2526,10 +2592,11 @@ class CombinedBasis:
         overload_out_name: str = "",
         overwrite: bool = False,
     ) -> None:
-        """Create a complete grid of spectral energy distributions (SEDs) by combining galaxy bases.
+        """Create a complete grid of SEDs by combining galaxy bases.
 
-        This method handles both single-base and multi-base scenarios, properly scaling according to
-        masses and weights. It constructs a grid without sampling, generating the full set of
+        This method handles both single-base and multi-base scenarios,
+        properly scaling according to masses and weights.
+        It constructs a grid without sampling, generating the full set of
         combinations for all specified parameters.
 
         Parameters
@@ -2546,7 +2613,8 @@ class CombinedBasis:
         # Validate initialization conditions
         if self.draw_parameter_combinations:
             raise AssertionError(
-                "Cannot create full grid with draw_parameter_combinations set to True. Set to False to create full grid."
+                """Cannot create full grid with draw_parameter_combinations
+                  set to True. Set to False to create full grid."""
             )
 
         # Load base model data
@@ -2554,14 +2622,13 @@ class CombinedBasis:
 
         # ===== VALIDATION =====
         # Check all bases have the same number of galaxies
-        ngal = len(
-            pipeline_outputs[self.bases[0].model_name]["properties"]["mass"]
-        )
+        ngal = len(pipeline_outputs[self.bases[0].model_name]["properties"]["mass"])
         for i, base in enumerate(self.bases):
             model_name = base.model_name
             if len(pipeline_outputs[model_name]["properties"]["mass"]) != ngal:
                 raise ValueError(
-                    f"Base {i} has different number of galaxies to base 0. Cannot combine bases with different number of galaxies."
+                    f"""Base {i} has different number of galaxies to base 0.
+                    Cannot combine bases with different number of galaxies."""
                 )
 
         # Validate input arrays
@@ -2572,7 +2639,8 @@ class CombinedBasis:
         ]:
             if len(array) != ngal:
                 raise ValueError(
-                    f"{array_name} length {len(array)} does not match number of galaxies {ngal}."
+                    f"""{array_name} length {len(array)} does not match
+                    number of galaxies {ngal}."""
                 )
 
         # Validate filters
@@ -2580,7 +2648,8 @@ class CombinedBasis:
         for i, base in enumerate(self.bases):
             if base.instrument.filters.filter_codes != base_filters:
                 raise ValueError(
-                    f"Base {i} has different filters to base 0. Cannot combine bases with different filters."
+                    f"""Base {i} has different filters to base 0.
+                    Cannot combine bases with different filters."""
                 )
 
         # Determine which filters to use
@@ -2589,7 +2658,8 @@ class CombinedBasis:
             for filter_code in override_instrument.filters.filter_codes:
                 if filter_code not in base_filters:
                     raise ValueError(
-                        f"Filter {filter_code} not found in base filters. Cannot override instrument."
+                        f"""Filter {filter_code} not found in base filters.
+                        Cannot override instrument."""
                     )
             filter_codes = override_instrument.filters.filter_codes
         else:
@@ -2630,20 +2700,16 @@ class CombinedBasis:
         # ===== SUPPLEMENTARY PARAMETER SETUP =====
         # Get the list of supplementary parameters from the first base
         supp_param_keys = list(
-            pipeline_outputs[self.bases[0].model_name][
-                "supp_properties"
-            ].keys()
+            pipeline_outputs[self.bases[0].model_name]["supp_properties"].keys()
         )
 
         # Validate all bases have the same supplementary parameters
         for key in supp_param_keys:
             for base in self.bases:
-                if (
-                    key
-                    not in pipeline_outputs[base.model_name]["supp_properties"]
-                ):
+                if key not in pipeline_outputs[base.model_name]["supp_properties"]:
                     raise ValueError(
-                        f"Supplementary parameter {key} not found in base {base.model_name}."
+                        f"""Supplementary parameter {key}
+                        not found in base {base.model_name}."""
                     )
 
         # Process supplementary parameters for each base
@@ -2662,7 +2728,8 @@ class CombinedBasis:
                     emission_key = self.base_emission_model_keys[i]
                     if emission_key not in value:
                         raise ValueError(
-                            f"Emission model key {emission_key} not found in supplementary parameter {key}."
+                            f"""Emission model key {emission_key} not
+                            found in supplementary parameter {key}."""
                         )
                     supp_params[model_name][key] = value[emission_key]
                 else:
@@ -2681,14 +2748,13 @@ class CombinedBasis:
             # Create per-base data structures to hold galaxy information at this redshift
             base_data = []
 
-            # For each base, extract galaxies at this redshift and calculate scaling factors
+            # For each base, extract galaxies at this redshift
+            # and calculate scaling factors
             for i, base in enumerate(self.bases):
                 model_name = base.model_name
                 model_output = pipeline_outputs[model_name]
 
-                masses = np.array(
-                    [model_output["properties"]["mass"][pos] * Msun]
-                )
+                masses = np.array([model_output["properties"]["mass"][pos] * Msun])
 
                 if is_multi_base:
                     # Multiple bases: scale by weight for this base
@@ -2718,10 +2784,7 @@ class CombinedBasis:
                 for param_name in total_property_names.get(model_name, []):
                     original_param = param_name.split("/")[-1]
                     # Check both possible parameter locations
-                    if (
-                        f"{model_name}/{original_param}"
-                        in model_output["properties"]
-                    ):
+                    if f"{model_name}/{original_param}" in model_output["properties"]:
                         params_dict[param_name] = model_output["properties"][
                             f"{model_name}/{original_param}"
                         ][pos]
@@ -2737,9 +2800,7 @@ class CombinedBasis:
                         supp_dict[key] = {}
                         for subkey, subvalue in value.items():
                             if isinstance(subvalue, unyt_array):
-                                supp_dict[key][subkey] = (
-                                    subvalue[pos] * scaling_factors
-                                )
+                                supp_dict[key][subkey] = subvalue[pos] * scaling_factors
                                 supp_param_units[key] = str(subvalue.units)
                             else:
                                 supp_dict[key][subkey] = subvalue[pos]
@@ -2782,9 +2843,7 @@ class CombinedBasis:
                 param_idx += 1
 
                 # Fill varying parameters
-                for param_name in total_property_names.get(
-                    self.bases[0].model_name, []
-                ):
+                for param_name in total_property_names.get(self.bases[0].model_name, []):
                     if param_name in base["params"]:
                         params_array[param_idx, :] = base["params"][param_name]
                     param_idx += 1
@@ -2808,10 +2867,9 @@ class CombinedBasis:
                     *[np.arange(n) for n in items_per_base], indexing="ij"
                 )
 
-                # Reshape to get all combinations: array of shape (total_combinations, num_bases)
-                combinations = np.array(
-                    [indices.flatten() for indices in mesh_indices]
-                ).T
+                # Reshape to get all combinations:
+                # array of shape (total_combinations, num_bases)
+                combinations = np.array([indices.flatten() for indices in mesh_indices]).T
                 num_combinations = len(combinations)
 
                 # Create output arrays
@@ -2824,9 +2882,7 @@ class CombinedBasis:
                     # Fill photometry - combine the weighted contributions
                     for j, base_idx in enumerate(combo_indices):
                         print("check", base_data[j]["photometry"])
-                        output_array[:, i] += base_data[j]["photometry"][
-                            base_idx
-                        ]
+                        output_array[:, i] += base_data[j]["photometry"][base_idx]
 
                     # Fill parameters
                     param_idx = 0
@@ -2837,26 +2893,22 @@ class CombinedBasis:
                     params_array[param_idx, i] = np.log10(total_mass.value)
                     param_idx += 1
                     if is_multi_base:
-                        params_array[param_idx, i] = weights[
-                            0
-                        ]  # weight fraction
+                        params_array[param_idx, i] = weights[0]  # weight fraction
                         param_idx += 1
 
                     # Add all varying parameters from each base
                     for j, base in enumerate(self.bases):
                         model_name = base.model_name
-                        for param_name in total_property_names.get(
-                            model_name, []
-                        ):
+                        for param_name in total_property_names.get(model_name, []):
                             if param_name in base_data[j]["params"]:
                                 print(
                                     "meow",
                                     base_data[j]["params"][param_name],
                                     param_name,
                                 )
-                                params_array[param_idx, i] = base_data[j][
-                                    "params"
-                                ][param_name]
+                                params_array[param_idx, i] = base_data[j]["params"][
+                                    param_name
+                                ]
                             param_idx += 1
 
                     # Fill supplementary parameters
@@ -2866,10 +2918,7 @@ class CombinedBasis:
                             data = base_data[j]["supp_params"][param_name]
                             if isinstance(data, unyt_array):
                                 total_value += data[base_idx].value
-                            elif (
-                                hasattr(data, "__len__")
-                                and len(data) > base_idx
-                            ):
+                            elif hasattr(data, "__len__") and len(data) > base_idx:
                                 total_value += data[base_idx]
                             else:
                                 total_value += data  # Scalar case
@@ -2888,16 +2937,13 @@ class CombinedBasis:
 
         # Convert units dict to list
         supp_param_units_list = [
-            supp_param_units.get(name, str(dimensionless))
-            for name in supp_param_keys
+            supp_param_units.get(name, str(dimensionless)) for name in supp_param_keys
         ]
 
         # Print summary
         print(f"Combined outputs shape: {combined_outputs.shape}")
         print(f"Combined parameters shape: {combined_params.shape}")
-        print(
-            f"Combined supplementary parameters shape: {combined_supp_params.shape}"
-        )
+        print(f"Combined supplementary parameters shape: {combined_supp_params.shape}")
         print(f"Filter codes: {filter_codes}")
 
         # Create output dictionary
@@ -2921,17 +2967,16 @@ class CombinedBasis:
 
         # Save results if requested
         if save:
-            self.save_grid(
-                out, overload_out_name=overload_out_name, overwrite=overwrite
-            )
+            self.save_grid(out, overload_out_name=overload_out_name, overwrite=overwrite)
 
 
 class EmpiricalUncertaintyModel:
-    """A class to model and sample photometric uncertainties based on an empirical
-    distribution derived from observed fluxes and their uncertainties.
+    """A class to model and sample photometric uncertainties based on observations.
 
-    The model estimates p(sigma_X | f_X) as a Gaussian N(mu_sigma_X(f_X), sigma_sigma_X(f_X)),
-    where mu_sigma_X and sigma_sigma_X are interpolated from binned statistics of
+    The model estimates p(sigma_X | f_X) as a
+    Gaussian N(mu_sigma_X(f_X), sigma_sigma_X(f_X)),
+    where mu_sigma_X and sigma_sigma_X are
+    interpolated from binned statistics of
     observed (sigma_X, f_X) pairs.
     """
 
@@ -2954,8 +2999,7 @@ class EmpiricalUncertaintyModel:
         upper_limit_flux_err_behaviour: str = "flux",
         max_flux_error: Optional[float] = None,
     ):
-        """Initializes the model by building interpolators for the mean and
-        standard deviation of observed errors as a function of flux.
+        """Uncertainity model from observed data.
 
         Args:
             observed_fluxes: 1D array of fluxes from a real survey.
@@ -2973,21 +3017,27 @@ class EmpiricalUncertaintyModel:
             flux_unit: The unit of the fluxes, e.g., 'AB', 'Jy', etc.
             min_flux_error: Minimum value for the estimated flux error.
                              If None, defaults to 0.0.
-            error_type: What kind of error to return. If 'empirical', then sigma_X is the standard deviation of
-                        the Gaussian used to scatter the fluxes. If 'observed' then we re-estimate the errors
-                        based on the scattered fluxes.
-            sigma_clip: The number of standard deviations to clip the sampled uncertainties.
+            error_type: What kind of error to return. If 'empirical', then sigma_X
+                        is the standard deviation of
+                        the Gaussian used to scatter the fluxes. If 'observed' then
+                        we re-estimate the errors based on the scattered fluxes.
+            sigma_clip: number of standard deviations to clip the sampled uncertainties.
             upper_limits: If True, treat the observed fluxes as upper limits.
-            treat_as_upper_limits_below: If provided, fluxes below this SNR are treated as upper limits.
-            upper_limit_flux_behaviour: How to handle upper limits fluxes. Options are 'scatter_limit', 'upper_limit',
-                - scatter_limit: Use the upper limit value as the flux and scatter the flux using the model.
+            treat_as_upper_limits_below: If provided, fluxes below this SNR
+                    are treated as upper limits.
+            upper_limit_flux_behaviour: How to handle upper limits fluxes.
+                Options are 'scatter_limit', 'upper_limit':
+                - scatter_limit: Use the upper limit value as the flux and scatter the
+                    flux using the model.
                 - upper_limit: Use the upper limit value as the flux with no scattering.
                 - a float/int - Use this value as the upper limit flux.
-            upper_limit_flux_err_behaviour: How to handle upper limits flux errors. Options are 'flux', 'upper_limit'.
+            upper_limit_flux_err_behaviour: How to handle upper limits flux errors.
+            Options are 'flux', 'upper_limit'.:
                 - flux: Use the flux_err scatter at the flux value.
                 - 'upper_limit': Use the upper limit value as the flux error.
                 - 'max' : Use the maximum flux error set by max_flux_error.
-                - 'sig_{val}': Find the error at a specific value, e.g., 'sig_1' will find the error at 1 sigma.
+                - 'sig_{val}': Find the error at a specific value, e.g., 'sig_1'
+                    will find the error at 1 sigma.
             max_flux_error: Maximum flux error to allow. If None, no maximum is applied.
 
 
@@ -3008,9 +3058,7 @@ class EmpiricalUncertaintyModel:
         self.min_flux_for_binning = min_flux_for_binning
         self.min_samples_per_bin = min_samples_per_bin
         self.flux_unit = flux_unit
-        self.min_flux_error = (
-            min_flux_error if min_flux_error is not None else 0.0
-        )
+        self.min_flux_error = min_flux_error if min_flux_error is not None else 0.0
         self.upper_limit_flux_behaviour = upper_limit_flux_behaviour
 
         valid_mask = (
@@ -3044,29 +3092,21 @@ class EmpiricalUncertaintyModel:
         if upper_limits:
             if flux_unit == "AB":
                 # convert fluxes to Jy if they are in AB magnitudes
-                ftemp = 10 ** (
-                    -0.4 * (fluxes + 8.9)
-                )  # Convert AB magnitudes to Jy
-                etemp = (
-                    errors * np.log(10) * ftemp
-                ) / 2.5  # Convert errors to Jy
+                ftemp = 10 ** (-0.4 * (fluxes + 8.9))  # Convert AB magnitudes to Jy
+                etemp = (errors * np.log(10) * ftemp) / 2.5  # Convert errors to Jy
             else:
                 ftemp = fluxes
                 etemp = errors
 
             self.snr_interpolator = interp1d(ftemp / etemp, ftemp)
-            upper_limit_value = self.snr_interpolator(
-                treat_as_upper_limits_below
-            )
+            upper_limit_value = self.snr_interpolator(treat_as_upper_limits_below)
             # Convert upper_limit_value back to the original flux unit
             if flux_unit == "AB":
                 upper_limit_value = -2.5 * np.log10(upper_limit_value) + 8.9
 
         self.upper_limit_value = upper_limit_value
 
-        self.max_flux_error = (
-            max_flux_error if max_flux_error is not None else np.inf
-        )
+        self.max_flux_error = max_flux_error if max_flux_error is not None else np.inf
 
         if (
             len(fluxes) < min_samples_per_bin * 2
@@ -3083,21 +3123,18 @@ class EmpiricalUncertaintyModel:
                 positive_flux_mask = fluxes > 0
                 if not np.any(positive_flux_mask):
                     raise ValueError(
-                        "No positive fluxes available for log binning. Try linear bins or check data."
+                        """No positive fluxes available for log binning.
+                        Try linear bins or check data."""
                     )
                 min_f = np.min(fluxes[positive_flux_mask])
                 max_f = np.max(fluxes[positive_flux_mask])
-                if (
-                    min_f <= 0
-                ):  # Should be caught by positive_flux_mask, but as safeguard
+                if min_f <= 0:  # Should be caught by positive_flux_mask, but as safeguard
                     min_f = (
                         np.partition(fluxes[positive_flux_mask], 1)[1]
                         if len(fluxes[positive_flux_mask]) > 1
                         else 1e-9
                     )
-                flux_bins = np.logspace(
-                    np.log10(min_f), np.log10(max_f), num_bins + 1
-                )
+                flux_bins = np.logspace(np.log10(min_f), np.log10(max_f), num_bins + 1)
             else:
                 min_f = np.min(fluxes)
                 max_f = np.max(fluxes)
@@ -3124,9 +3161,7 @@ class EmpiricalUncertaintyModel:
                 bin_median_errors.append(np.median(errors_in_bin))
                 bin_std_errors.append(np.std(errors_in_bin))
 
-        if (
-            len(self.flux_bins_centers) < 2
-        ):  # Need at least two points for interpolation
+        if len(self.flux_bins_centers) < 2:  # Need at least two points for interpolation
             raise ValueError(
                 f"Could not create enough valid bins ({len(self.flux_bins_centers)}) "
                 f"for interpolation with min_samples_per_bin={min_samples_per_bin}. "
@@ -3139,9 +3174,7 @@ class EmpiricalUncertaintyModel:
         self._max_interp_flux = self.flux_bins_centers[-1]
 
         self.flux_unit = flux_unit
-        self.min_flux_error = (
-            min_flux_error if min_flux_error is not None else 0.0
-        )
+        self.min_flux_error = min_flux_error if min_flux_error is not None else 0.0
 
         # Use 'bounds_error=False' and 'fill_value' to handle extrapolation.
         # For sigma_sigma_X (std of errors), it should not be negative.
@@ -3215,8 +3248,6 @@ class EmpiricalUncertaintyModel:
 
         self.sigma_sigma_interpolator = self.sigma_sigma_interpolator_clip
 
-        # Ensure sigma_sigma (the std dev of the error distribution) is not negative after interpolation
-        # by wrapping the interpolator.
         original_sigma_sigma_interpolator = self.sigma_sigma_interpolator
 
         def non_negative_sigma_sigma_interpolator(flux_values):
@@ -3230,13 +3261,20 @@ class EmpiricalUncertaintyModel:
         self.sigma_sigma_interpolator = non_negative_sigma_sigma_interpolator
 
     def plot_sigma(self, ax=None, **kwargs):
+        """Plots the interpolated mu_sigma_X and sigma_sigma_X.
+
+        Parameters
+        ----------
+        ax : matplotlib.axes.Axes, optional
+            The axes to plot on. If None, creates a new figure and axes.
+        **kwargs : dict, optional
+            Additional keyword arguments passed to the plot function.
+        """
         if ax is None:
             import matplotlib.pyplot as plt
 
             fig, ax = plt.subplots()
-        flux_range = np.linspace(
-            self._min_interp_flux, self._max_interp_flux, 1000
-        )
+        flux_range = np.linspace(self._min_interp_flux, self._max_interp_flux, 1000)
         mu_sigma = self.mu_sigma_interpolator(flux_range)
         sigma_sigma = self.sigma_sigma_interpolator(flux_range)
 
@@ -3264,15 +3302,21 @@ class EmpiricalUncertaintyModel:
     ) -> Union[float, np.ndarray, None]:
         """Samples a 'fake' uncertainty (sigma_prime_X) for a given true flux.
 
-        Args:
-            true_flux: The true flux value(s) for which to sample an uncertainty.
-            max_resamples_for_positive_sigma: How many times to try resampling if a
-                                              negative sigma_prime_X is drawn.
+        Parameters
+        ----------
+        true_flux : float or np.ndarray
+            The true flux value(s) for which to sample the uncertainty.
+        sigma_clip : float, optional
+            The number of standard deviations to clip the sampled uncertainties.
+        extrapolate : bool, optional
+            If True, allows extrapolation beyond the range of the flux bins.
+            If False, uses the nearest bin value for extrapolation.
 
         Returns:
-            The sampled uncertainty (sigma_prime_X). Returns np.nan for scalar input
-            or an array with np.nan for problematic inputs if a positive sigma
-            cannot be sampled after max_resamples.
+        -------
+        sampled_sigmas : float or np.ndarray
+            The sampled uncertainties for the given true flux value(s).
+
         """
         is_scalar = np.isscalar(true_flux)
         flux_array = np.atleast_1d(true_flux)
@@ -3288,9 +3332,7 @@ class EmpiricalUncertaintyModel:
             )  # Already ensures non-negativity
         else:
             mu_sigma_values = self.mu_sigma_interpolator_extrap(flux_array)
-            sigma_sigma_values = self.sigma_sigma_interpolator_extrap(
-                flux_array
-            )
+            sigma_sigma_values = self.sigma_sigma_interpolator_extrap(flux_array)
 
         # redo with normal numpy distribution vectorized
         sigma_prime_x = np.random.normal(
@@ -3298,9 +3340,6 @@ class EmpiricalUncertaintyModel:
             scale=sigma_sigma_values,
             size=flux_array.shape,
         )
-
-        # Clip the sampled uncertainties to be within the specified sigma_clip range
-        # sigma_prime_x = np.clip(sigma_prime_x, -sigma_clip * sigma_sigma_values, sigma_clip * sigma_sigma_values)
 
         # make any negative values NaN
         sampled_sigmas = np.where(sigma_prime_x > 0, sigma_prime_x, np.nan)
@@ -3312,20 +3351,20 @@ class EmpiricalUncertaintyModel:
         self,
         true_flux: Union[float, np.ndarray],
         true_flux_units: Optional[str] = None,
-        max_resamples_for_positive_sigma: int = 5,
         out_units: Optional[str] = None,
     ) -> Tuple[Union[float, np.ndarray, None], Union[float, np.ndarray, None]]:
-        """Applies noise to a true flux by first sampling an uncertainty
-        and then adding Gaussian noise.
+        """Applies noise to a photometric measurement.
 
-        Args:
-            true_flux: The true flux value(s).
-            max_resamples_for_positive_sigma: Passed to sample_uncertainty.
+        Parameters
+        ----------
+        true_flux : float or np.ndarray
+            The true flux value(s) to which noise will be applied.
+        true_flux_units : str, optional
+            The units of the true flux. If None, defaults to the object's flux_unit.
+        out_units : str, optional
+            The units to return the noisy flux in. If None, defaults to the object's
+            flux_unit.
 
-        Returns:
-            A tuple (noisy_flux, sampled_sigma_prime).
-            Returns (np.nan, np.nan) for problematic inputs where positive sigma
-            could not be determined.
         """
         true_flux = true_flux.copy()
 
@@ -3333,9 +3372,7 @@ class EmpiricalUncertaintyModel:
             if self.flux_unit == "AB":
                 if not isinstance(true_flux, unyt_array):
                     true_flux = (
-                        unyt_array(true_flux, units=true_flux_units)
-                        .to("Jy")
-                        .value
+                        unyt_array(true_flux, units=true_flux_units).to("Jy").value
                     )
                 else:
                     true_flux = true_flux.to("Jy").value
@@ -3361,7 +3398,7 @@ class EmpiricalUncertaintyModel:
         )  # Ensure it's a float array for calculations
 
         sampled_sigma_prime = self.sample_uncertainty(
-            flux_array, max_resamples_for_positive_sigma
+            flux_array,
         )
 
         # Apply minimum flux error
@@ -3374,23 +3411,19 @@ class EmpiricalUncertaintyModel:
             if self.flux_unit == "AB":
                 # Convert to Jy for upper limit calculations
                 temp_flux_array = 10 ** (-0.4 * (flux_array - 8.9)) * Jy
-                temp_sig = (
-                    np.log(10) * temp_flux_array * sampled_sigma_prime
-                ) / 2.5
+                temp_sig = (np.log(10) * temp_flux_array * sampled_sigma_prime) / 2.5
             else:
                 temp_flux_array = (
                     unyt_array(flux_array, units=self.flux_unit).to("Jy").value
                 )
                 temp_sig = (
-                    unyt_array(sampled_sigma_prime, units=self.flux_unit)
-                    .to("Jy")
-                    .value
+                    unyt_array(sampled_sigma_prime, units=self.flux_unit).to("Jy").value
                 )
 
-            umask = (
-                temp_flux_array / temp_sig < self.treat_as_upper_limits_below
-            ) | (np.isnan(temp_sig) | np.isnan(temp_flux_array))
-            # print(np.sum(umask)/len(umask), "of fluxes are below the upper limit threshold.")
+            umask = (temp_flux_array / temp_sig < self.treat_as_upper_limits_below) | (
+                np.isnan(temp_sig) | np.isnan(temp_flux_array)
+            )
+
         else:
             umask = np.zeros_like(
                 flux_array, dtype=bool
@@ -3408,21 +3441,16 @@ class EmpiricalUncertaintyModel:
             np.nan
         )  # Handle NaNs from sampling
 
-        # print('inf', np.sum(np.isinf(noisy_flux_array)), 'nan', np.sum(np.isnan(noisy_flux_array)))
-
         if self.error_type == "observed":
             # Re-estimate the errors based on the scattered fluxes
             sampled_sigma_prime = self.sample_uncertainty(
                 noisy_flux_array,
-                max_resamples_for_positive_sigma,
                 sigma_clip=1,
             )
 
-        # print('inf', np.sum(np.isinf(noisy_flux_array)), 'nan', np.sum(np.isnan(noisy_flux_array)))
-
         if self.upper_limits:
             # If upper limits are set, treat fluxes below the threshold as upper limits
-            # Calculate SNR, and apply upper limit condition. Set all below e.g 2 sigma +- max_err
+            # Calculate SNR, and apply upper limit condition.
             snr_limit = self.treat_as_upper_limits_below
 
             if self.flux_unit == "AB":
@@ -3433,18 +3461,11 @@ class EmpiricalUncertaintyModel:
                 ) / 2.5
             else:
                 temp_flux_array = (
-                    unyt_array(noisy_flux_array, units=self.flux_unit)
-                    .to("Jy")
-                    .value
+                    unyt_array(noisy_flux_array, units=self.flux_unit).to("Jy").value
                 )
                 temp_sigma_prime = (
-                    unyt_array(sampled_sigma_prime, units=self.flux_unit)
-                    .to("Jy")
-                    .value
+                    unyt_array(sampled_sigma_prime, units=self.flux_unit).to("Jy").value
                 )
-
-            # print(np.sum(np.isnan(temp_flux_array)), np.sum(np.isnan(temp_sigma_prime)))
-            # print(np.max(temp_flux_array), np.max(temp_sigma_prime), np.min(temp_flux_array), np.min(temp_sigma_prime))
 
             snr = temp_flux_array / temp_sigma_prime
             m = snr < snr_limit
@@ -3457,14 +3478,10 @@ class EmpiricalUncertaintyModel:
                 | np.isnan(temp_sigma_prime)
             )  # Ensure we mask out NaNs and infinities
 
-            # print('m', np.sum(m))
-
-            # print(f"{np.sum(m)/len(m):.2%} of fluxes are below the upper limit threshold.")
-
             # set max to
             val_lim = self.mu_sigma_interpolator(
                 self.upper_limit_value
-            )  # Use the interpolated sigma for the upper limit value but include the scatter
+            )  # Use the interpolated sigma for the upper limit value but include scatter
             scatter_lim = self.sigma_sigma_interpolator(self.upper_limit_value)
 
             # Set upper limit flux behaviour
@@ -3480,8 +3497,9 @@ class EmpiricalUncertaintyModel:
                 noisy_flux_array[m] = float(self.upper_limit_flux_behaviour)
             else:
                 raise ValueError(
-                    f"Unknown upper_limit_flux_behaviour: {self.upper_limit_flux_behaviour}. "
-                    "Must be 'scatter_limit', 'upper_limit', or a float/int value."
+                    f"""Unknown upper_limit_flux_behaviour:
+                    {self.upper_limit_flux_behaviour}
+                    Must be 'scatter_limit', 'upper_limit', or a float/int value."""
                 )
 
             # Set upper limit flux error behaviour
@@ -3492,9 +3510,7 @@ class EmpiricalUncertaintyModel:
             elif self.upper_limit_flux_err_behaviour == "max":
                 sampled_sigma_prime[m] = self.max_flux_error
             elif self.upper_limit_flux_err_behaviour.startswith("sig_"):
-                sig_val = float(
-                    self.upper_limit_flux_err_behaviour.split("_")[1]
-                )
+                sig_val = float(self.upper_limit_flux_err_behaviour.split("_")[1])
 
                 if self.flux_unit == "AB":
                     # val is in Jy, convert to AB
@@ -3507,8 +3523,9 @@ class EmpiricalUncertaintyModel:
 
             else:
                 raise ValueError(
-                    f"Unknown upper_limit_flux_err_behaviour: {self.upper_limit_flux_err_behaviour}. "
-                    "Must be 'flux', 'upper_limit', 'max', or 'sig_{val}'."
+                    f"""Unknown upper_limit_flux_err_behaviour:
+                    {self.upper_limit_flux_err_behaviour}. Must be 'flux',
+                    'upper_limit', 'max', or 'sig_{val}'."""
                 )
 
         # convert back to original units if necessary
@@ -3516,15 +3533,11 @@ class EmpiricalUncertaintyModel:
         if out_units is None:
             out_units = true_flux_units
 
-        # print('inf', np.sum(np.isinf(noisy_flux_array)), 'nan', np.sum(np.isnan(noisy_flux_array)))
-
         if self.flux_unit != out_units:
             if self.flux_unit == "AB":
                 raise NotImplementedError()
             else:
-                noisy_flux_array = unyt_array(
-                    noisy_flux_array, units=self.flux_unit
-                )
+                noisy_flux_array = unyt_array(noisy_flux_array, units=self.flux_unit)
                 sampled_sigma_prime = unyt_array(
                     sampled_sigma_prime, units=self.flux_unit
                 )
@@ -3540,12 +3553,8 @@ class EmpiricalUncertaintyModel:
                         -2.5 * np.log10(noisy_flux_array.to(Jy).value) + 8.9
                     )
                 else:
-                    sampled_sigma_prime = sampled_sigma_prime.to(
-                        true_flux_units
-                    ).value
-                    noisy_flux_array = noisy_flux_array.to(
-                        true_flux_units
-                    ).value
+                    sampled_sigma_prime = sampled_sigma_prime.to(true_flux_units).value
+                    noisy_flux_array = noisy_flux_array.to(true_flux_units).value
 
         # Apply min/max in original units.
         sampled_sigma_prime[sampled_sigma_prime < self.min_flux_error] = (
@@ -3555,7 +3564,6 @@ class EmpiricalUncertaintyModel:
             self.max_flux_error
         )
 
-        # print('inf', np.sum(np.isinf(noisy_flux_array)), 'nan', np.sum(np.isnan(noisy_flux_array)))
         if is_scalar:
             return noisy_flux_array[0], sampled_sigma_prime[0]
         return noisy_flux_array, sampled_sigma_prime
@@ -3573,9 +3581,7 @@ class EmpiricalUncertaintyModel:
 
         with h5py.File(hdf5_file, "a") as f:
             group = f.create_group(group_name)
-            group.create_dataset(
-                "flux_bins_centers", data=self.flux_bins_centers
-            )
+            group.create_dataset("flux_bins_centers", data=self.flux_bins_centers)
             group.create_dataset(
                 "mu_sigma_values",
                 data=self.mu_sigma_interpolator(self.flux_bins_centers),
@@ -3615,7 +3621,8 @@ class EmpiricalUncertaintyModel:
             group_name: Name of the group in the HDF5 file where the model is stored.
 
         Returns:
-            An instance of EmpiricalUncertaintyModel initialized with the data from the HDF5 file.
+            An instance of EmpiricalUncertaintyModel initialized with the data
+            from the HDF5 file.
         """
         import h5py
 
@@ -3660,10 +3667,16 @@ class EmpiricalUncertaintyModel:
 
 
 class GalaxySimulator(object):
-    """Photometry Simulator class. Initialize with required model,
-    then take an array or dictionary of parameters and return a dictionary of photometry.
-    A seperate function will handle normalization and scaling of the photometry.
+    """Class for simulating photometry/spectra of galaxies.
 
+    This class is designed to work with a grid of galaxies, an instrument,
+    and an emission model. It can simulate photometry and spectra based on
+    the provided star formation history (SFH) and metallicity distribution
+    (ZDist) models. The class can also handle uncertainties in the photometry
+    using an empirical uncertainty model.
+    It supports various configurations such as normalization methods,
+    output types, and inclusion of photometric errors.
+    It can also apply noise models to the simulated photometry.
     """
 
     def __init__(
@@ -3702,48 +3715,64 @@ class GalaxySimulator(object):
         grid : Grid
             Grid object to use. Must be a subclass of Grid.
         instrument : Instrument
-            Instrument object to use for photometry/spectra. Must be a subclass of Instrument.
+            Instrument object to use for photometry/spectra.
+            Must be a subclass of Instrument.
         emission_model : EmissionModel
             Emission model to use. Must be a subclass of EmissionModel.
         emission_model_key : str
             Emission model key to use e.g. 'total', 'intrinsic'.
         emitter_params : dict
-            Dictionary of parameters to pass to the emitter. Keys are 'stellar' and 'galaxy'.
+            Dictionary of parameters to pass to the emitter.
+            Keys are 'stellar' and 'galaxy'.
         cosmo : Cosmology = Planck18
             Cosmology object to use. Must be a subclass of Cosmology.
         param_order : Union[None, list] = None
-            Order of parameters to use. If None, will use the order of the keys in the params dictionary.
+            Order of parameters to use.
+            If None, will use the order of the keys in the params dictionary.
         param_units : dict
-            Dictionary of parameter units to use. Keys are the parameter names and values are the units.
+            Dictionary of parameter units to use.
+            Keys are the parameter names and values are the units.
         param_transforms : dict
-            Dictionary of parameter transforms to use. Keys are the parameter names and values are the transforms functions.
-            Can be used to fit say Av when model requires tau_v, or for unit conversion etc.
+            Dictionary of parameter transforms to use.
+            Keys are the parameter names and values are the transforms functions.
+            Can be used to fit say Av when model requires tau_v, or for unit conversion.
         out_flux_unit : str
-            Output flux unit to use. Default is 'nJy'. Can be 'AB', 'Jy', 'nJy', 'uJy', 'mJy'.
+            Output flux unit to use. Default is 'nJy'. Can be 'AB', 'Jy', 'nJy', 'uJy',...
         required_keys : list
-            List of required keys to use. Default is ['redshift', 'log_mass']. Typically this can be ignored.
+            List of required keys to use. Default is ['redshift', 'log_mass'].
+            Typically this can be ignored.
         extra_functions : List[callable]
             List of extra functions to call after the simulation.
-            Inputs to each function are determined by the function signature and can be any of the following:
+            Inputs to each function are determined by the function signature and can be
+            any of the following:
             galaxy, spec, fluxes, sed, stars, emission_model, cosmo.
-            The output of each function is appended to an array and returned in the output tuple.
+            The output of each function is appended to an array
+            and returned in the output tuple.
         normalize_method : str
-            Normalization method to use. If None, no normalization is applied. Only works on photo_fnu currently.
-            Currently can be either the name of a filter, or a callable function with the same rules as extra_functions.
+            Normalization method to use. If None, no normalization is applied.
+            Only works on photo_fnu currently.
+            Currently can be either the name of a filter, or a callable function
+            with the same rules as extra_functions.
         output_type : str
-            Output type to use. Default is 'photo_fnu'. Can be 'photo_fnu', 'photo_lnu', 'fnu', 'lnu', or a list of any of these.
+            Output type to use. Default is 'photo_fnu'. Can be 'photo_fnu', 'photo_lnu',
+              'fnu', 'lnu', or a list of any of these.
         include_phot_errors : bool
             Whether to include photometric errors in the output. Default is False.
         depths : Union[np.ndarray, unyt_array] = None
-            Depths to use for the photometry. If None, no depths are applied. Default is None.
+            Depths to use for the photometry. If None, no depths are applied.
+            Default is None.
         depth_sigma : int
-            Sigma to use for the depths. Default is 5. This is used to calculate the 1 sigma error in nJy.
+            Sigma to use for the depths. Default is 5.
+            This is used to calculate the 1 sigma error in nJy.
             If depths is None, this is ignored.
         noise_models : Union[None, Dict[str, EmpiricalUncertaintyModel]] = None
-            List of noise models to use for the photometry. If None, no noise is applied. Default is None.
+            List of noise models to use for the photometry. If None, no noise is applied.
+            Default is None.
         fixed_params : dict
-            Dictionary of fixed parameters to use. Keys are the parameter names and values are the fixed values.
-            This is used to fix parameters in the simulation. If None, no parameters are fixed. Default is None.
+            Dictionary of fixed parameters to use.
+            Keys are the parameter names and values are the fixed values.
+            This is used to fix parameters in the simulation.
+            If None, no parameters are fixed. Default is None.
 
         """
         assert isinstance(grid, Grid), (
@@ -3751,12 +3780,14 @@ class GalaxySimulator(object):
         )
         self.grid = grid
 
-        assert isinstance(instrument, Instrument), (
-            f"Instrument must be a subclass of Instrument. Got {type(instrument)} instead."
-        )
-        assert isinstance(emission_model, EmissionModel), (
-            f"Emission model must be a subclass of EmissionModel. Got {type(emission_model)} instead."
-        )
+        assert isinstance(
+            instrument, Instrument
+        ), f"""Instrument must be a subclass of Instrument.
+            Got {type(instrument)} instead."""
+        assert isinstance(
+            emission_model, EmissionModel
+        ), f"""Emission model must be a subclass of EmissionModel.
+            Got {type(emission_model)} instead."""
 
         self.emission_model = emission_model
         self.emission_model_key = emission_model_key
@@ -3779,28 +3810,26 @@ class GalaxySimulator(object):
             for filter_code in instrument.filters.filter_codes:
                 if filter_code not in noise_models:
                     raise ValueError(
-                        f"Filter {filter_code} not found in noise models. Cannot apply noise models to photometry."
+                        f"""Filter {filter_code} not found in noise models.
+                          Cannot apply noise models to photometry."""
                     )
         self.noise_models = noise_models
         self.include_phot_errors = include_phot_errors
 
         assert not (
             self.depths is not None and self.noise_models is not None
-        ), (
-            "Cannot use both depths and noise models at the same time. Choose one or the other."
-        )
+        ), """Cannot use both depths and noise models at
+              the same time. Choose one or the other."""
         assert not (
-            self.depths is None
-            and self.noise_models is None
-            and self.include_phot_errors
-        ), (
-            "Cannot include photometric errors without depths or noise models. Set include_phot_errors to False or provide depths or noise models."
-        )
+            self.depths is None and self.noise_models is None and self.include_phot_errors
+        ), """Cannot include photometric errors without depths or noise models.
+            Set include_phot_errors to False or provide depths or noise models."""
 
         if depths is not None:
-            assert len(depths) == len(instrument.filters.filter_codes), (
-                f"Depths array length {len(depths)} does not match number of filters {len(instrument.filters.filter_codes)}. Cannot create photometry."
-            )
+            assert len(depths) == len(
+                instrument.filters.filter_codes
+            ), f"""Depths array length {len(depths)} does not match number of filters
+                {len(instrument.filters.filter_codes)}. Cannot create photometry."""
         self.depths = depths
         self.depth_sigma = depth_sigma
 
@@ -3809,9 +3838,8 @@ class GalaxySimulator(object):
             "photo_lnu",
             "fnu",
             "lnu",
-        ], (
-            f"Output type {output_type} not recognised. Must be one of ['photo_fnu', 'photo_lnu', 'fnu', 'lnu']"
-        )
+        ], f"""Output type {output_type} not recognised.
+              Must be one of ['photo_fnu', 'photo_lnu', 'fnu', 'lnu']"""
         if not isinstance(output_type, list):
             output_type = [output_type]
         self.output_type = output_type
@@ -3851,17 +3879,34 @@ class GalaxySimulator(object):
         )
 
     def simulate(self, params):
+        """Simulate photometry from the given parameters.
+
+        Parameters
+        ----------
+        params : dict or array-like
+            Dictionary of parameters or an array-like object with the parameters
+            in the order specified by self.param_order.
+            If self.param_order is None, params must be a dictionary.
+
+        Returns:
+        -------
+        dict
+            Dictionary of photometry outputs. Keys are the output types specified
+            in self.output_type. Values are the corresponding photometry arrays.
+        """
         params = copy.deepcopy(params)
         params.update(self.fixed_params)
 
         if not isinstance(params, dict):
             if self.param_order is None:
                 raise ValueError(
-                    "simulate() input requires a dictionary unless param_order is set. Cannot create photometry."
+                    """simulate() input requires a dictionary unless param_order is set.
+                      Cannot create photometry."""
                 )
-            assert len(params) == len(self.param_order), (
-                f"Parameter array length {len(params)} does not match parameter order length {len(self.param_order)}. Cannot create photometry."
-            )
+            assert len(params) == len(
+                self.param_order
+            ), f"""Parameter array length {len(params)} does not match parameter order
+                  length {len(self.param_order)}. Cannot create photometry."""
             params = {i: j for i, j in zip(self.param_order, params)}
 
         for key in self.required_keys:
@@ -3888,15 +3933,11 @@ class GalaxySimulator(object):
         )
         zdist = self.zdist_model(
             **{i: params[i] for i in self.zdist_params},
-            **{
-                i: params[i] for i in self.optional_zdist_params if i in params
-            },
+            **{i: params[i] for i in self.optional_zdist_params if i in params},
         )
 
         # Get param names which aren't in the sfh or zdist models or the required keys
-        param_names = [
-            i for i in params.keys() if i not in self.total_possible_keys
-        ]
+        param_names = [i for i in params.keys() if i not in self.total_possible_keys]
 
         # Check if any param names named here are in emitter param dictionry lusts
 
@@ -3909,7 +3950,8 @@ class GalaxySimulator(object):
                     break
             if not found:
                 raise ValueError(
-                    f"Parameter {key} not found in emitter params. Cannot create photometry."
+                    f"""Parameter {key} not found in emitter params.
+                    Cannot create photometry."""
                 )
 
             else:
@@ -3917,9 +3959,10 @@ class GalaxySimulator(object):
 
         # Check we understand all the parameters
 
-        assert len(found_params) == len(self.emitter_params), (
-            f"Found {len(found_params)} parameters but expected {len(self.emitter_params)}. Cannot create photometry."
-        )
+        assert len(found_params) == len(
+            self.emitter_params
+        ), f"""Found {len(found_params)} parameters but expected
+            {len(self.emitter_params)}. Cannot create photometry."""
 
         stellar_keys = {}
         if "stellar" in self.emitter_params:
@@ -3956,9 +3999,7 @@ class GalaxySimulator(object):
 
         if "sfh" in self.output_type:
             stars_sfh = stars.get_sfh()
-            stars_sfh = (
-                stars_sfh / np.diff(10 ** (self.grid.log10age), prepend=0) / yr
-            )
+            stars_sfh = stars_sfh / np.diff(10 ** (self.grid.log10age), prepend=0) / yr
             time = 10 ** (self.grid.log10age) * yr
             time = time.to("Myr")
 
@@ -3980,9 +4021,9 @@ class GalaxySimulator(object):
             outputs["lnu"] = fluxes
 
         if "photo_lnu" in self.output_type:
-            fluxes = galaxy.stars.spectra[
-                self.emission_model_key
-            ].get_photo_lnu(self.instrument.filters)
+            fluxes = galaxy.stars.spectra[self.emission_model_key].get_photo_lnu(
+                self.instrument.filters
+            )
             fluxes = fluxes.photo_lnu
             outputs["photo_lnu"] = fluxes
 
@@ -3991,17 +4032,17 @@ class GalaxySimulator(object):
             galaxy.get_observed_spectra(self.cosmo)
 
             if "photo_fnu" in self.output_type:
-                fluxes = galaxy.stars.spectra[
-                    self.emission_model_key
-                ].get_photo_fnu(self.instrument.filters)
+                fluxes = galaxy.stars.spectra[self.emission_model_key].get_photo_fnu(
+                    self.instrument.filters
+                )
                 outputs["photo_fnu"] = fluxes.photo_fnu
                 outputs["photo_wav"] = fluxes.filters.pivot_lams
 
                 fluxes = galaxy.stars.spectra[self.emission_model_key].fnu
                 outputs["fnu"] = fluxes
-                outputs["fnu_wav"] = galaxy.stars.spectra[
-                    self.emission_model_key
-                ].lam * (1 + galaxy.redshift)
+                outputs["fnu_wav"] = galaxy.stars.spectra[self.emission_model_key].lam * (
+                    1 + galaxy.redshift
+                )
 
         if self.out_flux_unit == "AB":
 
@@ -4049,8 +4090,6 @@ class GalaxySimulator(object):
             return inputs
 
         if self.extra_functions is not None:
-            # possible arguments are galaxy, spec, fluxes, sed, stars, emission_model, cosmo
-
             output = []
             for func in self.extra_functions:
                 if isinstance(func, tuple):
@@ -4072,9 +4111,7 @@ class GalaxySimulator(object):
             else:
                 norm = self.normalize_method
 
-            fluxes = self._normalize(
-                fluxes, method=norm, norm_unit=self.out_flux_unit
-            )
+            fluxes = self._normalize(fluxes, method=norm, norm_unit=self.out_flux_unit)
 
         if self.include_phot_errors:
             fluxes = np.concatenate((fluxes, errors))
@@ -4098,7 +4135,8 @@ class GalaxySimulator(object):
                 fluxes = func(fluxes, norm)
             else:
                 raise ValueError(
-                    f"Filter {method} not found in filter codes. Cannot normalize photometry."
+                    f"""Filter {method} not found in filter codes.
+                    Cannot normalize photometry."""
                 )
         elif isinstance(method, (unyt_array, unyt_quantity)):
             if norm_unit == "AB":
@@ -4112,7 +4150,7 @@ class GalaxySimulator(object):
             fluxes = func(fluxes, norm)
 
         if add_norm_pos is not None:
-            # Insert the normalization value at this position, increasing the size of the array
+            # Insert the normalization value at this position
             if add_norm_pos == -1:
                 fluxes = np.append(fluxes, norm)
             else:
@@ -4125,8 +4163,20 @@ class GalaxySimulator(object):
         fluxes: np.ndarray,
         flux_units: str = "nJy",
     ):
-        """Given a set of depths, convert to photometry unit and use as standard deviations
-        to generate a scattered photometry array of shape (m*n_scatters, n) from photometry array
+        """Scatters the fluxes based on the provided depths or noise models.
+
+        Parameters
+        ----------
+        fluxes : np.ndarray
+            The fluxes to scatter.
+        flux_units : str, optional
+            The units of the fluxes. Default is 'nJy'.
+
+        Returns:
+        -------
+        np.ndarray, np.ndarray
+            The scattered fluxes and their corresponding errors.
+            If depths are not provided, returns the original fluxes and None for errors.
         """
         if self.depths is not None:
             depths = self.depths
@@ -4138,9 +4188,10 @@ class GalaxySimulator(object):
             m = fluxes.shape
 
             if isinstance(fluxes, unyt_array):
-                assert fluxes.units == flux_units, (
-                    f"Fluxes units {fluxes.units} do not match flux units {flux_units}. Cannot scatter photometry."
-                )
+                assert (
+                    fluxes.units == flux_units
+                ), f"""Fluxes units {fluxes.units} do not match flux units
+                    {flux_units}. Cannot scatter photometry."""
 
             if flux_units == "AB":
                 fluxes = (10 ** ((fluxes - 23.9) / -2.5)) * uJy
@@ -4151,16 +4202,12 @@ class GalaxySimulator(object):
                 depths_converted = (10 ** ((depths - 23.9) / -2.5)) * uJy
                 depths_std = depths_converted.to(uJy).value / self.depth_sigma
             else:
-                depths_std = (
-                    depths.to(self.out_flux_unit).value / self.depth_sigma
-                )
+                depths_std = depths.to(self.out_flux_unit).value / self.depth_sigma
             # Pre-allocate output array with correct dimensions
             output_arr = np.zeros(m)
 
             # Generate all random values at once for better performance
-            random_values = (
-                np.random.normal(loc=0, scale=depths_std, size=(m)) * uJy
-            )
+            random_values = np.random.normal(loc=0, scale=depths_std, size=(m)) * uJy
             # Add the random values to the fluxes
             output_arr = fluxes + random_values
 
@@ -4169,9 +4216,7 @@ class GalaxySimulator(object):
             if flux_units == "AB":
                 # Convert back to AB magnitudes
                 output_arr = -2.5 * np.log10(output_arr.to(Jy).value) + 8.9
-                errors = (
-                    -2.5 * depths_std / (np.log(10) * fluxes.to(uJy).value)
-                )
+                errors = -2.5 * depths_std / (np.log(10) * fluxes.to(uJy).value)
 
             return output_arr, errors
 
@@ -4179,16 +4224,13 @@ class GalaxySimulator(object):
             # Apply noise models to the fluxes
             scattered_fluxes = np.zeros_like(fluxes, dtype=float)
             errors = np.zeros_like(fluxes, dtype=float)
-            for i, filter_code in enumerate(
-                self.instrument.filters.filter_codes
-            ):
+            for i, filter_code in enumerate(self.instrument.filters.filter_codes):
                 noise_model = self.noise_models.get(filter_code)
                 flux = fluxes[i]
 
                 scattered_flux, sigma = noise_model.apply_noise_to_flux(
                     true_flux=flux,
                     true_flux_units=flux_units,
-                    max_resamples_for_positive_sigma=5,
                     out_units=self.out_flux_unit,
                 )
 
@@ -4202,18 +4244,48 @@ class GalaxySimulator(object):
             return fluxes, None
 
     def __call__(self, params):
+        """Call the simulator with parameters to get photometry."""
         return self.simulate(params)
 
     def __repr__(self):
-        return f"PhotometrySimulator({self.sfh_model}, {self.zdist_model}, {self.grid}, {self.instrument}, {self.emission_model}, {self.emission_model_key})"
+        """String representation of the PhotometrySimulator."""
+        return f"""PhotometrySimulator({self.sfh_model},
+                                        {self.zdist_model},
+                                        {self.grid},
+                                        {self.instrument},
+                                        {self.emission_model},
+                                        {self.emission_model_key})"""
 
     def __str__(self):
-        return f"PhotometrySimulator({self.sfh_model}, {self.zdist_model}, {self.grid}, {self.instrument}, {self.emission_model}, {self.emission_model_key})"
+        """String representation of the PhotometrySimulator."""
+        return self.__repr__()
 
 
 def create_uncertainity_models_from_EPOCHS_cat(
     file, bands, new_band_names=None, plot=False, **kwargs
 ):
+    """Create uncertainty models from an EPOCHS catalog file.
+
+    Parameters
+    ----------
+    file : str
+        Path to the EPOCHS catalog file.
+    bands : str or list of str
+        Band(s) to create uncertainty models for. If a string is provided,
+        it will be converted to a list.
+    new_band_names : list of str, optional
+        New names for the bands in the uncertainty models. If not provided,
+        the original band names will be used.
+    plot : bool, optional
+        Whether to plot the uncertainty models. Default is False.
+    **kwargs : dict, optional
+        Additional keyword arguments to pass to the EmpiricalUncertaintyModel.
+
+    Returns:
+    -------
+    dict
+        A dictionary of EmpiricalUncertaintyModel objects for each band.
+    """
     if isinstance(bands, str):
         bands = [bands]
 
@@ -4221,27 +4293,20 @@ def create_uncertainity_models_from_EPOCHS_cat(
     unc_models = {}
 
     if new_band_names is not None:
-        assert len(new_band_names) == len(bands), (
-            f"new_band_names length {len(new_band_names)} does not match bands length {len(bands)}. Cannot create uncertainty models."
-        )
+        assert len(new_band_names) == len(
+            bands
+        ), f"""new_band_names length {len(new_band_names)} does not match bands
+            length {len(bands)}. Cannot create uncertainty models."""
     else:
         new_band_names = bands
 
     for band, band_new_name in zip(bands, new_band_names):
         if f"loc_depth_{band}" not in table.colnames:
-            raise ValueError(
-                f"Column loc_depth_{band} not found in the table."
-            )
+            raise ValueError(f"Column loc_depth_{band} not found in the table.")
 
         mag = table[f"MAG_APER_{band}_aper_corr"][:, 0]
-        flux = (
-            (u.Jy * table[f"FLUX_APER_{band}_aper_corr_Jy"][:, 0])
-            .to("Jy")
-            .value
-        )
-        flux_err = (table[f"loc_depth_{band}"][:, 0] * u.ABmag).to(
-            "Jy"
-        ).value / 5
+        flux = (u.Jy * table[f"FLUX_APER_{band}_aper_corr_Jy"][:, 0]).to("Jy").value
+        flux_err = (table[f"loc_depth_{band}"][:, 0] * u.ABmag).to("Jy").value / 5
 
         mag_err = (2.5 * flux_err) / (flux * np.log(10))
         mask = (mag != -99) & (np.isfinite(mag)) & (mag_err >= 0)
@@ -4260,7 +4325,8 @@ def create_uncertainity_models_from_EPOCHS_cat(
 
         unc_kwargs.update(kwargs)
 
-        # So this behaviour is to mask any fluxes with SNR < 1 either before or after the scattering,
+        # So this behaviour is to mask any fluxes with SNR < 1 either
+        # before or after the scattering,
         # , setting the error to 1 sigma.
         noise_model = EmpiricalUncertaintyModel(
             mag,
@@ -4276,10 +4342,7 @@ def create_uncertainity_models_from_EPOCHS_cat(
 
             plt.title(f"Uncertainty Model for {band_new_name}", fontsize=16)
 
-            # plt.hexbin(mag, mag_err, gridsize=50, cmap='Reds', mincnt=1, extent=(23, 31, 0, 1), alpha=0.75, label='Observed Flux Errors')
-            plt.scatter(
-                mag, mag_err, alpha=0.05, color="black", s=0.15, zorder=10
-            )
+            plt.scatter(mag, mag_err, alpha=0.05, color="black", s=0.15, zorder=10)
 
             plt.ylim(0, 1.2)
             mag = np.linspace(23, 40, 10000)
@@ -4313,8 +4376,7 @@ def test_out_of_distribution(
     simulated_photometry: np.ndarray,
     sigma_threshold: float = 5.0,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Identifies and removes samples from a simulated dataset that are
-    out-of-distribution compared to a reference observed dataset.
+    """Identifies and removes samples from a dataset that are out-of-distribution.
 
     The function calculates the Mahalanobis distance for each simulated sample
     to the mean of the observed samples, accounting for the covariance
@@ -4332,7 +4394,7 @@ def test_out_of_distribution(
 
     Returns:
         Tuple[np.ndarray, np.ndarray]:
-            - A NumPy array containing the filtered simulated photometry with outliers removed.
+            - A NumPy array containing the filtered simulated photometry.
               The shape will be (N_filters, N_inliers).
             - A 1D NumPy array containing the indices of the rows (samples) that were
               identified as outliers and removed from the original simulated_photometry.
@@ -4344,13 +4406,12 @@ def test_out_of_distribution(
         observed_photometry = (
             observed_photometry.T
         )  # Transpose if filters are rows and samples are columns
-        simulated_photometry = (
-            simulated_photometry.T
-        )  # Ensure both are in the same shape
+        simulated_photometry = simulated_photometry.T  # Ensure both are in the same shape
 
     if observed_photometry.shape[0] != simulated_photometry.shape[0]:
         raise ValueError(
-            "observed_photometry and simulated_photometry must have the same number of filters (rows)."
+            """observed_photometry and simulated_photometry must
+            have the same number of filters (rows)."""
         )
 
     # Transpose data so that samples are rows and filters (features) are columns
@@ -4365,11 +4426,13 @@ def test_out_of_distribution(
         inv_cov_obs = inv(cov_obs)
     except np.linalg.LinAlgError:
         raise ValueError(
-            "Could not compute the inverse covariance matrix of the observed_photometry. "
-            "This can happen if the data is not full rank (e.g., filters are perfectly correlated)."
+            """Could not compute the inverse covariance matrix of
+            the observed_photometry. This can happen if the data
+            is not full rank (e.g., filters are perfectly correlated)."""
         )
 
-    # Calculate the Mahalanobis distance for each simulated sample from the observed distribution
+    # Calculate the Mahalanobis distance for each simulated sample
+    # from the observed distribution
     mahalanobis_distances = np.zeros(sim_data.shape[0])
     for i in range(sim_data.shape[0]):
         delta = sim_data[i] - mean_obs
@@ -4385,9 +4448,7 @@ def test_out_of_distribution(
     filtered_sim_photometry = simulated_photometry[:, inlier_indices]
 
     print(f"Original number of samples: {simulated_photometry.shape[1]}")
-    print(
-        f"Number of outliers removed ({sigma_threshold}-sigma): {len(outlier_indices)}"
-    )
+    print(f"Number of outliers removed ({sigma_threshold}-sigma): {len(outlier_indices)}")
     print(f"Number of samples remaining: {filtered_sim_photometry.shape[1]}")
 
     return filtered_sim_photometry, outlier_indices

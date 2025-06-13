@@ -1,52 +1,46 @@
-import torch
-import jax
-import jax.numpy as jnp
-import numpy as np
+import copy
+import inspect
 from typing import (
-    List,
-    Dict,
-    Tuple,
     Callable,
+    Dict,
+    List,
+    Tuple,
     Type,
     Union,
 )  # For GalaxySimulator type hints
+
+import corner
+import jax
+import jax.numpy as jnp
+import numpy as np
+import torch
+from astropy.cosmology import Cosmology, Planck18
 from omegaconf import OmegaConf  # To create DictConfig-like objects if needed
-from scoresbibm.tasks.base_task import InferenceTask
 from scoresbibm.methods.score_transformer import train_transformer_model
-from scoresbibm.methods.models import AllConditionalScoreModel
+from scoresbibm.tasks.base_task import InferenceTask
 from synthesizer.emission_models import (
-    PacmanEmission,
-    TotalEmission,
     EmissionModel,
-    IntrinsicEmission,
+    TotalEmission,
 )
-from synthesizer.emission_models.attenuation import PowerLaw, Calzetti2000
+from synthesizer.emission_models.attenuation import Calzetti2000
 from synthesizer.grid import Grid
+from synthesizer.instruments import FilterCollection, Instrument
 from synthesizer.parametric import (
     SFH,
+    Galaxy,
+    Stars,
     ZDist,
 )  # Need concrete SFH, ZDist classes
-from synthesizer.parametric import Stars, Galaxy
-from synthesizer.instruments import Instrument, FilterCollection, Filter
-from synthesizer.parametric import SFH, ZDist
 from unyt import (
-    Myr,
-    erg,
-    Hz,
-    s,
-    uJy,
     Jy,
-    yr,
+    Msun,
+    Myr,
+    Unit,
+    uJy,
     unyt_array,
     unyt_quantity,
-    Msun,
-    Unit,
+    yr,
 )
-from astropy.cosmology import Planck18
-import copy
-import inspect
-from astropy.cosmology import Cosmology, Planck18
-import corner
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -76,9 +70,7 @@ class GalaxyPrior:
                 )
             )
 
-    def sample(
-        self, sample_shape: Tuple[int], sample_lhc=False
-    ) -> torch.Tensor:
+    def sample(self, sample_shape: Tuple[int], sample_lhc=False) -> torch.Tensor:
         """
         Generates samples from the prior.
         Args:
@@ -125,11 +117,16 @@ class GalaxyPrior:
 
 
 class GalaxySimulator(object):
-    """
-    Photometry Simulator class. Initialize with required model,
-    then take an array or dictionary of parameters and return a dictionary of photometry.
-    A seperate function will handle normalization and scaling of the photometry.
+    """Class for simulating photometry/spectra of galaxies.
 
+    This class is designed to work with a grid of galaxies, an instrument,
+    and an emission model. It can simulate photometry and spectra based on
+    the provided star formation history (SFH) and metallicity distribution
+    (ZDist) models. The class can also handle uncertainties in the photometry
+    using an empirical uncertainty model.
+    It supports various configurations such as normalization methods,
+    output types, and inclusion of photometric errors.
+    It can also apply noise models to the simulated photometry.
     """
 
     def __init__(
@@ -150,15 +147,16 @@ class GalaxySimulator(object):
         extra_functions: List[callable] = None,
         normalize_method: str = None,
         output_type: str = "photo_fnu",
+        include_phot_errors: bool = False,
         set_self=False,
         depths: Union[np.ndarray, unyt_array] = None,
         depth_sigma: int = 5,
+        noise_models: Union[None, Dict[str, Callable]] = None,
         fixed_params: dict = {},
         min_flux: float = 50.0,
         min_flux_unit: str = "ABmag",
     ) -> None:
-        """
-        Parameters
+        """Parameters
 
         ----------
 
@@ -169,65 +167,87 @@ class GalaxySimulator(object):
         grid : Grid
             Grid object to use. Must be a subclass of Grid.
         instrument : Instrument
-            Instrument object to use for photometry/spectra. Must be a subclass of Instrument.
+            Instrument object to use for photometry/spectra.
+            Must be a subclass of Instrument.
         emission_model : EmissionModel
             Emission model to use. Must be a subclass of EmissionModel.
         emission_model_key : str
             Emission model key to use e.g. 'total', 'intrinsic'.
         emitter_params : dict
-            Dictionary of parameters to pass to the emitter. Keys are 'stellar' and 'galaxy'.
+            Dictionary of parameters to pass to the emitter.
+            Keys are 'stellar' and 'galaxy'.
         cosmo : Cosmology = Planck18
             Cosmology object to use. Must be a subclass of Cosmology.
         param_order : Union[None, list] = None
-            Order of parameters to use. If None, will use the order of the keys in the params dictionary.
+            Order of parameters to use.
+            If None, will use the order of the keys in the params dictionary.
         param_units : dict
-            Dictionary of parameter units to use. Keys are the parameter names and values are the units.
+            Dictionary of parameter units to use.
+            Keys are the parameter names and values are the units.
         param_transforms : dict
-            Dictionary of parameter transforms to use. Keys are the parameter names and values are the transforms functions.
-            Can be used to fit say Av when model requires tau_v, or for unit conversion etc.
+            Dictionary of parameter transforms to use.
+            Keys are the parameter names and values are the transforms functions.
+            Can be used to fit say Av when model requires tau_v, or for unit conversion.
         out_flux_unit : str
-            Output flux unit to use. Default is 'nJy'. Can be 'ABmag', 'Jy', 'nJy', 'uJy', 'mJy'.
+            Output flux unit to use. Default is 'nJy'. Can be 'AB', 'Jy', 'nJy', 'uJy',...
         required_keys : list
-            List of required keys to use. Default is ['redshift', 'log_mass']. Typically this can be ignored.
+            List of required keys to use. Default is ['redshift', 'log_mass'].
+            Typically this can be ignored.
         extra_functions : List[callable]
             List of extra functions to call after the simulation.
-            Inputs to each function are determined by the function signature and can be any of the following:
+            Inputs to each function are determined by the function signature and can be
+            any of the following:
             galaxy, spec, fluxes, sed, stars, emission_model, cosmo.
-            The output of each function is appended to an array and returned in the output tuple.
+            The output of each function is appended to an array
+            and returned in the output tuple.
         normalize_method : str
-            Normalization method to use. If None, no normalization is applied. Only works on photo_fnu currently.
-            Currently can be either the name of a filter, or a callable function with the same rules as extra_functions.
+            Normalization method to use. If None, no normalization is applied.
+            Only works on photo_fnu currently.
+            Currently can be either the name of a filter, or a callable function
+            with the same rules as extra_functions.
         output_type : str
-            Output type to use. Default is 'photo_fnu'. Can be 'photo_fnu', 'photo_lnu', 'fnu', 'lnu', or a list of any of these.
+            Output type to use. Default is 'photo_fnu'. Can be 'photo_fnu', 'photo_lnu',
+              'fnu', 'lnu', or a list of any of these.
+        include_phot_errors : bool
+            Whether to include photometric errors in the output. Default is False.
         depths : Union[np.ndarray, unyt_array] = None
-            Depths to use for the photometry. If None, no depths are applied. Default is None.
+            Depths to use for the photometry. If None, no depths are applied.
+            Default is None.
         depth_sigma : int
-            Sigma to use for the depths. Default is 5. This is used to calculate the 1 sigma error in nJy.
+            Sigma to use for the depths. Default is 5.
+            This is used to calculate the 1 sigma error in nJy.
             If depths is None, this is ignored.
+        noise_models : Union[None, Dict[str, EmpiricalUncertaintyModel]] = None
+            List of noise models to use for the photometry. If None, no noise is applied.
+            Default is None.
         fixed_params : dict
-            Dictionary of fixed parameters to use. Keys are the parameter names and values are the fixed values.
-            This is used to fix parameters in the simulation. If None, no parameters are fixed. Default is None.
+            Dictionary of fixed parameters to use.
+            Keys are the parameter names and values are the fixed values.
+            This is used to fix parameters in the simulation.
+            If None, no parameters are fixed. Default is None.
         min_flux : float
-            Minimum flux to use for the photometry. If the flux is below this value, it is set to this value.
+            Minimum flux to use for the photometry. If the flux is below this value,
+            it is set to this value.
             This is used to avoid negative fluxes in the photometry. Default is 50.
         min_flux_unit : str
-            Unit of the minimum flux. Default is 'ABmag'. Can be 'ABmag', 'Jy', 'nJy', 'uJy', 'mJy'.
+            Unit of the minimum flux. Default is 'ABmag'.
+             Can be 'ABmag', 'Jy', 'nJy', 'uJy', 'mJy'.
             This is used to convert the minimum flux to the output flux unit.
 
-
         """
-
         assert isinstance(grid, Grid), (
             f"Grid must be a subclass of Grid. Got {type(grid)} instead."
         )
         self.grid = grid
 
-        assert isinstance(instrument, Instrument), (
-            f"Instrument must be a subclass of Instrument. Got {type(instrument)} instead."
-        )
-        assert isinstance(emission_model, EmissionModel), (
-            f"Emission model must be a subclass of EmissionModel. Got {type(emission_model)} instead."
-        )
+        assert isinstance(
+            instrument, Instrument
+        ), f"""Instrument must be a subclass of Instrument.
+            Got {type(instrument)} instead."""
+        assert isinstance(
+            emission_model, EmissionModel
+        ), f"""Emission model must be a subclass of EmissionModel.
+            Got {type(emission_model)} instead."""
 
         self.emission_model = emission_model
         self.emission_model_key = emission_model_key
@@ -244,10 +264,34 @@ class GalaxySimulator(object):
         self.min_flux = min_flux
         self.min_flux_unit = min_flux_unit
 
-        if depths is not None:
-            assert len(depths) == len(instrument.filters.filter_codes), (
-                f"Depths array length {len(depths)} does not match number of filters {len(instrument.filters.filter_codes)}. Cannot create photometry."
+        if noise_models is not None:
+            assert isinstance(noise_models, dict), (
+                f"Noise models must be a dictionary. Got {type(noise_models)} instead."
             )
+            # Check all filters in noise_models are in the instrument filters
+            for filter_code in instrument.filters.filter_codes:
+                if filter_code not in noise_models:
+                    raise ValueError(
+                        f"""Filter {filter_code} not found in noise models.
+                          Cannot apply noise models to photometry."""
+                    )
+        self.noise_models = noise_models
+        self.include_phot_errors = include_phot_errors
+
+        assert not (
+            self.depths is not None and self.noise_models is not None
+        ), """Cannot use both depths and noise models at
+              the same time. Choose one or the other."""
+        assert not (
+            self.depths is None and self.noise_models is None and self.include_phot_errors
+        ), """Cannot include photometric errors without depths or noise models.
+            Set include_phot_errors to False or provide depths or noise models."""
+
+        if depths is not None:
+            assert len(depths) == len(
+                instrument.filters.filter_codes
+            ), f"""Depths array length {len(depths)} does not match number of filters
+                {len(instrument.filters.filter_codes)}. Cannot create photometry."""
         self.depths = depths
         self.depth_sigma = depth_sigma
 
@@ -256,9 +300,8 @@ class GalaxySimulator(object):
             "photo_lnu",
             "fnu",
             "lnu",
-        ], (
-            f"Output type {output_type} not recognised. Must be one of ['photo_fnu', 'photo_lnu', 'fnu', 'lnu']"
-        )
+        ], f"""Output type {output_type} not recognised.
+              Must be one of ['photo_fnu', 'photo_lnu', 'fnu', 'lnu']"""
         if not isinstance(output_type, list):
             output_type = [output_type]
         self.output_type = output_type
@@ -298,17 +341,34 @@ class GalaxySimulator(object):
         )
 
     def simulate(self, params):
+        """Simulate photometry from the given parameters.
+
+        Parameters
+        ----------
+        params : dict or array-like
+            Dictionary of parameters or an array-like object with the parameters
+            in the order specified by self.param_order.
+            If self.param_order is None, params must be a dictionary.
+
+        Returns:
+        -------
+        dict
+            Dictionary of photometry outputs. Keys are the output types specified
+            in self.output_type. Values are the corresponding photometry arrays.
+        """
         params = copy.deepcopy(params)
         params.update(self.fixed_params)
 
         if not isinstance(params, dict):
             if self.param_order is None:
                 raise ValueError(
-                    "simulate() input requires a dictionary unless param_order is set. Cannot create photometry."
+                    """simulate() input requires a dictionary unless param_order is set.
+                      Cannot create photometry."""
                 )
-            assert len(params) == len(self.param_order), (
-                f"Parameter array length {len(params)} does not match parameter order length {len(self.param_order)}. Cannot create photometry."
-            )
+            assert len(params) == len(
+                self.param_order
+            ), f"""Parameter array length {len(params)} does not match parameter order
+                  length {len(self.param_order)}. Cannot create photometry."""
             params = {i: j for i, j in zip(self.param_order, params)}
 
         for key in self.required_keys:
@@ -335,15 +395,11 @@ class GalaxySimulator(object):
         )
         zdist = self.zdist_model(
             **{i: params[i] for i in self.zdist_params},
-            **{
-                i: params[i] for i in self.optional_zdist_params if i in params
-            },
+            **{i: params[i] for i in self.optional_zdist_params if i in params},
         )
 
         # Get param names which aren't in the sfh or zdist models or the required keys
-        param_names = [
-            i for i in params.keys() if i not in self.total_possible_keys
-        ]
+        param_names = [i for i in params.keys() if i not in self.total_possible_keys]
 
         # Check if any param names named here are in emitter param dictionry lusts
 
@@ -356,7 +412,8 @@ class GalaxySimulator(object):
                     break
             if not found:
                 raise ValueError(
-                    f"Parameter {key} not found in emitter params. Cannot create photometry."
+                    f"""Parameter {key} not found in emitter params.
+                    Cannot create photometry."""
                 )
 
             else:
@@ -364,9 +421,10 @@ class GalaxySimulator(object):
 
         # Check we understand all the parameters
 
-        assert len(found_params) == len(self.emitter_params), (
-            f"Found {len(found_params)} parameters but expected {len(self.emitter_params)}. Cannot create photometry."
-        )
+        assert len(found_params) == len(
+            self.emitter_params
+        ), f"""Found {len(found_params)} parameters but expected
+            {len(self.emitter_params)}. Cannot create photometry."""
 
         stellar_keys = {}
         if "stellar" in self.emitter_params:
@@ -403,9 +461,7 @@ class GalaxySimulator(object):
 
         if "sfh" in self.output_type:
             stars_sfh = stars.get_sfh()
-            stars_sfh = (
-                stars_sfh / np.diff(10 ** (self.grid.log10age), prepend=0) / yr
-            )
+            stars_sfh = stars_sfh / np.diff(10 ** (self.grid.log10age), prepend=0) / yr
             time = 10 ** (self.grid.log10age) * yr
             time = time.to("Myr")
 
@@ -427,9 +483,9 @@ class GalaxySimulator(object):
             outputs["lnu"] = fluxes
 
         if "photo_lnu" in self.output_type:
-            fluxes = galaxy.stars.spectra[
-                self.emission_model_key
-            ].get_photo_lnu(self.instrument.filters)
+            fluxes = galaxy.stars.spectra[self.emission_model_key].get_photo_lnu(
+                self.instrument.filters
+            )
             fluxes = fluxes.photo_lnu
             outputs["photo_lnu"] = fluxes
 
@@ -438,19 +494,19 @@ class GalaxySimulator(object):
             galaxy.get_observed_spectra(self.cosmo)
 
             if "photo_fnu" in self.output_type:
-                fluxes = galaxy.stars.spectra[
-                    self.emission_model_key
-                ].get_photo_fnu(self.instrument.filters)
+                fluxes = galaxy.stars.spectra[self.emission_model_key].get_photo_fnu(
+                    self.instrument.filters
+                )
                 outputs["photo_fnu"] = fluxes.photo_fnu
                 outputs["photo_wav"] = fluxes.filters.pivot_lams
 
                 fluxes = galaxy.stars.spectra[self.emission_model_key].fnu
                 outputs["fnu"] = fluxes
-                outputs["fnu_wav"] = galaxy.stars.spectra[
-                    self.emission_model_key
-                ].lam * (1 + galaxy.redshift)
+                outputs["fnu_wav"] = galaxy.stars.spectra[self.emission_model_key].lam * (
+                    1 + galaxy.redshift
+                )
 
-        if self.out_flux_unit == "ABmag":
+        if self.out_flux_unit == "AB":
 
             def convert(f):
                 return -2.5 * np.log10(f.to(Jy).value) + 8.9
@@ -496,8 +552,6 @@ class GalaxySimulator(object):
             return inputs
 
         if self.extra_functions is not None:
-            # possible arguments are galaxy, spec, fluxes, sed, stars, emission_model, cosmo
-
             output = []
             for func in self.extra_functions:
                 if isinstance(func, tuple):
@@ -507,7 +561,7 @@ class GalaxySimulator(object):
                     inputs = inspect_func(func, locals())
                     output.append(func(**inputs))
 
-        fluxes = self._scatter(fluxes, flux_units=self.out_flux_unit)
+        fluxes, errors = self._scatter(fluxes, flux_units=self.out_flux_unit)
 
         if self.normalize_method is not None:
             if callable(self.normalize_method):
@@ -519,55 +573,50 @@ class GalaxySimulator(object):
             else:
                 norm = self.normalize_method
 
-            fluxes = self._normalize(
-                fluxes, method=norm, norm_unit=self.out_flux_unit
-            )
+            fluxes = self._normalize(fluxes, method=norm, norm_unit=self.out_flux_unit)
+
+        if self.include_phot_errors:
+            fluxes = np.concatenate((fluxes, errors))
 
         return fluxes
 
-    def _normalize(
-        self, fluxes, method=None, norm_unit="ABmag", add_norm_pos=-1
-    ):
+    def _normalize(self, fluxes, method=None, norm_unit="AB", add_norm_pos=-1):
         if method is None:
-            skip = True
+            return fluxes
+
+        if norm_unit == "AB":
+            func = np.subtract
         else:
-            skip = False
+            func = np.divide
 
-        if not skip:
-            if norm_unit == "ABmag":
-                func = np.subtract
+        if isinstance(method, str):
+            if method in self.instrument.filters.filter_codes:
+                # Get position of filter in filter codes
+                filter_pos = self.instrument.filters.filter_codes.index(method)
+                norm = fluxes[filter_pos]
+                fluxes = func(fluxes, norm)
             else:
-                func = np.divide
+                raise ValueError(
+                    f"""Filter {method} not found in filter codes.
+                    Cannot normalize photometry."""
+                )
+        elif isinstance(method, (unyt_array, unyt_quantity)):
+            if norm_unit == "AB":
+                # Convert to AB
+                method = -2.5 * np.log10(method.to(Jy).value) + 8.9
 
-            if isinstance(method, str):
-                if method in self.instrument.filters.filter_codes:
-                    # Get position of filter in filter codes
-                    filter_pos = self.instrument.filters.filter_codes.index(
-                        method
-                    )
-                    norm = fluxes[filter_pos]
-                    fluxes = func(fluxes, norm)
-                else:
-                    raise ValueError(
-                        f"Filter {method} not found in filter codes. Cannot normalize photometry."
-                    )
-            elif isinstance(method, (unyt_array, unyt_quantity)):
-                if norm_unit == "ABmag":
-                    # Convert to ABmag
-                    method = -2.5 * np.log10(method.to(Jy).value) + 8.9
+            norm = method
+            fluxes = func(fluxes, norm)
+        elif callable(method):
+            norm = method(fluxes)
+            fluxes = func(fluxes, norm)
 
-                norm = method
-                fluxes = func(fluxes, norm)
-            elif callable(method):
-                norm = method(fluxes)
-                fluxes = func(fluxes, norm)
-
-            if add_norm_pos is not None:
-                # Insert the normalization value at this position, increasing the size of the array
-                if add_norm_pos == -1:
-                    fluxes = np.append(fluxes, norm)
-                else:
-                    fluxes = np.insert(fluxes, add_norm_pos, norm)
+        if add_norm_pos is not None:
+            # Insert the normalization value at this position
+            if add_norm_pos == -1:
+                fluxes = np.append(fluxes, norm)
+            else:
+                fluxes = np.insert(fluxes, add_norm_pos, norm)
 
         if self.min_flux_unit is not None:
             if isinstance(self.min_flux_unit, Unit):
@@ -581,16 +630,16 @@ class GalaxySimulator(object):
                     if self.out_flux_unit == "ABmag":
                         min_flux = self.min_flux
                     else:
-                        min_flux = (
-                            10 ** ((self.min_flux - 23.9) / -2.5)
-                        ) * uJy
+                        min_flux = (10 ** ((self.min_flux - 23.9) / -2.5)) * uJy
                 else:
                     raise ValueError(
-                        f"Minimum flux unit {self.min_flux_unit} not recognized. Cannot normalize photometry."
+                        f"""Minimum flux unit {self.min_flux_unit} not recognized.
+                        Cannot normalize photometry."""
                     )
             else:
                 raise ValueError(
-                    f"Minimum flux unit {self.min_flux_unit} not recognized. Must be a string or unyt array."
+                    f"""Minimum flux unit {self.min_flux_unit} not recognized.
+                    Must be a string or unyt array."""
                 )
             # Set any fluxes below the minimum to the minimum (inverse for ABmag)
             if self.out_flux_unit == "ABmag":
@@ -607,59 +656,102 @@ class GalaxySimulator(object):
         fluxes: np.ndarray,
         flux_units: str = "nJy",
     ):
+        """Scatters the fluxes based on the provided depths or noise models.
+
+        Parameters
+        ----------
+        fluxes : np.ndarray
+            The fluxes to scatter.
+        flux_units : str, optional
+            The units of the fluxes. Default is 'nJy'.
+
+        Returns:
+        -------
+        np.ndarray, np.ndarray
+            The scattered fluxes and their corresponding errors.
+            If depths are not provided, returns the original fluxes and None for errors.
         """
-        Given a set of depths, convert to photometry unit and use as standard deviations
-        to generate a scattered photometry array of shape (m*n_scatters, n) from photometry array
-        """
+        if self.depths is not None:
+            depths = self.depths
+            if depths is None:
+                return fluxes
 
-        depths = self.depths
+            depths = np.array(depths)
 
-        if depths is None:
-            return fluxes
+            m = fluxes.shape
 
-        depths = np.array(depths)
+            if isinstance(fluxes, unyt_array):
+                assert (
+                    fluxes.units == flux_units
+                ), f"""Fluxes units {fluxes.units} do not match flux units
+                    {flux_units}. Cannot scatter photometry."""
 
-        m = fluxes.shape
+            if flux_units == "AB":
+                fluxes = (10 ** ((fluxes - 23.9) / -2.5)) * uJy
 
-        if isinstance(fluxes, unyt_array):
-            assert fluxes.units == flux_units, (
-                f"Fluxes units {fluxes.units} do not match flux units {flux_units}. Cannot scatter photometry."
-            )
+            # Convert depths based on units
+            if self.out_flux_unit == "AB" and not hasattr(depths, "unit"):
+                # Convert from AB magnitudes to microjanskys
+                depths_converted = (10 ** ((depths - 23.9) / -2.5)) * uJy
+                depths_std = depths_converted.to(uJy).value / self.depth_sigma
+            else:
+                depths_std = depths.to(self.out_flux_unit).value / self.depth_sigma
+            # Pre-allocate output array with correct dimensions
+            output_arr = np.zeros(m)
 
-        if flux_units == "ABmag":
-            fluxes = (10 ** ((fluxes - 23.9) / -2.5)) * uJy
+            # Generate all random values at once for better performance
+            random_values = np.random.normal(loc=0, scale=depths_std, size=(m)) * uJy
+            # Add the random values to the fluxes
+            output_arr = fluxes + random_values
 
-        # Convert depths based on units
-        if self.out_flux_unit == "ABmag" and not hasattr(depths, "unit"):
-            # Convert from AB magnitudes to microjanskys
-            depths_converted = (10 ** ((depths - 23.9) / -2.5)) * uJy
-            depths_std = depths_converted.to(uJy).value / self.depth_sigma
+            errors = depths_std
+
+            if flux_units == "AB":
+                # Convert back to AB magnitudes
+                output_arr = -2.5 * np.log10(output_arr.to(Jy).value) + 8.9
+                errors = -2.5 * depths_std / (np.log(10) * fluxes.to(uJy).value)
+
+            return output_arr, errors
+
+        elif self.noise_models is not None:
+            # Apply noise models to the fluxes
+            scattered_fluxes = np.zeros_like(fluxes, dtype=float)
+            errors = np.zeros_like(fluxes, dtype=float)
+            for i, filter_code in enumerate(self.instrument.filters.filter_codes):
+                noise_model = self.noise_models.get(filter_code)
+                flux = fluxes[i]
+
+                scattered_flux, sigma = noise_model.apply_noise_to_flux(
+                    true_flux=flux,
+                    true_flux_units=flux_units,
+                    out_units=self.out_flux_unit,
+                )
+
+                scattered_fluxes[i] = scattered_flux
+                errors[i] = sigma
+
+            return scattered_fluxes, errors
+
         else:
-            depths_std = depths.to(self.out_flux_unit).value / self.depth_sigma
-        # Pre-allocate output array with correct dimensions
-        output_arr = np.zeros(m)
-
-        # Generate all random values at once for better performance
-        random_values = (
-            np.random.normal(loc=0, scale=depths_std, size=(m)) * uJy
-        )
-        # Add the random values to the fluxes
-        output_arr = fluxes + random_values
-
-        if flux_units == "ABmag":
-            # Convert back to AB magnitudes
-            output_arr = -2.5 * np.log10(output_arr.to(Jy).value) + 8.9
-
-        return output_arr
+            # No depths or noise models, return the fluxes as is
+            return fluxes, None
 
     def __call__(self, params):
+        """Call the simulator with parameters to get photometry."""
         return self.simulate(params)
 
     def __repr__(self):
-        return f"PhotometrySimulator({self.sfh_model}, {self.zdist_model}, {self.grid}, {self.instrument}, {self.emission_model}, {self.emission_model_key})"
+        """String representation of the PhotometrySimulator."""
+        return f"""PhotometrySimulator({self.sfh_model},
+                                        {self.zdist_model},
+                                        {self.grid},
+                                        {self.instrument},
+                                        {self.emission_model},
+                                        {self.emission_model_key})"""
 
     def __str__(self):
-        return f"PhotometrySimulator({self.sfh_model}, {self.zdist_model}, {self.grid}, {self.instrument}, {self.emission_model}, {self.emission_model_key})"
+        """String representation of the PhotometrySimulator."""
+        return self.__repr__()
 
 
 # --- Custom Simformer Task ---
@@ -689,7 +781,8 @@ class GalaxyPhotometryTask(InferenceTask):
             or num_filters is None
         ):
             raise ValueError(
-                "prior_dict, param_names_ordered, run_simulator_fn, and num_filters must be provided."
+                """prior_dict, param_names_ordered, run_simulator_fn,
+                and num_filters must be provided."""
             )
 
         self.param_names_ordered = param_names_ordered
@@ -709,14 +802,13 @@ class GalaxyPhotometryTask(InferenceTask):
 
     def get_prior(self):
         """Returns the prior distribution object."""
-        # Simformer might expect a specific type of distribution object based on its backend.
-        # Our GalaxyPrior samples PyTorch tensors. This is common in sbibm.
         return self.prior_dist
 
     def get_simulator(self):
         """
         Returns a callable that takes a batch of thetas and returns a batch of xs.
-        The provided run_simulator_fn processes one sample at a time and returns a torch tensor.
+        The provided run_simulator_fn processes one sample at a time
+        and returns a torch tensor.
         This wrapper will handle batching.
         """
 
@@ -733,14 +825,12 @@ class GalaxyPhotometryTask(InferenceTask):
                     theta_sample_torch, return_type="tensor"
                 )
                 xs_list.append(x_sample_torch)
-            return torch.cat(
-                xs_list, dim=0
-            )  # Shape will be (num_samples, num_filters)
+            return torch.cat(xs_list, dim=0)  # Shape will be (num_samples, num_filters)
 
         return batched_simulator
 
     def get_data(self, num_samples: int, **kwargs) -> Dict[str, jnp.ndarray]:
-        """Generates and returns a dictionary of {'theta': thetas, 'x': xs} as JAX arrays."""
+        """Generates and returns a dictionary of {'theta': thetas, 'x': xs} as JAX arr"""
         prior = self.get_prior()
         simulator = self.get_simulator()  # This is our batched_simulator
 
@@ -767,9 +857,7 @@ class GalaxyPhotometryTask(InferenceTask):
     def get_node_id(self) -> jnp.ndarray:
         """Returns an array identifying the nodes (dimensions) of theta and x."""
         dim = self.get_theta_dim() + self.get_x_dim()
-        if (
-            self.backend == "torch"
-        ):  # Should align with SBIBMTask if that's a reference
+        if self.backend == "torch":  # Should align with SBIBMTask if that's a reference
             return torch.arange(dim)
         else:  # JAX or numpy
             return jnp.arange(dim)
@@ -907,18 +995,14 @@ if __name__ == "__main__":
             pass  # assumes params are correctly keyed
         elif isinstance(params, (list, tuple, np.ndarray)):
             params = np.squeeze(params)
-            params = {
-                inputs_list[i]: params[i] for i in range(len(inputs_list))
-            }
+            params = {inputs_list[i]: params[i] for i in range(len(inputs_list))}
 
         phot = galaxy_simulator_instance(
             params
         )  # This line requires galaxy_simulator_instance
 
         if return_type == "tensor":
-            return torch.tensor(phot[np.newaxis, :], dtype=torch.float32).to(
-                device
-            )
+            return torch.tensor(phot[np.newaxis, :], dtype=torch.float32).to(device)
         else:
             return phot
 
@@ -949,10 +1033,7 @@ if __name__ == "__main__":
 
     # Test base mask function
     mask_fn = galaxy_task.get_base_mask_fn()
-    node_ids_example = jnp.arange(
-        galaxy_task.get_theta_dim() + galaxy_task.get_x_dim()
-    )
-    # jax.random.shuffle(jax.random.PRNGKey(0), node_ids_example) # Example of permuted IDs
+    node_ids_example = jnp.arange(galaxy_task.get_theta_dim() + galaxy_task.get_x_dim())
     applied_mask = mask_fn(node_ids=node_ids_example, node_meta_data=None)
     print("Base mask applied to node_ids:", applied_mask)
 
@@ -990,9 +1071,8 @@ if __name__ == "__main__":
     train_config_dict = {
         "learning_rate": 1e-4,  # Initial learning rate for training # used
         "min_learning_rate": 1e-6,  # Minimum learning rate for training # used
-        # "optimizer": {"name": "Adam", "beta1": 0.9, "beta2": 0.999, "eps": 1e-8, "weight_decay": 0.0},
         "z_score_data": True,  # Whether to z-score the data # used
-        "total_number_steps_scaling": 5,  # Scaling factor for total number of steps # used
+        "total_number_steps_scaling": 5,  # Scaling factor for total number of steps
         "max_number_steps": 1e8,  # Maximum number of steps for training # used
         "min_number_steps": 1e4,  # Minimum number of steps for training # used
         "training_batch_size": 64,  # Batch size for training # used
@@ -1013,7 +1093,6 @@ if __name__ == "__main__":
         "sde": sde_config_dict,
         "model": model_config_dict,
         "train": train_config_dict,
-        # Add any other top-level parameters from method YAML files if they exist and are used.
     }
 
     # Convert the main method_cfg to OmegaConf DictConfig
@@ -1036,15 +1115,11 @@ if __name__ == "__main__":
     training_data = galaxy_task.get_data(num_samples=num_training_simulations)
     theta_train = training_data["theta"]
     x_train = training_data["x"]
-    print(
-        f"Data generated: theta shape {theta_train.shape}, x shape {x_train.shape}"
-    )
+    print(f"Data generated: theta shape {theta_train.shape}, x shape {x_train.shape}")
 
     # (Optional) Generate validation data if train_config.val_split is 0
     num_validation_simulations = 20
-    validation_data = galaxy_task.get_data(
-        num_samples=num_validation_simulations
-    )
+    validation_data = galaxy_task.get_data(num_samples=num_validation_simulations)
     theta_val = validation_data["theta"]
     x_val = validation_data["x"]
 
@@ -1070,9 +1145,7 @@ if __name__ == "__main__":
     theta_dim = galaxy_task.get_theta_dim()
     x_dim = galaxy_task.get_x_dim()
     # Mask for posterior: theta is unknown (0), x is known (1)
-    posterior_condition_mask = jnp.array(
-        [0] * theta_dim + [1] * x_dim, dtype=jnp.bool_
-    )
+    posterior_condition_mask = jnp.array([0] * theta_dim + [1] * x_dim, dtype=jnp.bool_)
     for i, xobs in enumerate(x_val):
         x_val = jnp.array([xobs], dtype=jnp.float32)
         samples = trained_score_model.sample_batched(

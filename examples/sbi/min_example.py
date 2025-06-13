@@ -1,20 +1,21 @@
 import numpy as np
-from synthesizer.emission_models.attenuation import Calzetti2000  # noqa
-from synthesizer.emission_models.stellar.pacman_model import PacmanEmission  # noqa
-from synthesizer.emission_models.dust.emission import Greybody, IR_templates  # noqa
-from synthesizer.grid import Grid
-from synthesizer.parametric import SFH, ZDist
-from synthesizer.instruments import Instrument, FilterCollection
-from unyt import unyt_array, Msun, Myr, dimensionless, K, Gyr, Jy
 from astropy.cosmology import Planck18
+from synthesizer.emission_models.attenuation import Calzetti2000  # noqa
+from synthesizer.emission_models.dust.emission import Greybody, IR_templates  # noqa
+from synthesizer.emission_models.stellar.pacman_model import PacmanEmission  # noqa
+from synthesizer.grid import Grid
+from synthesizer.instruments import FilterCollection, Instrument
+from synthesizer.parametric import SFH, ZDist
+from unyt import Gyr, K, Msun, unyt_array
+
 from sbifitter import (
-    generate_sfh_basis,
-    SBI_Fitter,
-    generate_constant_R,
-    GalaxyBasis,
     CombinedBasis,
+    GalaxyBasis,
+    SBI_Fitter,
     calculate_muv,
     draw_from_hypercube,
+    generate_constant_R,
+    generate_sfh_basis,
 )
 
 filter_codes = [
@@ -59,7 +60,7 @@ log_tau = (-2, 1)  # log-uniform between 0.01 and 10 Gyr
 max_age = (
     0.00,
     0.99,
-)  # normalized to maximum age of the universe at that redshift. If 0 or 1 we have problems.
+)  # normalized to maximum age of the universe at that redshift.
 sfh_param_units = [Gyr, Gyr]
 # Dust
 tau_v = (0.0, 4.0)  # V-band optical depth of the ISM
@@ -101,17 +102,14 @@ grid = Grid(
 
 # Metallicity Distributions
 Z_dists = [
-    ZDist.DeltaConstant(log10metallicity=log_z)
-    for log_z in all_param_dict["log_zmet"]
+    ZDist.DeltaConstant(log10metallicity=log_z) for log_z in all_param_dict["log_zmet"]
 ]
 
 # Redshifts
 redshifts = np.array(all_param_dict["redshift"])
 
 # SFH Distributions
-sfh_param_arrays = np.vstack(
-    (all_param_dict["tau"], all_param_dict["max_age"])
-).T
+sfh_param_arrays = np.vstack((all_param_dict["tau"], all_param_dict["max_age"])).T
 sfh_models, _ = generate_sfh_basis(
     sfh_type=sfh_type,
     sfh_param_names=["tau", "max_age_norm"],
@@ -142,7 +140,8 @@ galaxy_params = {
     "tau_v": all_param_dict["tau_v"]
 }  # pass in any other emitter parameter here
 
-name = f"BPASS_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_Chab_min_example"
+name = f"""BPASS_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}
+        _logN_{np.log10(Nmodels):.1f}_Chab_min_example"""
 
 
 # ---------------------------------------------------------------
@@ -160,24 +159,22 @@ basis = GalaxyBasis(
     metal_dists=Z_dists,
     galaxy_params=galaxy_params,
     redshift_dependent_sfh=True,
-    params_to_ignore=[],  # This is dependent on the redshift and should not be included in the basis
+    params_to_ignore=[],
     build_grid=False,
 )
 # Build the model here - could combine basis's with different grids etc
 combined_basis = CombinedBasis(
     bases=[basis],
-    total_stellar_masses=unyt_array(
-        10 ** all_param_dict["masses"], units=Msun
-    ),
+    total_stellar_masses=unyt_array(10 ** all_param_dict["masses"], units=Msun),
     base_emission_model_keys=["total"],
     combination_weights=None,
     redshifts=redshifts,
     out_name=f"grid_{name}",
     out_dir=out_dir,
-    draw_parameter_combinations=False,  # Since we have already drawn the parameters, we don't need to combine them again.
+    draw_parameter_combinations=False,
 )
 
-# Passing in extra analysis function to pipeline to calculate mUV and store it. Any funciton could be passed in.
+# Passing in extra analysis function to pipeline to calculate mUV and store it.
 combined_basis.process_bases(
     overwrite=True,
     mUV=(calculate_muv, cosmo),
@@ -198,8 +195,11 @@ empirical_model_fitter = SBI_Fitter.init_from_hdf5(
     hdf5_path=f"grid_{name}.hdf5", model_name=f"sbi_{name}"
 )
 
-# Create explicit feature array for training. E.g. can change filters, add colors expclitly, add other features (mUV, spectral indices, etc) or
-# do normalisation. Can input error models or flags for missing data, etc. Can also not do this and use an on the fly simulator.
+# Create explicit feature array for training.
+# E.g. can change filters, add colors expclitly,
+# add other features (mUV, spectral indices, etc) or
+# do normalisation. Can input error models or flags for missing data, etc.
+# Can also not do this and use an on the fly simulator.
 empirical_model_fitter.create_feature_array_from_raw_photometry(
     extra_features=[],
     normalize_method=None,
