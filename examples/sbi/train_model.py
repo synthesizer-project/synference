@@ -13,8 +13,8 @@ import time
 
 
 try:
-    mp.set_start_method('spawn', force=True)
-    torch.multiprocessing.set_start_method('spawn', force=True)
+    mp.set_start_method("spawn", force=True)
+    torch.multiprocessing.set_start_method("spawn", force=True)
     print("Multiprocessing start method set to 'spawn'.")
 except RuntimeError as e:
     print(f"Start method already set: {e}")
@@ -22,6 +22,7 @@ except RuntimeError as e:
 
 # Setup parsing
 parser = ArgumentParser(description="SBI SED Fitting")
+
 
 @dataclass
 class Args:
@@ -32,7 +33,7 @@ class Args:
     clip_max_norm: float = 5.0
     backend: str = "sbi"
     engine: str = "NPE"
-    model_types: str = 'maf'
+    model_types: str = "maf"
     n_nets: int = 1
     model_name: str = "BPASS_Chab_DelayedExpSFH_0.01_z_12_CF00_v1"
     name_append: str = ""
@@ -50,12 +51,15 @@ class Args:
     data_err_file: str = "/home/tharvey/Downloads/JADES-Deep-GS_MASTER_Sel-f277W+f356W+f444W_v9_loc_depth_masked_10pc_EAZY_matched_selection_ext_src_UV.fits"
     background: bool = False
 
+
 parser.add_arguments(Args, dest="args")
+
 
 def parse_args():
     args, _ = parser.parse_known_args()
     print(args)
     return args.args
+
 
 def main_task(args: Args) -> None:
     """
@@ -64,15 +68,23 @@ def main_task(args: Args) -> None:
     """
     # If running in the background, redirect output to log files.
     if args.background:
-        print(f"Background process started. Logging to sbi_training.log and sbi_training_error.log")
+        print(
+            f"Background process started. Logging to sbi_training.log and sbi_training_error.log"
+        )
         sys.stdout = open("sbi_training.log", "a", buffering=1)
         sys.stderr = open("sbi_training_error.log", "a", buffering=1)
-        print(f"Training started at {datetime.datetime.now()}", file=sys.stdout)
+        print(
+            f"Training started at {datetime.datetime.now()}", file=sys.stdout
+        )
         print(f"Arguments: {args}", file=sys.stdout)
 
     table = Table.read(args.data_err_file, format="fits")
-    bands = [i.split("_")[-1] for i in table.colnames if i.startswith("loc_depth")]
-    new_band_names = ["HST/ACS_WFC.F606W"] + [f"JWST/NIRCam.{band.upper()}" for band in bands[1:]]
+    bands = [
+        i.split("_")[-1] for i in table.colnames if i.startswith("loc_depth")
+    ]
+    new_band_names = ["HST/ACS_WFC.F606W"] + [
+        f"JWST/NIRCam.{band.upper()}" for band in bands[1:]
+    ]
 
     empirical_noise_models = create_uncertainity_models_from_EPOCHS_cat(
         args.data_err_file, bands[1:], new_band_names[1:], plot=False
@@ -84,18 +96,22 @@ def main_task(args: Args) -> None:
         try:
             extra_model_args_str = args.additional_model_args[0]
             temp = {}
-            for arg in extra_model_args_str.split(','):
-                key, value = arg.split('=')
+            for arg in extra_model_args_str.split(","):
+                key, value = arg.split("=")
                 temp[key.strip()] = literal_eval(value.strip())
             additional_model_args = temp
         except (ValueError, SyntaxError) as e:
-            print(f"Warning: Could not parse additional_model_args. Error: {e}", file=sys.stderr)
-
+            print(
+                f"Warning: Could not parse additional_model_args. Error: {e}",
+                file=sys.stderr,
+            )
 
     if len(additional_model_args) > 0:
         print("Additional model args:", additional_model_args)
 
-    empirical_model_fitter = SBI_Fitter.init_from_hdf5(hdf5_path=args.grid_path, model_name=args.model_name)
+    empirical_model_fitter = SBI_Fitter.init_from_hdf5(
+        hdf5_path=args.grid_path, model_name=args.model_name
+    )
 
     unused_filters = [
         filt
@@ -108,7 +124,9 @@ def main_task(args: Args) -> None:
         normalize_method=None,
         include_errors_in_feature_array=args.include_errors_in_feature_array,
         scatter_fluxes=args.scatter_fluxes,
-        empirical_noise_models=empirical_noise_models if args.include_errors_in_feature_array else None,
+        empirical_noise_models=empirical_noise_models
+        if args.include_errors_in_feature_array
+        else None,
         photometry_to_remove=unused_filters,
         norm_mag_limit=args.norm_mag_limit,
         drop_dropouts=args.drop_dropouts,
@@ -144,7 +162,9 @@ if __name__ == "__main__":
         print("Starting the task in a background process...")
         process = mp.Process(target=main_task, args=(args,))
         process.start()
-        print(f"Process started with PID: {process.pid}. The script will now exit.")
+        print(
+            f"Process started with PID: {process.pid}. The script will now exit."
+        )
         sys.exit(0)
     else:
         # Run in the foreground as normal
