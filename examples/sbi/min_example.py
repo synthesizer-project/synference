@@ -1,3 +1,5 @@
+import os
+
 import numpy as np
 from astropy.cosmology import Planck18
 from synthesizer.emission_models.attenuation import Calzetti2000  # noqa
@@ -39,8 +41,14 @@ filterset.resample_filters(new_lam=new_wav)
 
 instrument = Instrument("HST+JWST", filters=filterset)
 
-grid_dir = "/home/tharvey/work/synthesizer_grids/"
-out_dir = "/home/tharvey/work/output/"
+
+grid_dir = os.environ["SYNTHESIZER_GRID_DIR"]
+
+
+# path for this file
+
+dir_path = os.path.dirname(os.path.abspath(__file__))
+out_dir = os.path.join(os.path.dirname(os.path.dirname(dir_path)), "grids/")
 
 # ---------------------------------------------------------------
 # Configure model

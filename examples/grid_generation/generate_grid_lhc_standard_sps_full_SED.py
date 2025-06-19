@@ -90,14 +90,14 @@ filterset.resample_filters(new_lam=new_wav)
 
 instrument = Instrument(instrument, filters=filterset)
 
+# Check for SYNTHESIZER_GRID_DIR environment variable
 
-if computer == "cosma":
-    grid_dir = "/cosma7/data/dp276/dc-harv3/work/grids/"
-    out_dir = "/cosma7/data/dp276/dc-harv3/work/sbi/output/"
+grid_dir = os.environ["SYNTHESIZER_GRID_DIR"]
 
-elif computer == "linux-desktop":
-    grid_dir = "/home/tharvey/work/synthesizer_grids/"
-    out_dir = "/home/tharvey/work/output/"
+# path for this file
+
+dir_path = os.path.dirname(os.path.abspath(__file__))
+out_dir = os.path.join(os.path.dirname(os.path.dirname(dir_path)), "grids/")
 
 
 try:
@@ -313,10 +313,6 @@ basis = GalaxyBasis(
     build_grid=False,
 )
 
-# This will plot some of the SEDs as an example.
-# for i in range(30):
-#    popII_basis.plot_random_galaxy(out_dir='/home/tharvey/work/ltu-ili_testing/plots',
-#                                    masses=10**all_param_dict['masses'])
 
 combined_basis = CombinedBasis(
     bases=[basis],
@@ -333,7 +329,7 @@ combined_basis = CombinedBasis(
 for i in range(10):
     basis.plot_galaxy(
         idx=i * 10,
-        out_dir=f"/home/tharvey/work/output/plots/{name}/",
+        out_dir=f"{out_dir}/plots/{name}/",
         stellar_mass=unyt_array(10 ** all_param_dict["masses"][i * 10], units=Msun),
     )
 

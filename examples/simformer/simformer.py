@@ -1,3 +1,4 @@
+import os
 from typing import (
     Callable,
     Dict,
@@ -28,6 +29,10 @@ from unyt import (
 )
 
 from sbifitter import GalaxySimulator
+
+file_path = os.path.dirname(os.path.realpath(__file__))
+grid_folder = os.path.join(os.path.dirname(os.path.dirname(file_path)), "grids")
+output_folder = os.path.join(os.path.dirname(os.path.dirname(file_path)), "models")
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -254,7 +259,13 @@ if __name__ == "__main__":
     # Example: Define global 'device' if not already defined
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    grid_dir = "/home/tharvey/work/synthesizer_grids/"  # This path needs to be accessible
+    grid_dir = os.environ["SYNTHESIZER_GRID_DIR"]
+
+    # path for this file
+
+    dir_path = os.path.dirname(os.path.abspath(__file__))
+    out_dir = os.path.join(os.path.dirname(os.path.dirname(dir_path)), "grids/")
+
     grid_name = "bpass-2.2.1-bin_chabrier03-0.1,300.0_cloudy-c23.01-sps.hdf5"
 
     # --- This part needs functional grid, instrument etc. ---
@@ -518,9 +529,7 @@ if __name__ == "__main__":
                 quantiles=[0.16, 0.5, 0.84],
                 title_kwargs={"fontsize": 12},
             )
-            plt.savefig(
-                f"/home/tharvey/work/ltu-ili_testing/models/simformer/plots/corner_plot_{i}.png"
-            )
+            plt.savefig(f"{output_folder}/simformer/plots/corner_plot_{i}.png")
 
     import pickle
 
