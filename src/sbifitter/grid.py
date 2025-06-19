@@ -1786,7 +1786,8 @@ class CombinedBasis:
                         key=lambda x: int(x.split("_")[-1].split(".")[0]),
                     )
                 else:
-                    raise ValueError(f"File {full_out_path} does not exist")
+                    raise ValueError(f"""Synthesizer pipeline output {full_out_path} does not exist. 
+                                     Have you run the pipeline using `combined_basis.process_bases` first?""")  # noqa E501
             else:
                 full_out_paths = [full_out_path]
 
