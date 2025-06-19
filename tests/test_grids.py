@@ -180,7 +180,7 @@ def lhc_basis_params(
         "cosmo": Planck18,
         "instrument": mock_instrument,
         "galaxy_params": {"tau_v": all_param_dict["tau_v"]},
-        "stellar_masses": unyt_array(all_param_dict["masses"], Msun),
+        #"stellar_masses": unyt_array(all_param_dict["masses"], Msun),
         "redshift_dependent_sfh": True,
         "build_grid": False,
         "sfhs": sfh_models,
@@ -382,9 +382,9 @@ class TestGalaxyBasis:
         plot_file = f"{test_dir}/test_output/test_basis_0.png"
         assert os.path.exists(plot_file), f"Plot file {plot_file} was not created."
 
-    def test_full_single_cat_creation(self, grid_basis_params):
+    def test_full_single_cat_creation(self, lhc_basis_params):
         """Test that full_single_cat_creation creates a single catalog."""
-        basis = GalaxyBasis(**grid_basis_params)
+        basis = GalaxyBasis(**lhc_basis_params)
 
         basis.create_mock_cat(
             stellar_masses=[1e9] * len(grid_basis_params["redshifts"]) * Msun,
