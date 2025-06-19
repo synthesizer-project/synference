@@ -16,7 +16,11 @@ from synthesizer.instruments import FilterCollection, Instrument
 from synthesizer.parametric import SFH, Galaxy, Stars, ZDist
 from unyt import Jy, Msun, Myr, nJy, unyt_array
 
-from sbifitter import (
+test_dir = os.path.dirname(os.path.abspath(__file__))
+grid_dir = test_dir + "/test_grids/"
+os.environ["SYNTHESIZER_GRID_DIR"] = grid_dir
+
+from sbifitter import (  # noqa E402
     CombinedBasis,
     GalaxyBasis,
     SBI_Fitter,
@@ -24,8 +28,6 @@ from sbifitter import (
     draw_from_hypercube,
     generate_sfh_basis,
 )
-
-test_dir = os.path.dirname(os.path.abspath(__file__))
 
 
 # Fixtures for common test objects
