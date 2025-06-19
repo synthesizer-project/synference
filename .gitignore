@@ -17,6 +17,8 @@ grids/*
 !models/README.txt
 !grids/README.txt
 scripts/filters/
+*.joblib
+*.npz
 
 # Jupyter Notebook checkpoints
 .ipynb_checkpoints
