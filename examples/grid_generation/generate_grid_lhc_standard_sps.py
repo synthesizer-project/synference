@@ -228,7 +228,22 @@ popII_basis = GalaxyBasis(
     build_grid=False,
 )
 
+# This is the simple way-
+# it runs the following three steps for you.
 
+basis.create_mock_cat(
+    out_name=f'grid_{name}',
+    stellar_masses=unyt_array(10 ** all_param_dict["masses"], units=Msun),
+    out_dir=out_dir,
+    overwrite=True,
+    n_proc=n_proc,
+    verbose=False,
+    batch_size=40_000,
+    mUV=(calculate_muv, cosmo),  # Calculate mUV for the mock catalogue.
+)
+
+
+# This is the complex way
 combined_basis = CombinedBasis(
     bases=[popII_basis],
     total_stellar_masses=unyt_array(10 ** all_param_dict["masses"], units=Msun),

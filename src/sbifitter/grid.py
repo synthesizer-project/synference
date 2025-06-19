@@ -685,7 +685,6 @@ class GalaxyBasis:
         alt_parametrizations: Dict[str, Tuple[str, callable]] = {},
         cosmo: Type[Cosmology] = Planck18,
         instrument: Instrument = None,
-        stellar_masses: unyt_array = None,
         redshift_dependent_sfh: bool = False,
         params_to_ignore: List[str] = [],
         build_grid: bool = True,
@@ -832,7 +831,7 @@ class GalaxyBasis:
 
         return values
 
-    def create_galaxies(
+    def _create_galaxies(
         self, base_masses: Union[unyt_array, unyt_quantity] = 1e9 * Msun
     ) -> List[Type[Galaxy]]:
         """Create galaxies with the specified SFHs, redshifts, and other parameters.
@@ -848,7 +847,8 @@ class GalaxyBasis:
             List of Galaxy objects.
         """
         if not self.build_grid:
-            raise Exception("You probably meant to call create_matched_galaxies instead.")
+            raise ValueError("""You probably meant to call 
+            _create_matched_galaxies instead.""")
 
         varying_param_values = [
             i for i in self.galaxy_params.values() if type(i) in [list, np.ndarray]
@@ -1043,7 +1043,7 @@ class GalaxyBasis:
 
         return galaxy
 
-    def create_matched_galaxies(
+    def _create_matched_galaxies(
         self, base_masses: unyt_quantity = 1e9 * Msun
     ) -> List[Type[Galaxy]]:
         """Creates galaxies where all parameters have been sampled.
@@ -1107,12 +1107,14 @@ class GalaxyBasis:
             for j, key in enumerate(varying_param_names):
                 params[key] = self.galaxy_params[key][i]
 
+            mass = base_masses[i] if hasattr(base_masses, '__len__')  and \
+                    (len(base_masses) > 1) else base_masses
             # Create a new galaxy with the specified parameters
             gal = self.create_galaxy(
                 sfh=sfh,
                 redshift=redshift,
                 metal_dist=metal_dist,
-                stellar_mass=base_masses,
+                stellar_mass=mass,
                 **params,
             )
 
@@ -1598,6 +1600,120 @@ class GalaxyBasis:
             .value
         )
 
+    def process_base(self,
+        out_name,
+        stellar_masses: unyt_array,
+        emission_model_key: str = "total",
+        out_dir: str = grid_folder,
+        n_proc: int = 6,
+        overwrite: Union[bool, List[bool]] = False,
+        verbose=False,
+        batch_size: int = 40_000,
+        **extra_analysis_functions
+    ):
+        """Run pipeline for this base.
+
+        Implements functionality of CombinedBasis.process_bases for
+        a single base. This is a convenience method to allow the
+        GalaxyBasis to be run seperately.
+        """
+        assert isinstance(stellar_masses, unyt_array), \
+            "stellar_masses must be a unyt_array"
+        assert len(stellar_masses) == len(self.redshifts), \
+            f"""stellar_masses must be the same length as redshifts,
+            got {len(stellar_masses)} and {len(self.redshifts)},
+            Calling this method on GalaxyBasis only supports
+            the case where all samples have been provided, not
+            the case where samples are drawn from a prior and
+            combined directly.
+            """
+
+        if not isinstance(overwrite, (tuple, list, np.ndarray)):
+            overwrite = [overwrite] * 1
+        else:
+            if len(overwrite) != 1:
+                raise ValueError(
+                    """overwrite must be a boolean or a
+                    list of booleans with the same length as bases"""
+                )
+
+        full_out_path = f"{out_dir}/{out_name}.hdf5"
+        ngalaxies = len(stellar_masses)
+        total_batches = int(np.ceil(ngalaxies / batch_size))
+
+        if (
+            os.path.exists(full_out_path)
+            and not overwrite[0]
+            or os.path.exists(f"{out_dir}/{out_name}_{total_batches}.hdf5")
+        ):
+            print(f"File {full_out_path} already exists. Skipping.")
+            return
+        if os.path.exists(full_out_path) and overwrite[0]:
+            print(f"Overwriting {full_out_path}.")
+
+        if not os.path.exists(out_dir):
+            os.makedirs(out_dir)
+
+        galaxies = self._create_galaxies(base_masses=stellar_masses)
+
+        self.process_galaxies(
+                    galaxies,
+                    f"{out_name}.hdf5",
+                    out_dir=out_dir,
+                    n_proc=n_proc,
+                    verbose=verbose,
+                    save=True,
+                    emission_model_keys=emission_model_key,
+                    batch_size=batch_size,
+                    **extra_analysis_functions,
+        )
+
+
+    def create_mock_cat(self,
+        out_name,
+        stellar_masses: unyt_array,
+        emission_model_key: str = "total",
+        out_dir: str = grid_folder,
+        n_proc: int = 6,
+        overwrite: Union[bool, List[bool]] = False,
+        verbose=False,
+        batch_size: int = 40_000,
+        **extra_analysis_functions
+    ):
+        """Convenience method which calls CombinedBasis.
+
+        This is a convenience method which allows
+        you to not have to pass a GalaxyBasis into
+        CombinedBasis, and instead just call
+        this method which will run the components for you.
+        """
+        # make a CombinedBasis object with the current GalaxyBasis
+
+        combined_basis = CombinedBasis(
+            bases=[self],
+            total_stellar_masses=stellar_masses,
+            redshifts=self.redshifts,
+            base_emission_model_keys=[emission_model_key],
+            combination_weights=None,
+            out_name=f'grid_{out_name}',
+            out_dir=out_dir,
+        )
+
+        combined_basis.process_bases(
+            n_proc=n_proc,
+            overwrite=overwrite,
+            verbose=verbose,
+            batch_size=batch_size,
+            extra_analysis_functions=extra_analysis_functions,
+        )
+
+        combined_basis.create_grid(overwrite=overwrite)
+
+        print('Processed the bases and saved the output.')
+
+        return combined_basis
+
+
 
 class CombinedBasis:
     """Class to create a photometry array from Synthesizer pipeline outputs.
@@ -1730,9 +1846,9 @@ class CombinedBasis:
                 os.makedirs(self.out_dir)
 
             if self.draw_parameter_combinations:
-                galaxies = base.create_galaxies(base_masses=self.base_masses)
+                galaxies = base._create_galaxies(base_masses=self.base_masses)
             else:
-                galaxies = base.create_matched_galaxies(base_masses=self.base_masses)
+                galaxies = base._create_matched_galaxies(base_masses=self.base_masses)
 
             print(f"Created {len(galaxies)} galaxies for base {base.model_name}")
             # Process the galaxies

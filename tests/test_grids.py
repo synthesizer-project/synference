@@ -298,7 +298,7 @@ class TestGalaxyBasis:
         """Test that create_galaxies correctly creates multiple galaxies."""
         basis = GalaxyBasis(**grid_basis_params)
 
-        galaxies = basis.create_galaxies(base_masses=1e8 * Msun)
+        galaxies = basis._create_galaxies(base_masses=1e8 * Msun)
 
         assert len(galaxies) > 0
         assert basis.create_galaxy
@@ -311,7 +311,7 @@ class TestGalaxyBasis:
         """Test that create_galaxies correctly creates galaxies for LHC parameters."""
         basis = GalaxyBasis(**lhc_basis_params)
 
-        galaxies = basis.create_matched_galaxies()
+        galaxies = basis._create_matched_galaxies()
 
         assert len(galaxies) > 0
 
@@ -323,7 +323,7 @@ class TestGalaxyBasis:
         """Test that process_galaxies correctly processes galaxies."""
         basis = GalaxyBasis(**grid_basis_params)
 
-        galaxies = basis.create_galaxies(base_masses=1e9 * Msun)
+        galaxies = basis._create_galaxies(base_masses=1e9 * Msun)
 
         params = basis.all_parameters
 
@@ -347,7 +347,7 @@ class TestGalaxyBasis:
     def test_process_galaxies_lhc(self, lhc_basis_params):
         """Test that process_galaxies correctly processes galaxies for LHC parameters."""
         basis = GalaxyBasis(**lhc_basis_params)
-        galaxies = basis.create_matched_galaxies()
+        galaxies = basis._create_matched_galaxies()
 
         params = basis.all_parameters
 
@@ -382,6 +382,29 @@ class TestGalaxyBasis:
         plot_file = f"{test_dir}/test_output/test_basis_0.png"
         assert os.path.exists(plot_file), f"Plot file {plot_file} was not created."
 
+    def test_full_single_cat_creation(self, grid_basis_params):
+        """Test that full_single_cat_creation creates a single catalog."""
+        basis = GalaxyBasis(**grid_basis_params)
+
+        basis.create_mock_cat(
+            stellar_masses=[1e9] * len(grid_basis_params["redshifts"]) * Msun,
+            emission_model_key = "total",
+            out_name = "test_combined_simple",
+            out_dir = f"{test_dir}/test_output/",
+            n_proc=1,
+        )
+
+        # Check that the output file exists
+        out_file = f"{test_dir}/test_output/test_combined_simple.hdf5"
+        assert os.path.exists(out_file), f"Output file {out_file} was not created."
+
+        # Check that the expected keys are in the output file
+        expected_keys = [
+            "Galaxies/Properties",
+            "Galaxies/Photometry",
+            "Galaxies/SupplementaryParameters",
+        ]
+        check_hdf5(out_file, expected_keys=expected_keys)
 
 class TestCombinedBasis:
     """Test suite for the CombinedBasis class."""
