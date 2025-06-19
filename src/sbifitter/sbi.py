@@ -126,7 +126,7 @@ class SBI_Fitter:
 
     """
 
-    device = "cpu"
+    device = "cuda" if hasattr(torch, "cuda") and torch.cuda.is_available() else "cpu"
 
     def __init__(
         self,
@@ -1318,7 +1318,7 @@ class SBI_Fitter:
             "normed_flux_units": normed_flux_units,
             "normalization_unit": normalization_unit,
             "scatter_fluxes": scatter_fluxes,
-            "empirical_noise_models": empirical_noise_models,
+            # "empirical_noise_models": empirical_noise_models,
             "depths": depths,
             "include_errors_in_feature_array": include_errors_in_feature_array,
             "min_flux_pc_error": min_flux_pc_error,
@@ -2594,6 +2594,7 @@ class SBI_Fitter:
             device=self.device,
         )
 
+        print(f"Training on {self.device}.")
         # Train the model
         try:
             if not verbose:
