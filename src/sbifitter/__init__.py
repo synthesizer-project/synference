@@ -1,4 +1,11 @@
 # -*- coding: utf-8 -*-
+import os
+
+if "SYNTHESIZER_GRID_DIR" not in os.environ:
+    raise EnvironmentError(
+        "Please set the SYNTHESIZER_GRID_DIR environment variable to the directory containing the synthesizer grids."
+    )
+
 
 from .grid import (
     generate_sfh_grid, generate_metallicity_distribution, generate_emission_models, 
