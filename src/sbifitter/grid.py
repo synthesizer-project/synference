@@ -13,7 +13,7 @@ import matplotlib.patheffects as PathEffects
 import matplotlib.pyplot as plt
 import numpy as np
 from astropy.cosmology import Cosmology, Planck18, z_at_value
-from astropy.table import Table
+from astropy.table import Column, Table
 from matplotlib.ticker import FuncFormatter, ScalarFormatter
 from scipy import stats
 from scipy.interpolate import interp1d
@@ -48,6 +48,9 @@ from unyt import (
 from .utils import (
     list_parameters,
 )
+
+file_path = os.path.dirname(os.path.realpath(__file__))
+grid_folder = os.path.join(os.path.dirname(os.path.dirname(file_path)), "grids")
 
 
 def calculate_muv(galaxy, cosmo=Planck18):
@@ -412,8 +415,8 @@ def generate_emission_models(
 
 
 def draw_from_hypercube(
+    param_ranges,
     N: int = 1e6,
-    param_ranges: dict = {},
     model: Type[qmc.QMCEngine] = qmc.LatinHypercube,
     rng: Optional[np.random.Generator] = None,
 ):
@@ -678,14 +681,13 @@ class GalaxyBasis:
         emission_model: Type[EmissionModel],
         sfhs: List[Type[SFH.Common]],
         metal_dists: List[Type[ZDist.Common]],
-        galaxy_params: dict = {},
-        alt_parametrizations: Dict[str, Tuple[str, callable]] = {},
+        galaxy_params: dict = None,
+        alt_parametrizations: Dict[str, Tuple[str, callable]] = None,
         cosmo: Type[Cosmology] = Planck18,
         instrument: Instrument = None,
-        stellar_masses: unyt_array = None,
         redshift_dependent_sfh: bool = False,
-        params_to_ignore: List[str] = [],
-        build_grid: bool = True,
+        params_to_ignore: List[str] = None,
+        build_grid: bool = False,
     ) -> None:
         """Initialize the GalaxyBasis object with SFHs, redshifts, and other parameters.
 
@@ -715,8 +717,6 @@ class GalaxyBasis:
             Cosmology object, by default Planck18
         instrument : Instrument, optional
             Instrument object containing the filters, by default None
-        stellar_masses : unyt_array, optional
-            Array of stellar masses for the galaxies, by default None
         redshift_dependent_sfh : bool, optional
             If True, the SFH will depend on redshift, by default False. If True, expect
             each SFH to have a redshift attribute.
@@ -731,6 +731,13 @@ class GalaxyBasis:
             build the grid from the parameters. I.e don't generate combinations of
             parameters, just use the parameters as they are.
         """
+        if galaxy_params is None:
+            galaxy_params = {}
+        if alt_parametrizations is None:
+            alt_parametrizations = {}
+        if params_to_ignore is None:
+            params_to_ignore = []
+
         self.model_name = model_name
         self.sfhs = sfhs
         self.redshifts = redshifts
@@ -829,7 +836,7 @@ class GalaxyBasis:
 
         return values
 
-    def create_galaxies(
+    def _create_galaxies(
         self, base_masses: Union[unyt_array, unyt_quantity] = 1e9 * Msun
     ) -> List[Type[Galaxy]]:
         """Create galaxies with the specified SFHs, redshifts, and other parameters.
@@ -845,7 +852,8 @@ class GalaxyBasis:
             List of Galaxy objects.
         """
         if not self.build_grid:
-            raise Exception("You probably meant to call create_matched_galaxies instead.")
+            raise ValueError("""You probably meant to call
+            _create_matched_galaxies instead.""")
 
         varying_param_values = [
             i for i in self.galaxy_params.values() if type(i) in [list, np.ndarray]
@@ -1040,7 +1048,7 @@ class GalaxyBasis:
 
         return galaxy
 
-    def create_matched_galaxies(
+    def _create_matched_galaxies(
         self, base_masses: unyt_quantity = 1e9 * Msun
     ) -> List[Type[Galaxy]]:
         """Creates galaxies where all parameters have been sampled.
@@ -1070,6 +1078,9 @@ class GalaxyBasis:
             self.metal_dists
         ), f"""If iterate_redshifts is False, sfhs and metal_dists must be the same
             length, got {len(self.sfhs)} and {len(self.metal_dists)}"""
+        assert isinstance(base_masses, (unyt_array, unyt_quantity)), (
+            "base_masses must be a unyt array or quantity"
+        )
 
         varying_param_values = [
             i for i in self.galaxy_params.values() if type(i) in [list, np.ndarray]
@@ -1104,12 +1115,18 @@ class GalaxyBasis:
             for j, key in enumerate(varying_param_names):
                 params[key] = self.galaxy_params[key][i]
 
+            # If the mass is an array, use the i-th element,
+            try:
+                mass = base_masses[i]
+            except IndexError:
+                mass = base_masses
+
             # Create a new galaxy with the specified parameters
             gal = self.create_galaxy(
                 sfh=sfh,
                 redshift=redshift,
                 metal_dist=metal_dist,
-                stellar_mass=base_masses,
+                stellar_mass=mass,
                 **params,
             )
 
@@ -1595,6 +1612,123 @@ class GalaxyBasis:
             .value
         )
 
+    def process_base(
+        self,
+        out_name,
+        stellar_masses: unyt_array,
+        emission_model_key: str = "total",
+        out_dir: str = grid_folder,
+        n_proc: int = 6,
+        overwrite: Union[bool, List[bool]] = False,
+        verbose=False,
+        batch_size: int = 40_000,
+        **extra_analysis_functions,
+    ):
+        """Run pipeline for this base.
+
+        Implements functionality of CombinedBasis.process_bases for
+        a single base. This is a convenience method to allow the
+        GalaxyBasis to be run seperately.
+        """
+        assert isinstance(stellar_masses, unyt_array), (
+            "stellar_masses must be a unyt_array"
+        )
+        assert len(stellar_masses) == len(
+            self.redshifts
+        ), f"""stellar_masses must be the same length as redshifts,
+            got {len(stellar_masses)} and {len(self.redshifts)},
+            Calling this method on GalaxyBasis only supports
+            the case where all samples have been provided, not
+            the case where samples are drawn from a prior and
+            combined directly.
+            """
+
+        if not isinstance(overwrite, (tuple, list, np.ndarray)):
+            overwrite = [overwrite] * 1
+        else:
+            if len(overwrite) != 1:
+                raise ValueError(
+                    """overwrite must be a boolean or a
+                    list of booleans with the same length as bases"""
+                )
+
+        full_out_path = f"{out_dir}/{out_name}.hdf5"
+        ngalaxies = len(stellar_masses)
+        total_batches = int(np.ceil(ngalaxies / batch_size))
+
+        if (
+            os.path.exists(full_out_path)
+            and not overwrite[0]
+            or os.path.exists(f"{out_dir}/{out_name}_{total_batches}.hdf5")
+        ):
+            print(f"File {full_out_path} already exists. Skipping.")
+            return
+        if os.path.exists(full_out_path) and overwrite[0]:
+            print(f"Overwriting {full_out_path}.")
+
+        if not os.path.exists(out_dir):
+            os.makedirs(out_dir)
+
+        galaxies = self._create_galaxies(base_masses=stellar_masses)
+
+        self.process_galaxies(
+            galaxies,
+            f"{out_name}.hdf5",
+            out_dir=out_dir,
+            n_proc=n_proc,
+            verbose=verbose,
+            save=True,
+            emission_model_keys=emission_model_key,
+            batch_size=batch_size,
+            **extra_analysis_functions,
+        )
+
+    def create_mock_cat(
+        self,
+        out_name,
+        stellar_masses: unyt_array,
+        emission_model_key: str = "total",
+        out_dir: str = grid_folder,
+        n_proc: int = 6,
+        overwrite: Union[bool, List[bool]] = False,
+        verbose=False,
+        batch_size: int = 40_000,
+        **extra_analysis_functions,
+    ):
+        """Convenience method which calls CombinedBasis.
+
+        This is a convenience method which allows
+        you to not have to pass a GalaxyBasis into
+        CombinedBasis, and instead just call
+        this method which will run the components for you.
+        """
+        # make a CombinedBasis object with the current GalaxyBasis
+
+        combined_basis = CombinedBasis(
+            bases=[self],
+            total_stellar_masses=stellar_masses,
+            redshifts=self.redshifts,
+            base_emission_model_keys=[emission_model_key],
+            combination_weights=None,
+            out_name=f"grid_{out_name}",
+            out_dir=out_dir,
+            draw_parameter_combinations=False,
+        )
+
+        combined_basis.process_bases(
+            n_proc=n_proc,
+            overwrite=overwrite,
+            verbose=verbose,
+            batch_size=batch_size,
+            **extra_analysis_functions,
+        )
+
+        combined_basis.create_grid(overwrite=overwrite)
+
+        print("Processed the bases and saved the output.")
+
+        return combined_basis
+
 
 class CombinedBasis:
     """Class to create a photometry array from Synthesizer pipeline outputs.
@@ -1626,9 +1760,9 @@ class CombinedBasis:
         base_emission_model_keys: List[str],
         combination_weights: np.ndarray,
         out_name: str = "combined_basis",
-        out_dir: str = "../output/",
+        out_dir: str = grid_folder,
         base_masses: unyt_array = 1e9 * Msun,
-        draw_parameter_combinations: bool = True,
+        draw_parameter_combinations: bool = False,
     ) -> None:
         """Initialize the CombinedBasis object.
 
@@ -1727,9 +1861,9 @@ class CombinedBasis:
                 os.makedirs(self.out_dir)
 
             if self.draw_parameter_combinations:
-                galaxies = base.create_galaxies(base_masses=self.base_masses)
+                galaxies = base._create_galaxies(base_masses=self.base_masses)
             else:
-                galaxies = base.create_matched_galaxies(base_masses=self.base_masses)
+                galaxies = base._create_matched_galaxies(base_masses=self.base_masses)
 
             print(f"Created {len(galaxies)} galaxies for base {base.model_name}")
             # Process the galaxies
@@ -1783,7 +1917,8 @@ class CombinedBasis:
                         key=lambda x: int(x.split("_")[-1].split(".")[0]),
                     )
                 else:
-                    raise ValueError(f"File {full_out_path} does not exist")
+                    raise ValueError(f"""Synthesizer pipeline output {full_out_path} does not exist. 
+                                     Have you run the pipeline using `combined_basis.process_bases` first?""")  # noqa E501
             else:
                 full_out_paths = [full_out_path]
 
@@ -3047,7 +3182,6 @@ class EmpiricalUncertaintyModel:
             raise ValueError(
                 "observed_fluxes and observed_errors must have the same length."
             )
-
         self.sigma_clip = sigma_clip
 
         self.observed_fluxes = observed_fluxes
@@ -3103,6 +3237,8 @@ class EmpiricalUncertaintyModel:
             # Convert upper_limit_value back to the original flux unit
             if flux_unit == "AB":
                 upper_limit_value = -2.5 * np.log10(upper_limit_value) + 8.9
+        else:
+            upper_limit_value = None
 
         self.upper_limit_value = upper_limit_value
 
@@ -3665,6 +3801,53 @@ class EmpiricalUncertaintyModel:
 
         return model
 
+    def __getstate__(self) -> Dict[str, Any]:
+        """Prepare a serializable state dictionary for pickling.
+
+        Converts array-like attributes to basic Python lists.
+        """
+        attrs: List[str] = [
+            "observed_fluxes",
+            "observed_errors",
+            "num_bins",
+            "flux_bins",
+            "log_bins",
+            "min_flux_for_binning",
+            "min_samples_per_bin",
+            "flux_unit",
+            "min_flux_error",
+            "error_type",
+            "sigma_clip",
+            "upper_limits",
+            "treat_as_upper_limits_below",
+            "upper_limit_flux_behaviour",
+            "upper_limit_flux_err_behaviour",
+            "max_flux_error",
+        ]
+
+        state: Dict[str, Any] = {}
+        for attr in attrs:
+            # Use a default value of None if the attribute doesn't exist
+            value = getattr(self, attr, None)
+
+            # Use a single if/elif/else chain to handle conversions
+            if isinstance(value, (np.ndarray, unyt_array, Column)):
+                # For any array-like type, convert to a list for serialization
+                state[attr] = np.array(value)
+            else:
+                # Keep all other types (lists, ints, floats, str, etc.) as they are
+                state[attr] = value
+
+        return state
+
+    def __setstate__(self, state: Dict[str, Any]) -> None:
+        """Restore the object's state from a pickled state dictionary.
+
+        This implementation re-runs __init__ with the restored state,
+        which is a common and robust pattern.
+        """
+        self.__init__(**state)
+
 
 class GalaxySimulator(object):
     """Class for simulating photometry/spectra of galaxies.
@@ -3687,11 +3870,11 @@ class GalaxySimulator(object):
         instrument: Instrument,
         emission_model: EmissionModel,
         emission_model_key: str,
-        emitter_params: dict = {"stellar": [], "galaxy": []},
+        emitter_params: dict = None,
         cosmo: Cosmology = Planck18,
         param_order: Union[None, list] = None,
-        param_units: dict = {},
-        param_transforms: dict[callable] = {},
+        param_units: dict = None,
+        param_transforms: dict[callable] = None,
         out_flux_unit: str = "nJy",
         required_keys=["redshift", "log_mass"],
         extra_functions: List[callable] = None,
@@ -3702,7 +3885,7 @@ class GalaxySimulator(object):
         depths: Union[np.ndarray, unyt_array] = None,
         depth_sigma: int = 5,
         noise_models: Union[None, Dict[str, EmpiricalUncertaintyModel]] = None,
-        fixed_params: dict = {},
+        fixed_params: dict = None,
     ) -> None:
         """Parameters
 
@@ -3775,6 +3958,15 @@ class GalaxySimulator(object):
             If None, no parameters are fixed. Default is None.
 
         """
+        if fixed_params is None:
+            fixed_params = {}
+        if param_units is None:
+            param_units = {}
+        if param_transforms is None:
+            param_transforms = {}
+        if emitter_params is None:
+            emitter_params = {"stellar": [], "galaxy": []}
+
         assert isinstance(grid, Grid), (
             f"Grid must be a subclass of Grid. Got {type(grid)} instead."
         )
@@ -3801,6 +3993,7 @@ class GalaxySimulator(object):
         self.extra_functions = extra_functions
         self.normalize_method = normalize_method
         self.fixed_params = fixed_params
+        self.depths = depths
 
         if noise_models is not None:
             assert isinstance(noise_models, dict), (

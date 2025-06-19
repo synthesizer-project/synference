@@ -16,7 +16,11 @@ from synthesizer.instruments import FilterCollection, Instrument
 from synthesizer.parametric import SFH, Galaxy, Stars, ZDist
 from unyt import Jy, Msun, Myr, nJy, unyt_array
 
-from sbifitter import (
+test_dir = os.path.dirname(os.path.abspath(__file__))
+grid_dir = test_dir + "/test_grids/"
+os.environ["SYNTHESIZER_GRID_DIR"] = grid_dir
+
+from sbifitter import (  # noqa E402
     CombinedBasis,
     GalaxyBasis,
     SBI_Fitter,
@@ -24,8 +28,6 @@ from sbifitter import (
     draw_from_hypercube,
     generate_sfh_basis,
 )
-
-test_dir = os.path.dirname(os.path.abspath(__file__))
 
 
 # Fixtures for common test objects
@@ -178,7 +180,7 @@ def lhc_basis_params(
         "cosmo": Planck18,
         "instrument": mock_instrument,
         "galaxy_params": {"tau_v": all_param_dict["tau_v"]},
-        "stellar_masses": unyt_array(all_param_dict["masses"], Msun),
+        # "stellar_masses": unyt_array(all_param_dict["masses"], Msun),
         "redshift_dependent_sfh": True,
         "build_grid": False,
         "sfhs": sfh_models,
@@ -296,7 +298,7 @@ class TestGalaxyBasis:
         """Test that create_galaxies correctly creates multiple galaxies."""
         basis = GalaxyBasis(**grid_basis_params)
 
-        galaxies = basis.create_galaxies(base_masses=1e8 * Msun)
+        galaxies = basis._create_galaxies(base_masses=1e8 * Msun)
 
         assert len(galaxies) > 0
         assert basis.create_galaxy
@@ -309,7 +311,7 @@ class TestGalaxyBasis:
         """Test that create_galaxies correctly creates galaxies for LHC parameters."""
         basis = GalaxyBasis(**lhc_basis_params)
 
-        galaxies = basis.create_matched_galaxies()
+        galaxies = basis._create_matched_galaxies()
 
         assert len(galaxies) > 0
 
@@ -321,7 +323,7 @@ class TestGalaxyBasis:
         """Test that process_galaxies correctly processes galaxies."""
         basis = GalaxyBasis(**grid_basis_params)
 
-        galaxies = basis.create_galaxies(base_masses=1e9 * Msun)
+        galaxies = basis._create_galaxies(base_masses=1e9 * Msun)
 
         params = basis.all_parameters
 
@@ -345,7 +347,7 @@ class TestGalaxyBasis:
     def test_process_galaxies_lhc(self, lhc_basis_params):
         """Test that process_galaxies correctly processes galaxies for LHC parameters."""
         basis = GalaxyBasis(**lhc_basis_params)
-        galaxies = basis.create_matched_galaxies()
+        galaxies = basis._create_matched_galaxies()
 
         params = basis.all_parameters
 
@@ -379,6 +381,37 @@ class TestGalaxyBasis:
         # Check that the plot file was created
         plot_file = f"{test_dir}/test_output/test_basis_0.png"
         assert os.path.exists(plot_file), f"Plot file {plot_file} was not created."
+
+    def test_full_single_cat_creation(self, lhc_basis_params):
+        """Test that full_single_cat_creation creates a single catalog."""
+        basis = GalaxyBasis(**lhc_basis_params)
+
+        combined = basis.create_mock_cat(
+            stellar_masses=unyt_array([1e9] * len(lhc_basis_params["redshifts"]), Msun),
+            emission_model_key="total",
+            out_name="test_combined_simple",
+            out_dir=f"{test_dir}/test_output/",
+            n_proc=1,
+            overwrite=True,
+        )
+
+        # Check that the output file exists
+        out_file = f"{test_dir}/test_output/grid_test_combined_simple.hdf5"
+        assert os.path.exists(out_file), f"Output file {out_file} was not created."
+
+        # Check that the expected keys are in the output file
+        expected_keys = [
+            "Grid/Parameters",
+            "Grid/Photometry",
+            "Grid/SupplementaryParameters",
+        ]
+
+        expected_attrs = {
+            "FilterCodes": basis.instrument.filters.filter_codes,
+            "ParameterNames": combined.grid_parameter_names,
+            "model_name": [basis.model_name],
+        }
+        check_hdf5(out_file, expected_keys=expected_keys, expected_attrs=expected_attrs)
 
 
 class TestCombinedBasis:
@@ -414,6 +447,7 @@ class TestCombinedBasis:
             "out_name": "test_combined",
             "out_dir": f"{test_dir}/test_output/",
             "base_masses": 1e9 * Msun,
+            "draw_parameter_combinations": True,
         }
 
     @pytest.fixture

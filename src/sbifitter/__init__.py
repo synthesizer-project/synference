@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+import os
+
 
 from .grid import (
     generate_sfh_grid, generate_metallicity_distribution, generate_emission_models, 
