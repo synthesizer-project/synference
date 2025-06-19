@@ -83,15 +83,14 @@ filterset.resample_filters(new_lam=new_wav)
 
 instrument = Instrument(instrument, filters=filterset)
 
+# Check for SYNTHESIZER_GRID_DIR environment variable
+grid_dir = os.environ["SYNTHESIZER_GRID_DIR"]
 
-if computer == "cosma":
-    grid_dir = "/cosma7/data/dp276/dc-harv3/work/grids/"
-    out_dir = "/cosma7/data/dp276/dc-harv3/work/sbi/output/"
 
-elif computer == "linux-desktop":
-    grid_dir = "/home/tharvey/work/synthesizer_grids/"
-    out_dir = "/home/tharvey/work/output/"
+# path for this file
 
+dir_path = os.path.dirname(os.path.abspath(__file__))
+out_dir = os.path.join(os.path.dirname(os.path.dirname(dir_path)), "grids/")
 
 try:
     n_proc = int(sys.argv[1])
@@ -229,11 +228,22 @@ popII_basis = GalaxyBasis(
     build_grid=False,
 )
 
-# This will plot some of the SEDs as an example.
-# for i in range(30):
-#    popII_basis.plot_random_galaxy(out_dir='/home/tharvey/work/ltu-ili_testing/plots',
-#                                    masses=10**all_param_dict['masses'])
+# This is the simple way-
+# it runs the following three steps for you.
 
+basis.create_mock_cat(
+    out_name=f'grid_{name}',
+    stellar_masses=unyt_array(10 ** all_param_dict["masses"], units=Msun),
+    out_dir=out_dir,
+    overwrite=True,
+    n_proc=n_proc,
+    verbose=False,
+    batch_size=40_000,
+    mUV=(calculate_muv, cosmo),  # Calculate mUV for the mock catalogue.
+)
+
+
+# This is the complex way
 combined_basis = CombinedBasis(
     bases=[popII_basis],
     total_stellar_masses=unyt_array(10 ** all_param_dict["masses"], units=Msun),

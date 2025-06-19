@@ -85,14 +85,15 @@ else:
 instrument = Instrument(instrument, filters=filterset)
 
 
-if computer == "cosma":
-    grid_dir = "/cosma7/data/dp276/dc-harv3/work/grids/"
-    out_dir = "/cosma7/data/dp276/dc-harv3/work/sbi/output/"
+# Check for SYNTHESIZER_GRID_DIR environment variable
 
-elif computer == "linux-desktop":
-    grid_dir = "/home/tharvey/work/synthesizer_grids/"
-    out_dir = "/home/tharvey/work/output/"
+grid_dir = os.environ["SYNTHESIZER_GRID_DIR"]
 
+
+# path for this file
+
+dir_path = os.path.dirname(os.path.abspath(__file__))
+out_dir = os.path.join(os.path.dirname(os.path.dirname(dir_path)), "grids/")
 
 try:
     n_proc = int(sys.argv[1])
