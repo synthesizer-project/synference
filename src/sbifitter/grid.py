@@ -415,8 +415,8 @@ def generate_emission_models(
 
 
 def draw_from_hypercube(
+    param_ranges,
     N: int = 1e6,
-    param_ranges: dict = {},
     model: Type[qmc.QMCEngine] = qmc.LatinHypercube,
     rng: Optional[np.random.Generator] = None,
 ):
@@ -681,12 +681,12 @@ class GalaxyBasis:
         emission_model: Type[EmissionModel],
         sfhs: List[Type[SFH.Common]],
         metal_dists: List[Type[ZDist.Common]],
-        galaxy_params: dict = {},
-        alt_parametrizations: Dict[str, Tuple[str, callable]] = {},
+        galaxy_params: dict = None,
+        alt_parametrizations: Dict[str, Tuple[str, callable]] = None,
         cosmo: Type[Cosmology] = Planck18,
         instrument: Instrument = None,
         redshift_dependent_sfh: bool = False,
-        params_to_ignore: List[str] = [],
+        params_to_ignore: List[str] = None,
         build_grid: bool = True,
     ) -> None:
         """Initialize the GalaxyBasis object with SFHs, redshifts, and other parameters.
@@ -717,8 +717,6 @@ class GalaxyBasis:
             Cosmology object, by default Planck18
         instrument : Instrument, optional
             Instrument object containing the filters, by default None
-        stellar_masses : unyt_array, optional
-            Array of stellar masses for the galaxies, by default None
         redshift_dependent_sfh : bool, optional
             If True, the SFH will depend on redshift, by default False. If True, expect
             each SFH to have a redshift attribute.
@@ -733,6 +731,13 @@ class GalaxyBasis:
             build the grid from the parameters. I.e don't generate combinations of
             parameters, just use the parameters as they are.
         """
+        if galaxy_params is None:
+            galaxy_params = {}
+        if alt_parametrizations is None:
+            alt_parametrizations = {}
+        if params_to_ignore is None:
+            params_to_ignore = []
+
         self.model_name = model_name
         self.sfhs = sfhs
         self.redshifts = redshifts
@@ -3855,11 +3860,11 @@ class GalaxySimulator(object):
         instrument: Instrument,
         emission_model: EmissionModel,
         emission_model_key: str,
-        emitter_params: dict = {"stellar": [], "galaxy": []},
+        emitter_params: dict = None,
         cosmo: Cosmology = Planck18,
         param_order: Union[None, list] = None,
-        param_units: dict = {},
-        param_transforms: dict[callable] = {},
+        param_units: dict = None,
+        param_transforms: dict[callable] = None,
         out_flux_unit: str = "nJy",
         required_keys=["redshift", "log_mass"],
         extra_functions: List[callable] = None,
@@ -3870,7 +3875,7 @@ class GalaxySimulator(object):
         depths: Union[np.ndarray, unyt_array] = None,
         depth_sigma: int = 5,
         noise_models: Union[None, Dict[str, EmpiricalUncertaintyModel]] = None,
-        fixed_params: dict = {},
+        fixed_params: dict = None,
     ) -> None:
         """Parameters
 
@@ -3943,6 +3948,15 @@ class GalaxySimulator(object):
             If None, no parameters are fixed. Default is None.
 
         """
+        if fixed_params is None:
+            fixed_params = {}
+        if param_units is None:
+            param_units = {}
+        if param_transforms is None:
+            param_transforms = {}
+        if emitter_params is None:
+            emitter_params = {"stellar": [], "galaxy": []}
+
         assert isinstance(grid, Grid), (
             f"Grid must be a subclass of Grid. Got {type(grid)} instead."
         )
