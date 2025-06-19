@@ -13,7 +13,7 @@ import matplotlib.patheffects as PathEffects
 import matplotlib.pyplot as plt
 import numpy as np
 from astropy.cosmology import Cosmology, Planck18, z_at_value
-from astropy.table import Table
+from astropy.table import Column, Table
 from matplotlib.ticker import FuncFormatter, ScalarFormatter
 from scipy import stats
 from scipy.interpolate import interp1d
@@ -3047,7 +3047,6 @@ class EmpiricalUncertaintyModel:
             raise ValueError(
                 "observed_fluxes and observed_errors must have the same length."
             )
-
         self.sigma_clip = sigma_clip
 
         self.observed_fluxes = observed_fluxes
@@ -3103,6 +3102,8 @@ class EmpiricalUncertaintyModel:
             # Convert upper_limit_value back to the original flux unit
             if flux_unit == "AB":
                 upper_limit_value = -2.5 * np.log10(upper_limit_value) + 8.9
+        else:
+            upper_limit_value = None
 
         self.upper_limit_value = upper_limit_value
 
@@ -3665,6 +3666,53 @@ class EmpiricalUncertaintyModel:
 
         return model
 
+    def __getstate__(self) -> Dict[str, Any]:
+        """Prepare a serializable state dictionary for pickling.
+
+        Converts array-like attributes to basic Python lists.
+        """
+        attrs: List[str] = [
+            "observed_fluxes",
+            "observed_errors",
+            "num_bins",
+            "flux_bins",
+            "log_bins",
+            "min_flux_for_binning",
+            "min_samples_per_bin",
+            "flux_unit",
+            "min_flux_error",
+            "error_type",
+            "sigma_clip",
+            "upper_limits",
+            "treat_as_upper_limits_below",
+            "upper_limit_flux_behaviour",
+            "upper_limit_flux_err_behaviour",
+            "max_flux_error",
+        ]
+
+        state: Dict[str, Any] = {}
+        for attr in attrs:
+            # Use a default value of None if the attribute doesn't exist
+            value = getattr(self, attr, None)
+
+            # Use a single if/elif/else chain to handle conversions
+            if isinstance(value, (np.ndarray, unyt_array, Column)):
+                # For any array-like type, convert to a list for serialization
+                state[attr] = np.array(value)
+            else:
+                # Keep all other types (lists, ints, floats, str, etc.) as they are
+                state[attr] = value
+
+        return state
+
+    def __setstate__(self, state: Dict[str, Any]) -> None:
+        """Restore the object's state from a pickled state dictionary.
+
+        This implementation re-runs __init__ with the restored state,
+        which is a common and robust pattern.
+        """
+        self.__init__(**state)
+
 
 class GalaxySimulator(object):
     """Class for simulating photometry/spectra of galaxies.
@@ -3801,6 +3849,7 @@ class GalaxySimulator(object):
         self.extra_functions = extra_functions
         self.normalize_method = normalize_method
         self.fixed_params = fixed_params
+        self.depths = depths
 
         if noise_models is not None:
             assert isinstance(noise_models, dict), (
