@@ -49,6 +49,9 @@ from .utils import (
     list_parameters,
 )
 
+file_path = os.path.dirname(os.path.realpath(__file__))
+grid_folder = os.path.join(os.path.dirname(os.path.dirname(file_path)), "grids")
+
 
 def calculate_muv(galaxy, cosmo=Planck18):
     """Calculate the MUV magnitude of a galaxy.
@@ -1626,7 +1629,7 @@ class CombinedBasis:
         base_emission_model_keys: List[str],
         combination_weights: np.ndarray,
         out_name: str = "combined_basis",
-        out_dir: str = "../output/",
+        out_dir: str = grid_folder,
         base_masses: unyt_array = 1e9 * Msun,
         draw_parameter_combinations: bool = True,
     ) -> None:
