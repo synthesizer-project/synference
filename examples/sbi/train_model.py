@@ -35,10 +35,7 @@ class Args:
     n_nets: int = 1
     model_name: str = "BPASS_Chab_DelayedExpSFH_0.01_z_12_CF00_v1"
     name_append: str = ""
-    grid_path: str = (
-        """/home/tharvey/work/output/
-        grid_BPASS_DelayedExponential_SFH_0.01_z_12_logN_5.7_Chab_CF00_v1.hdf5""",
-    )
+    grid_path: str = """/home/tharvey/work/output/grid_BPASS_DelayedExponential_SFH_0.01_z_12_logN_5.7_Chab_CF00_v1.hdf5"""  # noqa
     hidden_features: int = 64
     num_transforms: int = 6
     num_components: int = 10
@@ -49,11 +46,10 @@ class Args:
     drop_dropout_fraction: float = 0.5
     plot: bool = True
     additional_model_args: tuple = ()
-    data_err_file: str = (
-        """/home/tharvey/Downloads/
-    JADES-Deep-GS_MASTER_Sel-f277W+f356W+f444W_v9_loc_depth_masked_10pc_EAZY_matched_selection_ext_src_UV.fits""",
-    )
+    data_err_file: str = """/home/tharvey/Downloads/JADES-Deep-GS_MASTER_Sel-f277W+f356W+f444W_v9_loc_depth_masked_10pc_EAZY_matched_selection_ext_src_UV.fits"""  # noqa
     background: bool = False
+    model_features: tuple = ()
+    norm_method: str = None
 
 
 parser.add_arguments(Args, dest="args")
@@ -121,8 +117,8 @@ def main_task(args: Args) -> None:
     ]
 
     empirical_model_fitter.create_feature_array_from_raw_photometry(
-        extra_features=[],
-        normalize_method=None,
+        extra_features=list(args.model_features),
+        normalize_method=args.norm_method,
         include_errors_in_feature_array=args.include_errors_in_feature_array,
         scatter_fluxes=args.scatter_fluxes,
         empirical_noise_models=empirical_noise_models
