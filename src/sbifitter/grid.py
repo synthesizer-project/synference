@@ -687,7 +687,7 @@ class GalaxyBasis:
         instrument: Instrument = None,
         redshift_dependent_sfh: bool = False,
         params_to_ignore: List[str] = None,
-        build_grid: bool = True,
+        build_grid: bool = False,
     ) -> None:
         """Initialize the GalaxyBasis object with SFHs, redshifts, and other parameters.
 
@@ -852,7 +852,7 @@ class GalaxyBasis:
             List of Galaxy objects.
         """
         if not self.build_grid:
-            raise ValueError("""You probably meant to call 
+            raise ValueError("""You probably meant to call
             _create_matched_galaxies instead.""")
 
         varying_param_values = [
@@ -1078,6 +1078,9 @@ class GalaxyBasis:
             self.metal_dists
         ), f"""If iterate_redshifts is False, sfhs and metal_dists must be the same
             length, got {len(self.sfhs)} and {len(self.metal_dists)}"""
+        assert isinstance(base_masses, (unyt_array, unyt_quantity)), (
+            "base_masses must be a unyt array or quantity"
+        )
 
         varying_param_values = [
             i for i in self.galaxy_params.values() if type(i) in [list, np.ndarray]
@@ -1112,8 +1115,12 @@ class GalaxyBasis:
             for j, key in enumerate(varying_param_names):
                 params[key] = self.galaxy_params[key][i]
 
-            mass = base_masses[i] if hasattr(base_masses, '__len__')  and \
-                    (len(base_masses) > 1) else base_masses
+            # If the mass is an array, use the i-th element,
+            try:
+                mass = base_masses[i]
+            except IndexError:
+                mass = base_masses
+
             # Create a new galaxy with the specified parameters
             gal = self.create_galaxy(
                 sfh=sfh,
@@ -1605,7 +1612,8 @@ class GalaxyBasis:
             .value
         )
 
-    def process_base(self,
+    def process_base(
+        self,
         out_name,
         stellar_masses: unyt_array,
         emission_model_key: str = "total",
@@ -1614,7 +1622,7 @@ class GalaxyBasis:
         overwrite: Union[bool, List[bool]] = False,
         verbose=False,
         batch_size: int = 40_000,
-        **extra_analysis_functions
+        **extra_analysis_functions,
     ):
         """Run pipeline for this base.
 
@@ -1622,10 +1630,12 @@ class GalaxyBasis:
         a single base. This is a convenience method to allow the
         GalaxyBasis to be run seperately.
         """
-        assert isinstance(stellar_masses, unyt_array), \
+        assert isinstance(stellar_masses, unyt_array), (
             "stellar_masses must be a unyt_array"
-        assert len(stellar_masses) == len(self.redshifts), \
-            f"""stellar_masses must be the same length as redshifts,
+        )
+        assert len(stellar_masses) == len(
+            self.redshifts
+        ), f"""stellar_masses must be the same length as redshifts,
             got {len(stellar_masses)} and {len(self.redshifts)},
             Calling this method on GalaxyBasis only supports
             the case where all samples have been provided, not
@@ -1662,19 +1672,19 @@ class GalaxyBasis:
         galaxies = self._create_galaxies(base_masses=stellar_masses)
 
         self.process_galaxies(
-                    galaxies,
-                    f"{out_name}.hdf5",
-                    out_dir=out_dir,
-                    n_proc=n_proc,
-                    verbose=verbose,
-                    save=True,
-                    emission_model_keys=emission_model_key,
-                    batch_size=batch_size,
-                    **extra_analysis_functions,
+            galaxies,
+            f"{out_name}.hdf5",
+            out_dir=out_dir,
+            n_proc=n_proc,
+            verbose=verbose,
+            save=True,
+            emission_model_keys=emission_model_key,
+            batch_size=batch_size,
+            **extra_analysis_functions,
         )
 
-
-    def create_mock_cat(self,
+    def create_mock_cat(
+        self,
         out_name,
         stellar_masses: unyt_array,
         emission_model_key: str = "total",
@@ -1683,7 +1693,7 @@ class GalaxyBasis:
         overwrite: Union[bool, List[bool]] = False,
         verbose=False,
         batch_size: int = 40_000,
-        **extra_analysis_functions
+        **extra_analysis_functions,
     ):
         """Convenience method which calls CombinedBasis.
 
@@ -1700,8 +1710,9 @@ class GalaxyBasis:
             redshifts=self.redshifts,
             base_emission_model_keys=[emission_model_key],
             combination_weights=None,
-            out_name=f'grid_{out_name}',
+            out_name=f"grid_{out_name}",
             out_dir=out_dir,
+            draw_parameter_combinations=False,
         )
 
         combined_basis.process_bases(
@@ -1709,15 +1720,14 @@ class GalaxyBasis:
             overwrite=overwrite,
             verbose=verbose,
             batch_size=batch_size,
-            extra_analysis_functions=extra_analysis_functions,
+            **extra_analysis_functions,
         )
 
         combined_basis.create_grid(overwrite=overwrite)
 
-        print('Processed the bases and saved the output.')
+        print("Processed the bases and saved the output.")
 
         return combined_basis
-
 
 
 class CombinedBasis:
@@ -1752,7 +1762,7 @@ class CombinedBasis:
         out_name: str = "combined_basis",
         out_dir: str = grid_folder,
         base_masses: unyt_array = 1e9 * Msun,
-        draw_parameter_combinations: bool = True,
+        draw_parameter_combinations: bool = False,
     ) -> None:
         """Initialize the CombinedBasis object.
 
