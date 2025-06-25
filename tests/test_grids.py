@@ -682,6 +682,28 @@ class TestSBIFitter:
         # Test a different limit
         fitter.create_feature_array_from_raw_photometry(norm_mag_limit=100)
 
+        # Test asinh softening
+        fitter.create_feature_array_from_raw_photometry(
+            normed_flux_units="asinh", asinh_softening_parameters=5 * nJy
+        )
+
+        # Test depth based asinh softening
+        with pytest.raises(
+            AssertionError,
+        ):
+            fitter.create_feature_array_from_raw_photometry(
+                normed_flux_units="asinh",
+                asinh_softening_parameters="SNR_5",
+                depths=depths,
+            )
+
+        fitter.create_feature_array_from_raw_photometry(
+            normed_flux_units="asinh",
+            asinh_softening_parameters="SNR_5",
+            depths=depths,
+            scatter_fluxes=True,
+        )
+
 
 # Integration tests for full pipeline
 def test_full_pipeline_integration(tmp_path):
