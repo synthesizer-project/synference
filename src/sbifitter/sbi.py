@@ -750,7 +750,7 @@ class SBI_Fitter:
         with no noise, and all photometry in mock catalogue used.
         """
         return self.create_feature_array_from_raw_photometry(
-            flux_units=flux_units, extra_features=extra_features
+            normed_flux_units=flux_units, extra_features=extra_features
         )
 
     def create_feature_array_from_raw_photometry(

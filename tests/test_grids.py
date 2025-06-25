@@ -2,14 +2,13 @@
 
 import os
 import subprocess
-from unittest.mock import MagicMock
 
 import h5py
 import numpy as np
 import pytest
 from astropy.cosmology import Planck18
 from scipy.stats import uniform
-from synthesizer.emission_models import IncidentEmission, TotalEmission
+from synthesizer.emission_models import TotalEmission
 from synthesizer.emission_models.attenuation import Calzetti2000
 from synthesizer.grid import Grid
 from synthesizer.instruments import FilterCollection, Instrument
@@ -209,11 +208,17 @@ def test_parametric_galaxies(test_parametric_galaxy, Ngalaxies=10):
     return [test_parametric_galaxy for _ in range(Ngalaxies)]
 
 
-def check_hdf5(hfile, expected_keys, expected_attrs=None):
+def check_hdf5(hfile, expected_keys, expected_attrs=None, check_size=False):
     """Check that the synthesizer pipeline HDF5 file contains the expected keys."""
     with h5py.File(hfile, "r") as f:
         for key in expected_keys:
             assert key in f, f"Key '{key}' not found in HDF5 file."
+            assert isinstance(f[key], h5py.Dataset), (
+                f"Key '{key}' is not a dataset in HDF5 file."
+            )
+            if check_size:
+                # Check all numpy arrays are 2D
+                assert f[key].ndim == 2, f"Key '{key}' is not a 2D array in HDF5 file."
 
         if expected_attrs is not None:
             for key, attrs in expected_attrs.items():
@@ -221,6 +226,77 @@ def check_hdf5(hfile, expected_keys, expected_attrs=None):
                 assert np.all(f.attrs[key] == attrs), (
                     f"Attribute '{key}' does not match expected value."
                 )
+
+
+@pytest.fixture
+def combined_grid_basis_params(grid_basis_params):
+    """Fixture to create parameters for CombinedBasis."""
+    basis1 = GalaxyBasis(**grid_basis_params)
+    basis2 = GalaxyBasis(**grid_basis_params)
+
+    # Modify basis2 to have different emission model
+    basis2.emission_model = TotalEmission(
+        grid=grid_basis_params["grid"],
+        fesc=0.2,
+        fesc_ly_alpha=0.2,
+        dust_curve=Calzetti2000(),
+        dust_emission_model=None,
+    )
+    basis1.model_name = "test_grid_basis1"
+    basis2.model_name = "test_grid_basis2"
+
+    return {
+        "bases": [basis1, basis2],
+        "total_stellar_masses": unyt_array(
+            [1e9] * len(grid_basis_params["redshifts"]), Msun
+        ),
+        "redshifts": grid_basis_params["redshifts"],
+        "base_emission_model_keys": ["total", "total"],
+        "combination_weights": np.array(
+            [np.array([i, 1 - i]) for i in np.arange(0, 1.1, 0.25)]
+        ),
+        "out_name": "test_combined",
+        "out_dir": f"{test_dir}/test_output/",
+        "base_masses": 1e9 * Msun,
+        "draw_parameter_combinations": True,
+    }
+
+
+@pytest.fixture
+def combined_lhc_basis_params(lhc_basis_params):
+    """Fixture to create parameters for CombinedBasis with LHC."""
+    basis1 = GalaxyBasis(**lhc_basis_params)
+    basis2 = GalaxyBasis(**lhc_basis_params)
+
+    # Modify basis2 to have different emission model
+    basis2.emission_model = TotalEmission(
+        grid=lhc_basis_params["grid"],
+        fesc=0.2,
+        fesc_ly_alpha=0.2,
+        dust_curve=Calzetti2000(),
+        dust_emission_model=None,
+    )
+    basis1.model_name = "test_lhc_basis1"
+    basis2.model_name = "test_lhc_basis2"
+
+    return {
+        "bases": [basis1, basis2],
+        "total_stellar_masses": unyt_array(
+            [1e9] * len(lhc_basis_params["redshifts"]), Msun
+        ),
+        "redshifts": lhc_basis_params["redshifts"],
+        "base_emission_model_keys": ["total", "total"],
+        "combination_weights": np.array(
+            [
+                np.array([i, 1 - i])
+                for i in np.random.uniform(0, 1, size=len(lhc_basis_params["redshifts"]))
+            ]
+        ),
+        "out_name": "test_combined_lhc",
+        "out_dir": f"{test_dir}/test_output/",
+        "base_masses": 1e9 * Msun,
+        "draw_parameter_combinations": False,
+    }
 
 
 class TestGalaxyBasis:
@@ -417,77 +493,6 @@ class TestGalaxyBasis:
 class TestCombinedBasis:
     """Test suite for the CombinedBasis class."""
 
-    @pytest.fixture
-    def combined_grid_basis_params(self, grid_basis_params):
-        """Fixture to create parameters for CombinedBasis."""
-        basis1 = GalaxyBasis(**grid_basis_params)
-        basis2 = GalaxyBasis(**grid_basis_params)
-
-        # Modify basis2 to have different emission model
-        basis2.emission_model = TotalEmission(
-            grid=grid_basis_params["grid"],
-            fesc=0.2,
-            fesc_ly_alpha=0.2,
-            dust_curve=Calzetti2000(),
-            dust_emission_model=None,
-        )
-        basis1.model_name = "test_grid_basis1"
-        basis2.model_name = "test_grid_basis2"
-
-        return {
-            "bases": [basis1, basis2],
-            "total_stellar_masses": unyt_array(
-                [1e9] * len(grid_basis_params["redshifts"]), Msun
-            ),
-            "redshifts": grid_basis_params["redshifts"],
-            "base_emission_model_keys": ["total", "total"],
-            "combination_weights": np.array(
-                [np.array([i, 1 - i]) for i in np.arange(0, 1.1, 0.25)]
-            ),
-            "out_name": "test_combined",
-            "out_dir": f"{test_dir}/test_output/",
-            "base_masses": 1e9 * Msun,
-            "draw_parameter_combinations": True,
-        }
-
-    @pytest.fixture
-    def combined_lhc_basis_params(self, lhc_basis_params):
-        """Fixture to create parameters for CombinedBasis with LHC."""
-        basis1 = GalaxyBasis(**lhc_basis_params)
-        basis2 = GalaxyBasis(**lhc_basis_params)
-
-        # Modify basis2 to have different emission model
-        basis2.emission_model = TotalEmission(
-            grid=lhc_basis_params["grid"],
-            fesc=0.2,
-            fesc_ly_alpha=0.2,
-            dust_curve=Calzetti2000(),
-            dust_emission_model=None,
-        )
-        basis1.model_name = "test_lhc_basis1"
-        basis2.model_name = "test_lhc_basis2"
-
-        return {
-            "bases": [basis1, basis2],
-            "total_stellar_masses": unyt_array(
-                [1e9] * len(lhc_basis_params["redshifts"]), Msun
-            ),
-            "redshifts": lhc_basis_params["redshifts"],
-            "base_emission_model_keys": ["total", "total"],
-            "combination_weights": np.array(
-                [
-                    np.array([i, 1 - i])
-                    for i in np.random.uniform(
-                        0, 1, size=len(lhc_basis_params["redshifts"])
-                    )
-                ]
-            ),
-            "out_name": "test_combined_lhc",
-            "out_dir": f"{test_dir}/test_output/",
-            "base_masses": 1e9 * Msun,
-            "draw_parameter_combinations": False,
-        }
-
     def test_init_combined(self, combined_grid_basis_params):
         """Test that CombinedBasis initializes correctly with valid parameters."""
         combined = CombinedBasis(**combined_grid_basis_params)
@@ -544,6 +549,7 @@ class TestCombinedBasis:
             out_file,
             expected_keys=expected_keys,
             expected_attrs=expected_attrs,
+            check_size=True,
         )
 
     def test_create_full_grid(self, combined_lhc_basis_params):
@@ -575,6 +581,7 @@ class TestCombinedBasis:
             out_file,
             expected_keys=expected_keys,
             expected_attrs=expected_attrs,
+            check_size=True,
         )
 
 
@@ -705,137 +712,42 @@ class TestSBIFitter:
         )
 
 
-# Integration tests for full pipeline
-def test_full_pipeline_integration(tmp_path):
-    """Integration test for the full pipeline.
+class TestFullPipeline:
+    """Test suite for full runthrough of grids and SBIFitter."""
 
-    This test creates a minimal version of the full pipeline to verify
-    that all components work together correctly.
-    """
-    # Skip this test if we're not running integration tests
-    pytest.skip("Integration test - skipping for normal test runs")
+    def test_full_lhc(self, lhc_basis_params):
+        """Test the full runthrough of LHC grid creation and SBIFitter."""
+        # Create the GalaxyBasis with LHC parameters
+        basis = GalaxyBasis(**lhc_basis_params)
 
-    # Create temporary directory for output
-    out_dir = tmp_path / "output"
-    out_dir.mkdir()
+        stellar_masses = unyt_array(
+            np.random.uniform(1e7, 1e11, size=len(lhc_basis_params["redshifts"])), Msun
+        )
 
-    # Create minimal grid
-    test_grid = MagicMock(spec=Grid)
-    test_grid.log10ages = np.linspace(6, 10, 5)
-    test_grid.metallicity = np.array([0.0001, 0.02])
-    test_grid.wavelength = np.logspace(3, 5, 20)
+        basis.create_mock_cat(
+            stellar_masses=stellar_masses,
+            emission_model_key="total",
+            out_name="test_full_simple",
+            out_dir=f"{test_dir}/test_output/",
+            n_proc=1,
+            overwrite=True,
+        )
 
-    # Create minimal instrument
-    filterset = MagicMock(spec=FilterCollection)
-    filterset.filter_codes = ["JWST/NIRCam.F070W", "JWST/NIRCam.F200W"]
-    instrument = MagicMock(spec=Instrument)
-    instrument.filters = filterset
-    instrument.label = "JWST"
+        # Initialize SBIFitter from the created grid
+        fitter = SBI_Fitter.init_from_hdf5(
+            model_name="test_sbi_lhc",
+            hdf5_path=f"{test_dir}/test_output/grid_test_full_simple.hdf5",
+        )
 
-    # Create minimal SFH and metallicity distribution
-    sfh = SFH.LogNormal(tau=0.5, peak_age=100 * Myr, max_age=300 * Myr)
-    zdist = ZDist.DeltaConstant(log10metallicity=-1.0)
+        # Create feature array
+        fitter.create_feature_array()
 
-    # Create minimal emission models
-    emission_model1 = MagicMock(spec=TotalEmission)
-    emission_model1.set_per_particle = MagicMock()
+        assert fitter.has_features, (
+            "SBIFitter did not create a feature array from the raw photometry."
+        )
 
-    emission_model2 = MagicMock(spec=IncidentEmission)
-    emission_model2.set_per_particle = MagicMock()
+        fitter.run_single_sbi()
 
-    # Create bases
-    basis1 = GalaxyBasis(
-        model_name="PopII",
-        redshifts=np.array([6.0]),
-        grid=test_grid,
-        emission_model=emission_model1,
-        sfhs=[sfh],
-        metal_dists=[zdist],
-        cosmo=Planck18,
-        instrument=instrument,
-        galaxy_params={"tau_v": 0.5},
-        redshift_dependent_sfh=False,
-    )
-
-    basis2 = GalaxyBasis(
-        model_name="PopIII",
-        redshifts=np.array([6.0]),
-        grid=test_grid,
-        emission_model=emission_model2,
-        sfhs=[sfh],
-        metal_dists=[zdist],
-        cosmo=Planck18,
-        instrument=instrument,
-        galaxy_params={},
-        redshift_dependent_sfh=False,
-    )
-
-    # Mock create_galaxies and process_galaxies
-    basis1.create_galaxies = MagicMock(return_value=[MagicMock(spec=Galaxy)])
-    basis1.process_galaxies = MagicMock()
-    basis2.create_galaxies = MagicMock(return_value=[MagicMock(spec=Galaxy)])
-    basis2.process_galaxies = MagicMock()
-
-    # Create combined basis
-    combined = CombinedBasis(
-        bases=[basis1, basis2],
-        total_stellar_masses=unyt_array([1e9], Msun),
-        redshifts=np.array([6.0]),
-        base_emission_model_keys=["total", "incident"],
-        combination_weights=np.array([[0.7, 0.3]]),
-        out_name="test_combined",
-        out_dir=str(out_dir),
-        base_masses=1e9 * Msun,
-    )
-
-    # Mock load_bases
-    mock_outputs = {
-        "PopII": {
-            "properties": {
-                "redshift": np.array([6.0]),
-                "mass": unyt_array([1e9], "Msun"),
-                "PopII/tau": np.array([0.5]),
-            },
-            "observed_spectra": np.ones((20, 1)),
-            "wavelengths": np.logspace(3, 5, 20),
-            "observed_photometry": {
-                "F070W": np.array([1.0]),
-                "F200W": np.array([2.0]),
-            },
-        },
-        "PopIII": {
-            "properties": {
-                "redshift": np.array([6.0]),
-                "mass": unyt_array([1e9], "Msun"),
-                "PopIII/metallicity": np.array([-1.0]),
-            },
-            "observed_spectra": np.ones((20, 1)),
-            "wavelengths": np.logspace(3, 5, 20),
-            "observed_photometry": {
-                "F070W": np.array([3.0]),
-                "F200W": np.array([4.0]),
-            },
-        },
-    }
-    combined.load_bases = MagicMock(return_value=mock_outputs)
-
-    # Mock save_grid
-    combined.save_grid = MagicMock()
-
-    # Process bases and create grid
-    combined.process_bases()
-    combined.create_grid()
-
-    # Check that all methods were called
-    basis1.create_galaxies.assert_called_once()
-    basis1.process_galaxies.assert_called_once()
-    basis2.create_galaxies.assert_called_once()
-    basis2.process_galaxies.assert_called_once()
-    combined.load_bases.assert_called_once()
-    combined.save_grid.assert_called_once()
-
-
-# Run the tests
 
 if __name__ == "__main__":
     pytest.main([__file__])
