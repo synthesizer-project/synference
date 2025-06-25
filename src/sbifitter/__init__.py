@@ -12,7 +12,8 @@ from .grid import (
 from .utils import (
     load_grid_from_hdf5, calculate_min_max_wav_grid, generate_constant_R,
     list_parameters, rename_overlapping_parameters, FilterArithmeticParser,
-    timeout_handler, TimeoutException, create_sqlite_db
+    timeout_handler, TimeoutException, create_sqlite_db, f_jy_err_to_asinh,
+    f_jy_to_asinh
 )
 
 
@@ -47,6 +48,7 @@ __all__ = [
     "FilterArithmeticParser",
     "timeout_handler",
     "TimeoutException",
-    "create_sqlite_db"
-    
+    "create_sqlite_db",
+    "f_jy_err_to_asinh",
+    "f_jy_to_asinh",
 ]
