@@ -38,7 +38,7 @@ from optuna.trial import TrialState
 from scipy import stats
 from sklearn.preprocessing import StandardScaler
 from tqdm import tqdm
-from unyt import nJy, unyt_array, unyt_quantity
+from unyt import Jy, nJy, unyt_array, unyt_quantity
 
 # astropy, scipy, matplotlib, tqdm, synthesizer, unyt, h5py, numpy,
 # ili, torch, sklearn, optuna, joblib, pandas, tarp, astropy.table
@@ -737,10 +737,26 @@ class SBI_Fitter:
             colors=["red"],
         )
 
+    def create_feature_array(
+        self,
+        flux_units: str = "AB",
+        extra_features: list = None,
+    ):
+        """Create a feature array from the raw photometry grid.
+
+        A simpler wrapper for
+        `create_feature_array_from_raw_photometry` with default values.
+        This function will create a feature array from the raw photometry grid
+        with no noise, and all photometry in mock catalogue used.
+        """
+        return self.create_feature_array_from_raw_photometry(
+            flux_units=flux_units, extra_features=extra_features
+        )
+
     def create_feature_array_from_raw_photometry(
         self,
-        normalize_method: str = "mUV",
-        extra_features: list = ["redshift"],
+        normalize_method: str = None,
+        extra_features: list = None,
         normed_flux_units: str = "AB",
         normalization_unit: str = "AB",
         verbose: bool = True,
@@ -762,8 +778,9 @@ class SBI_Fitter:
         photometry_to_remove: list = None,
         drop_dropouts: bool = False,
         drop_dropout_fraction: float = 1.0,
-        asinh_softening_parameters: Union[unyt_array, List[unyt_array],
-                                Dict[str, unyt_array],str] = None,
+        asinh_softening_parameters: Union[
+            unyt_array, List[unyt_array], Dict[str, unyt_array], str
+        ] = None,
     ) -> np.ndarray:
         """Create a feature array from the raw photometry grid.
 
@@ -777,7 +794,9 @@ class SBI_Fitter:
                 E.g. NIRCam.F090W - NIRCam.F115W color as
                 a feature would be written as ['F090W - F115W'].
                 They can also be parameters in the parameter grid,
-                in which case they won't be predicted by the model.
+                in which case they won't be predicted by the model -e.g. redshift.
+                or supplementary parameters (e.g. things generated)
+                with grid, e.g. spectral indicices, mUV, morphology, etc.
             normed_flux_units: The units of the flux to normalize to. E.g. 'AB', 'nJy',
                 etc. So when combined with normalize method,
                 the fluxes for each filter will be relative to the normalization filter,
@@ -860,6 +879,9 @@ class SBI_Fitter:
         Returns:
             The feature array and feature names.
         """
+        if extra_features is None:
+            extra_features = []
+
         if parameters_to_remove is None:
             parameters_to_remove = []
         if photometry_to_remove is None:
@@ -868,11 +890,10 @@ class SBI_Fitter:
             phot_grid = override_phot_grid
             raw_photometry_units = override_phot_grid_units
         else:
-            phot_grid = self.raw_photometry_grid
+            phot_grid = copy.deepcopy(self.raw_photometry_grid)
             raw_photometry_units = self.raw_photometry_units
 
         raw_photometry_names = self.raw_photometry_names
-
 
         assert isinstance(photometry_to_remove, list), (
             "photometry_to_remove must be a list of filter names to remove."
@@ -909,34 +930,30 @@ class SBI_Fitter:
             assert asinh_softening_parameters is not None, (
                 "asinh_softening_parameters must be provided for asinh normalization."
             )
-            if isinstance(asinh_softening_parameters, (list, np.ndarray)):
-                assert len(asinh_softening_parameters) == len(
-                    raw_photometry_names
-                ), (
+            if isinstance(
+                asinh_softening_parameters, (list, np.ndarray)
+            ) and not isinstance(asinh_softening_parameters, unyt_array):
+                assert len(asinh_softening_parameters) == len(raw_photometry_names), (
                     "asinh_softening_parameter must be a list of the same length as "
                     "the number of photometry filters."
                 )
                 asinh_softening_parameter = [
-                    asinh_softening_parameters[i] for i in raw_photometry_names
-                ]
+                    asinh_softening_parameters[i].to(Jy).value
+                    for i in raw_photometry_names
+                ] * Jy
             elif isinstance(asinh_softening_parameters, unyt_array):
-                # If it's a single unyt_array, convert it to a list
-                asinh_softening_parameter = [
-                    asinh_softening_parameters for _ in raw_photometry_names
-                ]
+                asinh_softening_parameter = asinh_softening_parameters.to(Jy)
             elif isinstance(asinh_softening_parameters, str):
                 assert asinh_softening_parameters.startswith("SNR_"), (
                     "If a string, asinh_softening_parameters must start with 'SNR_'."
                 )
-                assert (scatter_fluxes) \
-                and (depths is not None or empirical_noise_models is not None), (
-                    """If setting asinh_softening_parameters from noise models,
+                assert (scatter_fluxes) and (
+                    depths is not None or empirical_noise_models is not None
+                ), """If setting asinh_softening_parameters from noise models,
                     depths or empirical_noise_models must be provided."""
-                )
 
                 val = float(asinh_softening_parameters.split("_")[-1])
                 asinh_softening_parameter = [val for name in raw_photometry_names]
-
 
         phot = unyt_array(phot_grid, units=raw_photometry_units)
         converted = False
@@ -949,8 +966,8 @@ class SBI_Fitter:
 
             if depths is not None:
                 print(
-                    f"""Using depth-based noise models with
-                    {scatter_fluxes} scatters per row."""
+                    f"""Using depth-based noise models with \
+                        {scatter_fluxes} scatters per row."""
                 )
                 assert isinstance(depths, unyt_array)
                 self.phot_depths = depths
@@ -963,17 +980,28 @@ class SBI_Fitter:
                     return_errors=True,
                     min_flux_pc_error=min_flux_pc_error,
                 )
+
                 # Calculate correct asinh parameters if needed.
-                if normed_flux_units == "asinh" and \
-                    isinstance(asinh_softening_parameters, str) and \
-                    asinh_softening_parameters.startswith("SNR_"):
+                if (
+                    normed_flux_units == "asinh"
+                    and isinstance(asinh_softening_parameters, str)
+                    and asinh_softening_parameters.startswith("SNR_")
+                ):
                     # Set the asinh softening parameter from the noise model
                     # if based on SNR. E.g. given depths unit, asinh
                     # softening parameter here would be e.g. 5 sigma depths
                     # if asinh_softening_parameters = "SNR_5".
-                    asinh_softening_parameter = [ asinh_softening_parameter *
-                    self.phot_depths[i] / 5.0 for i in range(len(raw_photometry_names))
+                    asinh_softening_parameter = [
+                        asinh_softening_parameter[i]
+                        * self.phot_depths[i].to("Jy").value
+                        / 5.0
+                        for i in range(len(raw_photometry_names))
                     ]
+                    asinh_softening_parameter = unyt_array(
+                        asinh_softening_parameter,
+                        units=Jy,
+                    )
+
                 converted = False
             elif empirical_noise_models is not None:
                 print(
@@ -1000,11 +1028,13 @@ class SBI_Fitter:
 
         if normed_flux_units == "AB":
             if phot_errors is not None and not converted:
-                phot_errors = np.abs(
+                phot_errors = (
                     2.5
                     * phot_errors.to("uJy").value
                     / (np.log(10) * phot.to("uJy").value)
                 )
+
+                print(phot_errors.max())
             if not converted:
                 phot_mag = -2.5 * np.log10(phot.to("uJy").value) + 23.9
                 mask = phot.to("uJy").value < 0
@@ -1025,11 +1055,13 @@ class SBI_Fitter:
             if not converted:
                 if phot_errors is not None:
                     phot_errors = f_jy_err_to_asinh(
-                        phot.to("Jy"), phot_errors.to("Jy"),
+                        phot.to("Jy"),
+                        phot_errors.to("Jy"),
                         f_b=asinh_softening_parameter,
                     )
 
-                phot = f_jy_to_asinh(phot.to("Jy"),
+                phot = f_jy_to_asinh(
+                    phot.to("Jy"),
                     f_b=asinh_softening_parameter,
                 )
 
@@ -1130,11 +1162,9 @@ class SBI_Fitter:
                     )
                 elif normed_flux_units == "asinh":
                     # This may not work - so many edges cases.
-                    normalization_factor_use = (
-                        f_jy_to_asinh(
-                            unyt_array(normalization_factor, units=norm_unit),
-                            f_b=asinh_softening_parameter[norm_index],
-                        )
+                    normalization_factor_use = f_jy_to_asinh(
+                        unyt_array(normalization_factor, units=norm_unit),
+                        f_b=asinh_softening_parameter[norm_index],
                     )
 
                 else:
@@ -1422,8 +1452,8 @@ class SBI_Fitter:
         if verbose:
             print("---------------------------------------------")
             print(
-                f"""Features: {self.feature_array.shape[1]} features over
-                  {self.feature_array.shape[0]} samples"""
+                f"""Features: {self.feature_array.shape[1]} features over \
+{self.feature_array.shape[0]} samples"""
             )
             print("---------------------------------------------")
             print("Feature: Min - Max")
@@ -1431,8 +1461,8 @@ class SBI_Fitter:
 
             for pos, feature_name in enumerate(feature_names):
                 print(
-                    f"""{feature_name}: {np.min(feature_array[pos]):.6f} -
-                    {np.max(feature_array[pos]):.3f} {self.feature_units[pos]}"""
+                    f"""{feature_name}: {np.min(feature_array[pos]):.6f} - \
+{np.max(feature_array[pos]):.3f} {self.feature_units[pos]}"""
                 )
             print("---------------------------------------------")
 
@@ -1465,6 +1495,7 @@ class SBI_Fitter:
             "error_names": error_names,
             "flag_names": flag_names,
             "norm_name": norm_name,
+            "asinh_softening_parameters": asinh_softening_parameters,
         }
 
         self.update_parameter_array(
