@@ -343,9 +343,10 @@ def create_sqlite_db(db_path: str):
     return storage_name
 
 
-def f_jy_to_asinh(f_jy: unyt_array,
-         f_b = 5 * nJy # 29.6 AB mag
-         ) -> np.ndarray:
+def f_jy_to_asinh(
+    f_jy: unyt_array,
+    f_b: unyt_array = 5 * nJy,  # 29.6 AB mag
+) -> np.ndarray:
     """Convert flux in Jy to asinh magnitude.
 
     Parameters:
@@ -355,12 +356,33 @@ def f_jy_to_asinh(f_jy: unyt_array,
     Returns:
         Magnitude in asinh scale.
     """
-    return - 2.5 * np.log10(np.e)* (np.asinh(f_jy/(2*f_b)) + np.log(f_b/(3631 * Jy)))
+    f_jy = f_jy.to(Jy)
+    f_b = f_b.to(Jy)
 
-def f_jy_err_to_asinh(f_jy: unyt_array,
-                      f_jy_err: unyt_array,
-                      f_b = 5 * nJy # 29.6 AB mag
-                      ) -> np.ndarray:
+    if f_b.ndim == 0:
+        f_b = np.full_like(f_jy, f_b.value, dtype=f_jy.dtype)
+    elif f_b.ndim == 1 and f_jy.ndim == 2:
+        assert f_b.shape[0] == f_jy.shape[0], (
+            "Flux softening must match the number of filters."
+        )
+        f_b = np.tile(f_b, (f_jy.shape[1], 1)).T
+
+    else:
+        assert f_b.shape == f_jy.shape, (
+            "Flux and flux softening must have the same shape."
+        )
+
+    asinh = (
+        -2.5 * np.log10(np.e) * (np.asinh(f_jy / (2 * f_b)) + np.log(f_b / (3631 * Jy)))
+    )
+    return asinh
+
+
+def f_jy_err_to_asinh(
+    f_jy: unyt_array,
+    f_jy_err: unyt_array,
+    f_b: unyt_array = 5 * nJy,  # 29.6 AB mag
+) -> np.ndarray:
     """Convert flux error in Jy to asinh magnitude error.
 
     Parameters:
@@ -371,8 +393,19 @@ def f_jy_err_to_asinh(f_jy: unyt_array,
     Returns:
         Magnitude error in asinh scale.
     """
-    f_jy = f_jy.to(Jy)
-    f_jy_error = f_jy_err.to(Jy)
-    f_b = f_b.to(Jy)
+    f_jy = f_jy.to(Jy).value
+    f_jy_err = f_jy_err.to(Jy).value
 
-    return 2.5*np.log10(np.e) * f_jy_error / np.sqrt(f_jy**2 + (2*f_b)**2)
+    assert f_jy.shape == f_jy_err.shape, "Flux and flux error must have the same shape."
+    if f_b.ndim == 0:
+        f_b = unyt_array(np.full_like(f_jy, f_b.value, dtype=f_jy.dtype), units=f_b.units)
+    elif f_b.ndim == 1 and f_jy.ndim == 2:
+        assert f_b.shape[0] == f_jy.shape[0], (
+            "Flux softening must match the number of filters."
+        )
+        f_b = np.tile(f_b, (f_jy.shape[1], 1)).T
+    else:
+        assert f_b.shape == f_jy.shape, "Flux and flux error must have the same shape."
+
+    f_b = f_b.to(Jy).value
+    return 2.5 * np.log10(np.e) * f_jy_err / np.sqrt(f_jy**2 + (2 * f_b) ** 2)
