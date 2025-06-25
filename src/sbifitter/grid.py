@@ -46,6 +46,8 @@ from unyt import (
 )
 
 from .utils import (
+    f_jy_err_to_asinh,
+    f_jy_to_asinh,
     list_parameters,
 )
 
@@ -2927,7 +2929,6 @@ class CombinedBasis:
                         params_dict[param_name] = model_output["properties"][
                             original_param
                         ][pos]
-
                 # Process supplementary parameters
                 supp_dict = {}
                 for key, value in supp_params[model_name].items():
@@ -2949,6 +2950,7 @@ class CombinedBasis:
                             supp_param_units[key] = str(dimensionless)
 
                 # Store all relevant data for this base
+
                 base_data.append(
                     {
                         "photometry": scaled_phot,
@@ -2965,7 +2967,8 @@ class CombinedBasis:
                 num_items = base["num_items"]
 
                 # Use photometry directly
-                output_array = base["photometry"]
+                output = base["photometry"]
+                output_array = output[:, np.newaxis] if output.ndim == 1 else output
 
                 # Create parameter array
                 params_array = np.zeros((len(param_columns), num_items))
@@ -3016,7 +3019,6 @@ class CombinedBasis:
                 for i, combo_indices in enumerate(combinations):
                     # Fill photometry - combine the weighted contributions
                     for j, base_idx in enumerate(combo_indices):
-                        print("check", base_data[j]["photometry"])
                         output_array[:, i] += base_data[j]["photometry"][base_idx]
 
                     # Fill parameters
@@ -3036,15 +3038,10 @@ class CombinedBasis:
                         model_name = base.model_name
                         for param_name in total_property_names.get(model_name, []):
                             if param_name in base_data[j]["params"]:
-                                print(
-                                    "meow",
-                                    base_data[j]["params"][param_name],
-                                    param_name,
-                                )
                                 params_array[param_idx, i] = base_data[j]["params"][
                                     param_name
                                 ]
-                            param_idx += 1
+                                param_idx += 1
 
                     # Fill supplementary parameters
                     for k, param_name in enumerate(supp_param_keys):
@@ -3060,13 +3057,16 @@ class CombinedBasis:
                         supp_array[k, i] = total_value
 
             # Append results for this redshift to the global arrays
+            # Give output_array shape (n, 1) if it is 1D
+            # if output_array.ndim == 1:
+            #    output_array = output_array[:, np.newaxis]
             all_outputs.append(output_array)
             all_params.append(params_array)
             all_supp_params.append(supp_array)
 
         # ===== COMBINE RESULTS =====
 
-        combined_outputs = np.hstack(all_outputs).T
+        combined_outputs = np.hstack(all_outputs)
         combined_params = np.hstack(all_params)
         combined_supp_params = np.hstack(all_supp_params)
 
@@ -3080,6 +3080,28 @@ class CombinedBasis:
         print(f"Combined parameters shape: {combined_params.shape}")
         print(f"Combined supplementary parameters shape: {combined_supp_params.shape}")
         print(f"Filter codes: {filter_codes}")
+
+        # Check combined_outputs is 2D
+        if combined_outputs.ndim == 1:
+            raise ValueError(
+                "Combined outputs should be a 2D array with \
+                 shape (n_filters, n_galaxies)."
+            )
+
+        assert combined_outputs.shape[0] == len(filter_codes), (
+            "Output photometry shape does not match number of filters."
+            f"Expected {len(filter_codes)}, got {combined_outputs.shape[0]}."
+        )
+
+        assert combined_params.shape[0] == len(param_columns), (
+            "Output parameters shape does not match number of parameter columns."
+            f"Expected {len(param_columns)}, got {combined_params.shape[0]}."
+        )
+
+        assert combined_supp_params.shape[0] == len(supp_param_keys), (
+            "Output supplementary parameters shape does not match number of keys."
+            f"Expected {len(supp_param_keys)}, got {combined_supp_params.shape[0]}."
+        )
 
         # Create output dictionary
         out = {
@@ -3488,6 +3510,7 @@ class EmpiricalUncertaintyModel:
         true_flux: Union[float, np.ndarray],
         true_flux_units: Optional[str] = None,
         out_units: Optional[str] = None,
+        asinh_softening_parameter: Optional[float] = None,
     ) -> Tuple[Union[float, np.ndarray, None], Union[float, np.ndarray, None]]:
         """Applies noise to a photometric measurement.
 
@@ -3500,9 +3523,18 @@ class EmpiricalUncertaintyModel:
         out_units : str, optional
             The units to return the noisy flux in. If None, defaults to the object's
             flux_unit.
+            Can be "AB", "asinh" or any valid unyt unit.
+        asinh_softening_parameter : float, optional
+            If out_units is "asinh", this parameter is used to soften the
+            asinh transformation.
 
         """
         true_flux = true_flux.copy()
+
+        if out_units == "asinh":
+            assert asinh_softening_parameter is not None, (
+                "If out_units is 'asinh', asinh_softening_parameter must be provided."
+            )
 
         if self.flux_unit != true_flux_units:
             if self.flux_unit == "AB":
@@ -3688,11 +3720,34 @@ class EmpiricalUncertaintyModel:
                     noisy_flux_array = (
                         -2.5 * np.log10(noisy_flux_array.to(Jy).value) + 8.9
                     )
+                elif out_units == "asinh":
+                    if isinstance(asinh_softening_parameter, unyt_array):
+                        f_b = asinh_softening_parameter.to(Jy)
+                    else:
+                        # Assume it is a sigma value, and calculate
+                        # error in the same way as we calculated the SNR
+                        # before.
+                        f_b = [
+                            self.snr_interpolator(i) for i in asinh_softening_parameter
+                        ]
+                        f_b = unyt_array(f_b, units=self.flux_unit).to(Jy)
+
+                    # Convert to asinh magnitude
+                    noisy_flux_array = f_jy_err_to_asinh(
+                        sampled_sigma_prime.to(Jy),
+                        noisy_flux_array.to(Jy),
+                        f_b=f_b,
+                    )
+                    sampled_sigma_prime = f_jy_to_asinh(
+                        sampled_sigma_prime.to(Jy),
+                        f_b=f_b,
+                    )
+
                 else:
                     sampled_sigma_prime = sampled_sigma_prime.to(true_flux_units).value
                     noisy_flux_array = noisy_flux_array.to(true_flux_units).value
 
-        # Apply min/max in original units.
+        # Apply min/max in original/output units.
         sampled_sigma_prime[sampled_sigma_prime < self.min_flux_error] = (
             self.min_flux_error
         )

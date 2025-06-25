@@ -174,7 +174,7 @@ if sfh_type == SFH.DenseBasis:
 
 print(full_params.keys())
 
-param_grid = draw_from_hypercube(Nmodels, full_params, rng=42)
+param_grid = draw_from_hypercube(full_params, Nmodels, rng=42)
 
 # Unpack the parameters
 
