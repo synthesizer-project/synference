@@ -99,7 +99,7 @@ except Exception:
 
 # params
 
-Nmodels = 5
+Nmodels = 1000
 redshift = (5, 12)
 masses = (6, 11.5)
 max_redshift = 20  # gives maximum age of SFH at a given redshift
@@ -138,7 +138,7 @@ full_params = {
 
 # Generate the grid
 
-param_grid = draw_from_hypercube(Nmodels, full_params, rng=42)
+param_grid = draw_from_hypercube(full_params, Nmodels, rng=42)
 
 # Unpack the parameters
 
@@ -208,10 +208,10 @@ galaxy_params = {
 
 sfh_name = str(sfh_type).split(".")[-1].split("'")[0]
 
-name = f"""Pop_II_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_
-{np.log10(Nmodels):.1f}_BPASS_Chab_Calzetti_v1_fesc0.0"""
+name = f"""Pop_II_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_\
+{np.log10(Nmodels):.1f}_BPASS_Chab_Calzetti_v1_fesc0.0_test"""
 
-popII_basis = GalaxyBasis(
+basis = GalaxyBasis(
     model_name=f"sps_{name}",
     redshifts=redshifts,
     grid=grid,
@@ -230,7 +230,7 @@ popII_basis = GalaxyBasis(
 
 # This is the simple way-
 # it runs the following three steps for you.
-
+"""
 basis.create_mock_cat(
     out_name=f'grid_{name}',
     stellar_masses=unyt_array(10 ** all_param_dict["masses"], units=Msun),
@@ -242,10 +242,10 @@ basis.create_mock_cat(
     mUV=(calculate_muv, cosmo),  # Calculate mUV for the mock catalogue.
 )
 
-
+"""
 # This is the complex way
 combined_basis = CombinedBasis(
-    bases=[popII_basis],
+    bases=[basis],
     total_stellar_masses=unyt_array(10 ** all_param_dict["masses"], units=Msun),
     base_emission_model_keys=["total"],
     combination_weights=None,
