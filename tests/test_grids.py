@@ -180,7 +180,7 @@ def lhc_basis_params(
         "cosmo": Planck18,
         "instrument": mock_instrument,
         "galaxy_params": {"tau_v": all_param_dict["tau_v"]},
-        #"stellar_masses": unyt_array(all_param_dict["masses"], Msun),
+        # "stellar_masses": unyt_array(all_param_dict["masses"], Msun),
         "redshift_dependent_sfh": True,
         "build_grid": False,
         "sfhs": sfh_models,
@@ -386,25 +386,33 @@ class TestGalaxyBasis:
         """Test that full_single_cat_creation creates a single catalog."""
         basis = GalaxyBasis(**lhc_basis_params)
 
-        basis.create_mock_cat(
-            stellar_masses=[1e9] * len(grid_basis_params["redshifts"]) * Msun,
-            emission_model_key = "total",
-            out_name = "test_combined_simple",
-            out_dir = f"{test_dir}/test_output/",
+        combined = basis.create_mock_cat(
+            stellar_masses=unyt_array([1e9] * len(lhc_basis_params["redshifts"]), Msun),
+            emission_model_key="total",
+            out_name="test_combined_simple",
+            out_dir=f"{test_dir}/test_output/",
             n_proc=1,
+            overwrite=True,
         )
 
         # Check that the output file exists
-        out_file = f"{test_dir}/test_output/test_combined_simple.hdf5"
+        out_file = f"{test_dir}/test_output/grid_test_combined_simple.hdf5"
         assert os.path.exists(out_file), f"Output file {out_file} was not created."
 
         # Check that the expected keys are in the output file
         expected_keys = [
-            "Galaxies/Properties",
-            "Galaxies/Photometry",
-            "Galaxies/SupplementaryParameters",
+            "Grid/Parameters",
+            "Grid/Photometry",
+            "Grid/SupplementaryParameters",
         ]
-        check_hdf5(out_file, expected_keys=expected_keys)
+
+        expected_attrs = {
+            "FilterCodes": basis.instrument.filters.filter_codes,
+            "ParameterNames": combined.grid_parameter_names,
+            "model_name": [basis.model_name],
+        }
+        check_hdf5(out_file, expected_keys=expected_keys, expected_attrs=expected_attrs)
+
 
 class TestCombinedBasis:
     """Test suite for the CombinedBasis class."""
@@ -439,6 +447,7 @@ class TestCombinedBasis:
             "out_name": "test_combined",
             "out_dir": f"{test_dir}/test_output/",
             "base_masses": 1e9 * Msun,
+            "draw_parameter_combinations": True,
         }
 
     @pytest.fixture
