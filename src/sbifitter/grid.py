@@ -46,6 +46,8 @@ from unyt import (
 )
 
 from .utils import (
+    f_jy_err_to_asinh,
+    f_jy_to_asinh,
     list_parameters,
 )
 
@@ -852,7 +854,7 @@ class GalaxyBasis:
             List of Galaxy objects.
         """
         if not self.build_grid:
-            raise ValueError("""You probably meant to call 
+            raise ValueError("""You probably meant to call
             _create_matched_galaxies instead.""")
 
         varying_param_values = [
@@ -3478,6 +3480,7 @@ class EmpiricalUncertaintyModel:
         true_flux: Union[float, np.ndarray],
         true_flux_units: Optional[str] = None,
         out_units: Optional[str] = None,
+        asinh_softening_parameter: Optional[float] = None,
     ) -> Tuple[Union[float, np.ndarray, None], Union[float, np.ndarray, None]]:
         """Applies noise to a photometric measurement.
 
@@ -3490,9 +3493,18 @@ class EmpiricalUncertaintyModel:
         out_units : str, optional
             The units to return the noisy flux in. If None, defaults to the object's
             flux_unit.
+            Can be "AB", "asinh" or any valid unyt unit.
+        asinh_softening_parameter : float, optional
+            If out_units is "asinh", this parameter is used to soften the
+            asinh transformation.
 
         """
         true_flux = true_flux.copy()
+
+        if out_units == "asinh":
+            assert asinh_softening_parameter is not None, (
+                "If out_units is 'asinh', asinh_softening_parameter must be provided."
+            )
 
         if self.flux_unit != true_flux_units:
             if self.flux_unit == "AB":
@@ -3678,11 +3690,33 @@ class EmpiricalUncertaintyModel:
                     noisy_flux_array = (
                         -2.5 * np.log10(noisy_flux_array.to(Jy).value) + 8.9
                     )
+                elif out_units == "asinh":
+                    if isinstance(asinh_softening_parameter, unyt_array):
+                        f_b = asinh_softening_parameter.to(Jy)
+                    else:
+                        # Assume it is a sigma value, and calculate
+                        # error in the same way as we calculated the SNR
+                        # before.
+                        f_b = [self.snr_interpolator(i) for
+                            i in asinh_softening_parameter]
+                        f_b = unyt_array(f_b, units=self.flux_unit).to(Jy)
+
+                    # Convert to asinh magnitude
+                    noisy_flux_array = f_jy_err_to_asinh(
+                            sampled_sigma_prime.to(Jy),
+                            noisy_flux_array.to(Jy),
+                            f_b = f_b,
+                        )
+                    sampled_sigma_prime = f_jy_to_asinh(
+                        sampled_sigma_prime.to(Jy),
+                        f_b=f_b,
+                    )
+
                 else:
                     sampled_sigma_prime = sampled_sigma_prime.to(true_flux_units).value
                     noisy_flux_array = noisy_flux_array.to(true_flux_units).value
 
-        # Apply min/max in original units.
+        # Apply min/max in original/output units.
         sampled_sigma_prime[sampled_sigma_prime < self.min_flux_error] = (
             self.min_flux_error
         )

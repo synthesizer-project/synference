@@ -9,7 +9,7 @@ from typing import Dict, List, Union
 import h5py
 import numpy as np
 import scipy.stats
-from unyt import Angstrom
+from unyt import Angstrom, Jy, nJy, unyt_array
 
 
 def load_grid_from_hdf5(
@@ -341,3 +341,38 @@ def create_sqlite_db(db_path: str):
     print(storage_name)
 
     return storage_name
+
+
+def f_jy_to_asinh(f_jy: unyt_array,
+         f_b = 5 * nJy # 29.6 AB mag
+         ) -> np.ndarray:
+    """Convert flux in Jy to asinh magnitude.
+
+    Parameters:
+        f_jy: Flux in Jy.
+        f_b:  Softening parameter (transition point for the asinh scale).
+
+    Returns:
+        Magnitude in asinh scale.
+    """
+    return - 2.5 * np.log10(np.e)* (np.asinh(f_jy/(2*f_b)) + np.log(f_b/(3631 * Jy)))
+
+def f_jy_err_to_asinh(f_jy: unyt_array,
+                      f_jy_err: unyt_array,
+                      f_b = 5 * nJy # 29.6 AB mag
+                      ) -> np.ndarray:
+    """Convert flux error in Jy to asinh magnitude error.
+
+    Parameters:
+        f_jy: Flux in Jy.
+        f_jy_err: Flux error in Jy.
+        f_b: Softening parameter (transition point for the asinh scale).
+
+    Returns:
+        Magnitude error in asinh scale.
+    """
+    f_jy = f_jy.to(Jy)
+    f_jy_error = f_jy_err.to(Jy)
+    f_b = f_b.to(Jy)
+
+    return 2.5*np.log10(np.e) * f_jy_error / np.sqrt(f_jy**2 + (2*f_b)**2)
