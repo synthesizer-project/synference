@@ -8,10 +8,9 @@ from synthesizer.emission_models.stellar.pacman_model import PacmanEmission  # n
 from synthesizer.grid import Grid
 from synthesizer.instruments import FilterCollection, Instrument
 from synthesizer.parametric import SFH, ZDist
-from unyt import Gyr, K, Msun, unyt_array
+from unyt import Gyr, K, Msun
 
 from sbifitter import (
-    CombinedBasis,
     GalaxyBasis,
     SBI_Fitter,
     calculate_muv,
@@ -49,54 +48,44 @@ grid_dir = os.environ["SYNTHESIZER_GRID_DIR"]
 
 dir_path = os.path.dirname(os.path.abspath(__file__))
 out_dir = os.path.join(os.path.dirname(os.path.dirname(dir_path)), "grids/")
-
+print(out_dir)
 # ---------------------------------------------------------------
 # Configure model
 
-Nmodels = 100_000
+Nmodels = 100
 batch_size = 40_000  # number of models to generate in each batch
 
 redshift = (0.01, 12)
-masses = (6, 12)
+masses = (6, 12) * Msun
 max_redshift = 20  # gives maximum age of SFH at a given redshift
 cosmo = Planck18  # cosmology to use for age calculations
 
 # ---------------------------------------------------------------
 # SFH
 sfh_type = SFH.DelayedExponential
-log_tau = (-2, 1)  # log-uniform between 0.01 and 10 Gyr
-max_age = (
-    0.00,
-    0.99,
-)  # normalized to maximum age of the universe at that redshift.
-sfh_param_units = [Gyr, Gyr]
-# Dust
+log_tau = (-2, 1) * Gyr  # log-uniform between 0.01 and 10 Gyr
+max_age = (0.00, 0.99)
+# Max age normalized to maximum age of the universe at that redshift.
+# Dust attenuation
 tau_v = (0.0, 4.0)  # V-band optical depth of the ISM
-# Metallicity
-log_zmet = (
-    -3,
-    -1.4,
-)  # Metallicity in absolute log scale, i.e. log10(Z/Zsun) where Zsun = 0.02
+# Metallicity in absolute log scale, i.e. log10(Z/Zsun) where Zsun = 0.02
+log_zmet = (-3, -1.4)
 # ---------------------------------------------------------------
 
 # Generate the grid. Could also seperate hyper-parameters for each model.
 
 full_params = {
     "redshift": redshift,
-    "masses": masses,
+    "log_masses": masses,
     "tau_v": tau_v,
     "log_zmet": log_zmet,
     "log_tau": log_tau,
     "max_age": max_age,
 }
 
-param_grid = draw_from_hypercube(Nmodels, full_params, rng=42)
-
-# Unpack the parameters
-
-all_param_dict = {}
-for i, key in enumerate(full_params.keys()):
-    all_param_dict[key] = param_grid[:, i]
+all_param_dict = draw_from_hypercube(
+    full_params, Nmodels, rng=42, unlog_keys=["log_tau", "log_masses"]
+)
 
 # ---------------------------------------------------------------
 # Synthesizer setup
@@ -114,18 +103,17 @@ Z_dists = [
 ]
 
 # Redshifts
-redshifts = np.array(all_param_dict["redshift"])
+redshifts = all_param_dict["redshift"]
 
 # SFH Distributions
-sfh_param_arrays = np.vstack((all_param_dict["tau"], all_param_dict["max_age"])).T
+
 sfh_models, _ = generate_sfh_basis(
     sfh_type=sfh_type,
     sfh_param_names=["tau", "max_age_norm"],
-    sfh_param_arrays=sfh_param_arrays,
+    sfh_param_arrays=(all_param_dict["tau"], all_param_dict["max_age"]),
     redshifts=redshifts,
     max_redshift=max_redshift,
     cosmo=cosmo,
-    sfh_param_units=sfh_param_units,
     iterate_redshifts=False,
     calculate_min_age=False,
 )
@@ -148,8 +136,7 @@ galaxy_params = {
     "tau_v": all_param_dict["tau_v"]
 }  # pass in any other emitter parameter here
 
-name = f"""BPASS_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}
-        _logN_{np.log10(Nmodels):.1f}_Chab_min_example"""
+name = f"BPASS_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_Chab_min_example"  # noqa: E501
 
 
 # ---------------------------------------------------------------
@@ -170,29 +157,18 @@ basis = GalaxyBasis(
     params_to_ignore=[],
     build_grid=False,
 )
-# Build the model here - could combine basis's with different grids etc
-combined_basis = CombinedBasis(
-    bases=[basis],
-    total_stellar_masses=unyt_array(10 ** all_param_dict["masses"], units=Msun),
-    base_emission_model_keys=["total"],
-    combination_weights=None,
-    redshifts=redshifts,
-    out_name=f"grid_{name}",
+
+basis.create_mock_cat(
+    out_name=name,
+    stellar_masses=all_param_dict["masses"],
+    emission_model_key="total",
     out_dir=out_dir,
-    draw_parameter_combinations=False,
-)
-
-# Passing in extra analysis function to pipeline to calculate mUV and store it.
-combined_basis.process_bases(
     overwrite=True,
-    mUV=(calculate_muv, cosmo),
-    n_proc=6,
-    verbose=False,
+    n_proc=4,
+    verbose=True,
     batch_size=batch_size,
+    mUV=(calculate_muv, cosmo),  # Calculate mUV for the mock catalogue.
 )
-
-# Create grid from pipeline outputs
-combined_basis.create_grid(overwrite=True)
 
 
 # ---------------------------------------------------------------
@@ -200,7 +176,7 @@ combined_basis.create_grid(overwrite=True)
 
 # Initialize SBI
 empirical_model_fitter = SBI_Fitter.init_from_hdf5(
-    hdf5_path=f"grid_{name}.hdf5", model_name=f"sbi_{name}"
+    hdf5_path=f"{out_dir}/grid_{name}.hdf5", model_name=f"sbi_{name}"
 )
 
 # Create explicit feature array for training.
@@ -234,7 +210,9 @@ observed_data_vector = [
     26.2,
 ]  # Example observed data vector in magnitudes
 posterior = empirical_model_fitter.sample_posterior(observed_data_vector)
-empirical_model_fitter.recover_SED(observed_data_vector)
+
+# This currently requires a simulator. But maybe doesn't need to??
+# empirical_model_fitter.recover_SED(observed_data_vector)
 
 # Optimize hyperparameters using Optuna - parameters are saved in SQLite database
 empirical_model_fitter.optimize_sbi(
