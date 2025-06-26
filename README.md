@@ -65,9 +65,9 @@ Firstly we setup the Synthesizer based mode. More details on how to set up the S
 from synthesizer.grid import Grid
 from synthesizer.instruments import FilterCollection, Instrument
 from synthesizer.parametric import SFH, ZDist
-from synthesizer.emission_models.stellar import IntrinsicEmission
+from synthesizer.emission_models import IntrinsicEmission
 from unyt import Msun, Myr
-from sbifitter import draw_from_hypercube
+from sbifitter import draw_from_hypercube, generate_sfh_basis
 
 N = 10_000  # Number of galaxies in the mock catalogue
 
@@ -86,7 +86,7 @@ parameter_samples = draw_from_hypercube(parameter_prior_ranges, N=N)
 # Chooose photometric filters and create instrument
 filter_names = ['F090W', 'F115W', 'F150W', 'F200W', 'F277W', 'F356W', 'F444W']
 filter_names = [f'JWST/NIRCam.{filter}' for filter in filter_names]
-instrument = Instrument('JWST', filters=FilterCollection(filter_codes=filter_codes))
+instrument = Instrument('JWST', filters=FilterCollection(filter_codes=filter_names))
 # Synthesizer SPS grid - BPASS 2.2.1 post-processed with Cloudy
 grid = Grid("bpass-2.2.1-bin_chabrier03-0.1,300.0_cloudy-c23.01-sps.hdf5")
 # Synthesizer emission model
@@ -99,7 +99,8 @@ Z_dists = [ZDist.DeltaConstant(log10metallicity=log_z) for log_z in parameter_sa
 sfh_models, _ = generate_sfh_basis(
     sfh_type=SFH.LogNormal,
     sfh_param_names=["tau", "peak_age"],
-    sfh_param_arrays=(all_param_dict["tau"], all_param_dict["peak_age"]),
+    sfh_param_arrays=(parameter_samples["tau"], parameter_samples["peak_age"]),
+    redshifts=parameter_samples["redshift"],
 )
 ```
 
@@ -119,7 +120,7 @@ basis = GalaxyBasis(
     metal_dists=Z_dists,
 )
 
-basis.create_mock_cat(out_name=f'grid_test')
+basis.create_mock_cat(out_name=f'grid_test', emission_model_key='intrinsic')
 ```
 
 Finally we can train a model using the `SBI_Fitter` class, which will automatically create the feature array and run the training. We have full control over the model architecture and training parameters, and can easily switch between different model types (e.g. MAF, NSF, MDN) from the lampe and sbi backends.
@@ -128,7 +129,7 @@ Here we are use a single Masked Autoregressive Flow (MAF) model, with 90 hidden 
 
 ```python
 empirical_model_fitter = SBI_Fitter.init_from_hdf5(
-    hdf5_path=f"grid_test.hdf5", model_name=f"sbi_{name}"
+    hdf5_path=f"grid_test.hdf5", model_name=f"sbi_test"
 )
 empirical_model_fitter.create_feature_array()
 
