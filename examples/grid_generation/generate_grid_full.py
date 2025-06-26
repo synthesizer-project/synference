@@ -15,7 +15,7 @@ from synthesizer.grid import Grid
 from synthesizer.instruments import FilterCollection, Instrument
 from synthesizer.parametric import SFH, ZDist
 from tqdm import tqdm
-from unyt import Gyr, K, Msun, dimensionless, unyt_array
+from unyt import Gyr, K, Msun, dimensionless
 
 from sbifitter import (
     CombinedBasis,
@@ -69,12 +69,6 @@ instrument = "HST+JWST"
 
 path = f"{os.path.dirname(__file__)}/filters/{instrument}.hdf5"
 
-if "cosma" in path:
-    computer = "cosma"
-else:
-    computer = "linux-desktop"
-
-
 if os.path.exists(path):
     filterset = FilterCollection(path=path)
 else:
@@ -106,15 +100,11 @@ except Exception:
     n_proc = 6
 
 av_to_tau_v = 1.086  # conversion factor from Av to tau_v for the dust attenuation curve
-# params
 
-# Two component dust law
-
-
-Nmodels = 500  # _000
+Nmodels = 700  # _000
 batch_size = 40_000  # number of models to generate in each batch
 redshift = (0.01, 12)
-masses = (6, 12)
+masses = (6, 12) * Msun
 max_redshift = 20  # gives maximum age of SFH at a given redshift
 cosmo = Planck18  # cosmology to use for age calculations
 
@@ -136,12 +126,8 @@ log_zmet = (-3, -1.39)  # max of grid (e.g. 0.04)
 # ssfr = (-12, -7) # log10(sSFR) in yr^-1
 
 sfh_type = SFH.DelayedExponential
-log_tau = (-2, 1)  # log-uniform between 0.01 and 100 Gyr
-max_age = (
-    0.00,
-    0.99,
-)  # normalized to maximum age of the universe at that redshift.
-sfh_param_units = [Gyr, Gyr]
+log_tau = (-2, 1) * Gyr  # log-uniform between 0.01 and 100 Gyr
+max_age = (0.00, 0.99)  # normalized to maximum age of the universe at that redshift.
 
 # ---------------------------------------------------------------
 
@@ -150,7 +136,7 @@ sfh_param_units = [Gyr, Gyr]
 
 full_params = {
     "redshift": redshift,
-    "masses": masses,
+    "log_masses": masses,
     "log_Av": logAv,  # Av in magnitudes
     "dust_birth_fraction": dust_birth_fraction,
     "log_zmet": log_zmet,
@@ -170,23 +156,15 @@ if sfh_type == SFH.DenseBasis:
             1,
         )  # dummy parameters for the SFH
 
-# Generate the grid
+# Draw samples from Latin Hypercube.
+# unlog_keys are keys which should be unlogged after drawing from the hypercube.
+# they will be renamed to not include 'log_' after drawing.
+all_param_dict = draw_from_hypercube(
+    full_params, Nmodels, rng=42, unlog_keys=["log_masses", "log_Av", "log_tau"]
+)
 
-print(full_params.keys())
 
-param_grid = draw_from_hypercube(full_params, Nmodels, rng=42)
-
-# Unpack the parameters
-
-all_param_dict = {}
-for i, key in enumerate(full_params.keys()):
-    all_param_dict[key] = param_grid[:, i]
-
-if "log_Av" in all_param_dict:
-    # Convert log_Av to Av
-    all_param_dict["Av"] = 10 ** all_param_dict["log_Av"]
-    all_param_dict.pop("log_Av")
-
+print(all_param_dict["masses"].units)
 
 # Create the grid
 grid = Grid(
@@ -227,21 +205,13 @@ if isinstance(sfh_type, SFH.DenseBasis):
                 tx[j]
             )
 else:
-    # Pop II SFH
-    if "log_tau" in all_param_dict:
-        # Convert log_tau to tau
-        all_param_dict["tau"] = 10 ** all_param_dict["log_tau"]
-        all_param_dict.pop("log_tau")
-
-    sfh_param_arrays = np.vstack((all_param_dict["tau"], all_param_dict["max_age"])).T
     sfh_models, _ = generate_sfh_basis(
         sfh_type=sfh_type,
         sfh_param_names=["tau", "max_age_norm"],
-        sfh_param_arrays=sfh_param_arrays,
+        sfh_param_arrays=(all_param_dict["tau"], all_param_dict["max_age"]),
         redshifts=redshifts,
         max_redshift=max_redshift,
         cosmo=cosmo,
-        sfh_param_units=sfh_param_units,
         iterate_redshifts=False,
         calculate_min_age=False,
     )
@@ -316,7 +286,7 @@ basis = GalaxyBasis(
 
 combined_basis = CombinedBasis(
     bases=[basis],
-    total_stellar_masses=unyt_array(10 ** all_param_dict["masses"], units=Msun),
+    total_stellar_masses=all_param_dict["masses"],
     base_emission_model_keys=["total"],
     combination_weights=None,
     redshifts=redshifts,
@@ -330,7 +300,7 @@ for i in range(10):
     basis.plot_galaxy(
         idx=i * 10,
         out_dir=f"{out_dir}/plots/{name}/",
-        stellar_mass=unyt_array(10 ** all_param_dict["masses"][i * 10], units=Msun),
+        stellar_mass=all_param_dict["masses"][i * 10],
     )
 
 # Passing in extra analysis function to pipeline to calculate mUV.

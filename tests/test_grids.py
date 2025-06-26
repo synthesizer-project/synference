@@ -111,7 +111,7 @@ def grid_basis_params(
 @pytest.fixture
 def lhc_grid(lhc_prior, n_params=1e2):
     """Fixture to create a Latin Hypercube sample grid for testing."""
-    return draw_from_hypercube(N=int(n_params), param_ranges=lhc_prior, rng=42)
+    return draw_from_hypercube(param_ranges=lhc_prior, N=int(n_params), rng=42)
 
 
 @pytest.fixture
@@ -151,9 +151,7 @@ def lhc_basis_params(
     n_params=1e2,
 ):
     """Fixture to create parameters for GalaxyBasis with LHC sampling."""
-    all_param_dict = {}
-    for i, key in enumerate(lhc_prior.keys()):
-        all_param_dict[key] = lhc_grid[:, i]
+    all_param_dict = lhc_grid
 
     Z_dists = [test_zmet(log10metallicity=log_z) for log_z in all_param_dict["log_zmet"]]
     sfh_param_arrays = np.vstack((all_param_dict["tau"], all_param_dict["peak_age"])).T

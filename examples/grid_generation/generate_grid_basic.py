@@ -11,10 +11,9 @@ from synthesizer.emission_models.attenuation import (
 from synthesizer.grid import Grid
 from synthesizer.instruments import FilterCollection, Instrument
 from synthesizer.parametric import SFH, ZDist
-from unyt import Msun, unyt_array
+from unyt import Msun
 
 from sbifitter import (
-    CombinedBasis,
     GalaxyBasis,
     calculate_muv,
     draw_from_hypercube,
@@ -101,7 +100,7 @@ except Exception:
 
 Nmodels = 1000
 redshift = (5, 12)
-masses = (6, 11.5)
+masses = (6, 11.5) * Msun
 max_redshift = 20  # gives maximum age of SFH at a given redshift
 cosmo = Planck18  # cosmology to use for age calculations
 fesc = 0.0  # escape fraction of ionizing photons
@@ -121,13 +120,12 @@ peak_age = (
     0,
     0.99,
 )  # normalized to maximum age of the universe at that redshift.
-sfh_param_units = [None, None]
 
 # ---------------------------------------------------------------
 
 # Generate the grid. Could also seperate hyper-parameters for each model.
 
-full_params = {
+param_prior_ranges = {
     "redshift": redshift,
     "masses": masses,
     "tau_v": tau_v,
@@ -136,58 +134,38 @@ full_params = {
     "peak_age": peak_age,
 }
 
-# Generate the grid
+# Draw samples from Latin Hypercube
+all_param_dict = draw_from_hypercube(
+    param_prior_ranges, Nmodels, rng=42, unlog_keys=["masses"]
+)
 
-param_grid = draw_from_hypercube(full_params, Nmodels, rng=42)
+# Get samples from the LHC draw dict
+redshifts = all_param_dict["redshift"]
+masses = all_param_dict["masses"]
 
-# Unpack the parameters
-
-all_param_dict = {}
-for i, key in enumerate(full_params.keys()):
-    all_param_dict[key] = param_grid[:, i]
-
-
+# Load Synthesizer SPS grid
 grid = Grid(
     "bpass-2.2.1-bin_chabrier03-0.1,300.0_cloudy-c23.01-sps.hdf5",
     grid_dir=grid_dir,
     new_lam=new_wav,
 )
 
-
 # Metallicity
 Z_dists = [
     ZDist.DeltaConstant(log10metallicity=log_z) for log_z in all_param_dict["log_zmet"]
 ]
 
-# Redshifts
-redshifts = np.array(all_param_dict["redshift"])
-
-# Pop II SFH
+# Create LogNormal SFH from parameters.
+# These
 sfh_param_arrays = np.vstack((all_param_dict["tau"], all_param_dict["peak_age"])).T
 sfh_models, _ = generate_sfh_basis(
     sfh_type=sfh_type,
     sfh_param_names=["tau", "peak_age_norm"],
-    sfh_param_arrays=sfh_param_arrays,
+    sfh_param_arrays=(all_param_dict["tau"], all_param_dict["peak_age"]),
     redshifts=redshifts,
     max_redshift=max_redshift,
     cosmo=cosmo,
-    sfh_param_units=sfh_param_units,
-    iterate_redshifts=False,
-    calculate_min_age=False,
 )
-# dust emission
-"""
-dust_emission_grid = Grid(
-    'draine_li_dust_emission_grid_MW_3p1',
-    grid_dir=grid_dir,
-    new_lam=new_wav,
-    read_lines=False,
-)
-
-ir_templates =IR_templates(dust_emission_grid,
-                           mdust=1e6*Msun)
-
-dust_emission = IR_templates"""
 
 
 # Emission parameters
@@ -217,23 +195,21 @@ basis = GalaxyBasis(
     grid=grid,
     emission_model=emission_model,
     sfhs=sfh_models,
+    stellar_masses=masses,
     cosmo=cosmo,
     instrument=instrument,
     metal_dists=Z_dists,
     galaxy_params=galaxy_params,
-    redshift_dependent_sfh=True,
     params_to_ignore=[
         "max_age"
     ],  # This is dependent on the redshift and should not be included in the basis
-    build_grid=False,
 )
 
 # This is the simple way-
 # it runs the following three steps for you.
-"""
+
 basis.create_mock_cat(
-    out_name=f'grid_{name}',
-    stellar_masses=unyt_array(10 ** all_param_dict["masses"], units=Msun),
+    out_name=f"grid_{name}",
     out_dir=out_dir,
     overwrite=True,
     n_proc=n_proc,
@@ -262,3 +238,4 @@ combined_basis.process_bases(
 
 # Create grid - kinda overkill for a single case, but it does work.
 combined_basis.create_grid(overwrite=True)
+"""

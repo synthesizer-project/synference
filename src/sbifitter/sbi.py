@@ -1434,6 +1434,13 @@ class SBI_Fitter:
         if len(delete_rows) > 0:
             feature_array = np.delete(feature_array, delete_rows, axis=1)
 
+        # check if all rows got deleted
+        if feature_array.shape[1] == 0:
+            raise ValueError(
+                "All rows in the feature array were deleted. "
+                "Please check the input parameters."
+            )
+
         assert "" not in feature_names, (
             "Feature names should not be empty. Please check the extra features."
         )

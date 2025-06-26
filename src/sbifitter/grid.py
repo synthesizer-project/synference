@@ -37,6 +37,7 @@ from unyt import (
     Myr,
     Unit,
     dimensionless,
+    kg,
     nJy,
     uJy,
     um,
@@ -421,6 +422,7 @@ def draw_from_hypercube(
     N: int = 1e6,
     model: Type[qmc.QMCEngine] = qmc.LatinHypercube,
     rng: Optional[np.random.Generator] = None,
+    unlog_keys: Optional[List[str]] = None,
 ):
     """Draw N samples from a hypercube defined by the parameter ranges.
 
@@ -430,29 +432,70 @@ def draw_from_hypercube(
         Number of samples to draw.
     param_ranges : dict, optional
         Dictionary where keys are parameter names and values are tuples (min, max).
+        Can be unyt_quantities for units.
     model : Type[qmc], optional
         The sampling model to use, by default LatinHypercube.
     rng : Optional[np.random.Generator], optional
+        Random number generator to use for sampling, by default None.
+    unlog_keys : Optional[List[str]], optional
+        List of keys in param_ranges that should be unlogged
+        (i.e., raised to power of 10). Units will be preserved
+        even if this doesn't really make sense (e.g. Msun).
 
     Returns:
     -------
-    np.ndarray
-        Array of shape (N, len(param_ranges)) containing the drawn samples.
+    dict
+        Dictionary where keys are parameter names and values are arrays of sampled values.
+    -------
     """
+    if unlog_keys is None:
+        unlog_keys = []
+
     # Create a Latin Hypercube sampler
     sampler = model(d=len(param_ranges), rng=rng)
 
     # Generate samples in the unit hypercube
     sample = sampler.random(int(N))
 
+    low = [param_ranges[key][0] for key in param_ranges.keys()]
+    high = [param_ranges[key][1] for key in param_ranges.keys()]
+
+    units = []
+
+    for pos, (i, j) in enumerate(zip(low, high)):
+        assert i < j, f"Parameter range {i} must be less than {j}"
+        if isinstance(i, unyt_quantity):
+            # If the parameter is a unyt_quantity, extract the value and unit
+            low[pos] = i.value
+            high[pos] = j.value
+            units.append(i.units)
+        else:
+            # Otherwise, just use the value
+            units.append(None)
+
     # Scale samples to the specified ranges
     scaled_samples = qmc.scale(
         sample,
-        np.array([param_ranges[key][0] for key in param_ranges.keys()]),
-        np.array([param_ranges[key][1] for key in param_ranges.keys()]),
+        np.array(low),
+        np.array(high),
     )
 
-    return scaled_samples.astype(np.float32)
+    all_param_dict = {}
+    for i, key in enumerate(param_ranges.keys()):
+        samples = scaled_samples[:, i].astype(np.float32)
+        if key in unlog_keys:
+            if units[i] is not None and units[i].same_dimensions_as(kg):
+                # If the parameter is in kg, convert to Msun
+                samples = samples / Msun.to(kg).value
+            # If the key is in unlog_keys, raise to power of 10
+            samples = 10**samples
+            key = key.replace("log_", "")  # Remove 'log_' prefix if present
+        if units[i] is not None:
+            # If the parameter has units, convert samples to unyt_quantity
+            samples = unyt_array(samples, units=units[i])
+        all_param_dict[key] = samples
+
+    return all_param_dict
 
 
 def load_hypercube_from_npy(file_path: str):
@@ -478,13 +521,13 @@ def generate_sfh_basis(
     sfh_type: Type[SFH.Common],
     sfh_param_names: List[str],
     sfh_param_arrays: List[np.ndarray],
-    sfh_param_units: List[Union[None, Unit]],
     redshifts: Union[Dict[str, Any], float, np.ndarray],
-    max_redshift: float = 15,
+    sfh_param_units: List[Union[None, Unit]] = None,
+    max_redshift: float = 20,
     calculate_min_age: bool = False,
     min_age_frac=0.001,
     cosmo: Type[Cosmology] = Planck18,
-    iterate_redshifts: bool = True,
+    iterate_redshifts: bool = False,
 ) -> Tuple[List[Type[SFH.Common]], np.ndarray]:
     """Generate a grid of SFHs based on parameter arrays and redshifts.
 
@@ -546,8 +589,29 @@ def generate_sfh_basis(
 
     sfhs = []
 
+    if sfh_param_units is None:
+        # If no units are provided, assume all parameters are dimensionless
+        sfh_param_units = [None] * len(sfh_param_names)
+
     all_redshifts = []
     param_names_i = [i.replace("_norm", "") for i in sfh_param_names]
+
+    if isinstance(sfh_param_arrays, tuple):
+        sfh_param_arrays = list(sfh_param_arrays)
+
+    if isinstance(sfh_param_arrays, (list, np.ndarray)):
+        for pos, (set_unit, param) in enumerate(zip(sfh_param_units, sfh_param_arrays)):
+            if isinstance(param, unyt_array):
+                # If the parameter is a unyt_array, extract the unit
+                sfh_param_units[pos] = param.units
+                # Convert to numpy array if needed
+                sfh_param_arrays[pos] = param.value
+            elif isinstance(param, (list, tuple)):
+                # If it's a list or tuple, convert to numpy array
+                sfh_param_arrays[pos] = np.array(param)
+
+    if len(sfh_param_names) == len(sfh_param_arrays):
+        sfh_param_arrays = np.vstack(sfh_param_arrays).T
 
     if iterate_redshifts:
         for i, redshift in enumerate(redshifts):
@@ -683,6 +747,7 @@ class GalaxyBasis:
         emission_model: Type[EmissionModel],
         sfhs: List[Type[SFH.Common]],
         metal_dists: List[Type[ZDist.Common]],
+        stellar_masses: Optional[np.ndarray] = None,
         galaxy_params: dict = None,
         alt_parametrizations: Dict[str, Tuple[str, callable]] = None,
         cosmo: Type[Cosmology] = Planck18,
@@ -751,6 +816,7 @@ class GalaxyBasis:
         self.cosmo = cosmo
         self.instrument = instrument
         self.redshift_dependent_sfh = redshift_dependent_sfh
+        self.stellar_masses = stellar_masses
         self.params_to_ignore = params_to_ignore
         self.build_grid = build_grid
 
@@ -761,6 +827,11 @@ class GalaxyBasis:
 
         if isinstance(self.sfhs, SFH.Common):
             self.sfhs = [self.sfhs]
+
+        if self.stellar_masses is not None:
+            assert isinstance(self.stellar_masses, (unyt_array, unyt_quantity)), (
+                "stellar_masses must be a unyt array or quantity"
+            )
 
         self.per_particle = False
 
@@ -1617,7 +1688,7 @@ class GalaxyBasis:
     def process_base(
         self,
         out_name,
-        stellar_masses: unyt_array,
+        stellar_masses: unyt_array = None,
         emission_model_key: str = "total",
         out_dir: str = grid_folder,
         n_proc: int = 6,
@@ -1632,6 +1703,12 @@ class GalaxyBasis:
         a single base. This is a convenience method to allow the
         GalaxyBasis to be run seperately.
         """
+        if stellar_masses is None:
+            assert self.stellar_masses is not None, (
+                "stellar_masses must be provided or set in the GalaxyBasis"
+            )
+            stellar_masses = self.stellar_masses
+
         assert isinstance(stellar_masses, unyt_array), (
             "stellar_masses must be a unyt_array"
         )
@@ -1688,7 +1765,7 @@ class GalaxyBasis:
     def create_mock_cat(
         self,
         out_name,
-        stellar_masses: unyt_array,
+        stellar_masses: unyt_array = None,
         emission_model_key: str = "total",
         out_dir: str = grid_folder,
         n_proc: int = 6,
@@ -1705,6 +1782,16 @@ class GalaxyBasis:
         this method which will run the components for you.
         """
         # make a CombinedBasis object with the current GalaxyBasis
+
+        if stellar_masses is None:
+            assert self.stellar_masses is not None, (
+                "stellar_masses must be provided or set in the GalaxyBasis"
+            )
+            stellar_masses = self.stellar_masses
+
+        assert isinstance(stellar_masses, unyt_array), (
+            "stellar_masses must be a unyt_array"
+        )
 
         combined_basis = CombinedBasis(
             bases=[self],
