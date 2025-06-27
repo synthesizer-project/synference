@@ -11,7 +11,7 @@
 ### Overview
 
 SBIFitter is a Python package designed to fit to perform simulation-based inference (SBI, also known as likelihood free inference) SED fitting. It integrates with [Synthesizer](https://synthesizer-project.github.io) for flexible and fast generation of mock spectra and photometry,
-and uses the [LtU-ILI](ltu-ili.readthedocs.io/) package for fast, amortised posterior inference.
+and uses the [LtU-ILI](https://ltu-ili.readthedocs.io/) package for fast, amortised posterior inference.
 
 ### Key Features
 
@@ -59,7 +59,7 @@ To get started with SBIFitter, you can check out the [examples](examples/) direc
 
 The most basic usage, for creating a simple mock catalogue and training a model on it looks like this:
 
-Firstly we setup the Synthesizer based mode. More details on how to set up the Synthesizer model can be found in the [Synthesizer documentation](https://synthesizer-project.github.io/). Here we use a BPASS SPS grid, a lognormal star formation history, a single stellar metallicity and a simple emission model including Cloudy nebular emission but no dust reprocessing. The photometric filters used are common JWST/NIRCam wideband filters, but any filters supported by [SVO](https://svo2.cab.inta-csic.es/theory/fps/index.php) or loaded manually can be used. The model parameters are drawn from a Latin hypercube sampling of the parameter space, but this can be done in any way indepedent of SBIFitter. All we are providing to the grid generation is a set of *10,000* galaxies with a range of stellar masses, redshifts, metallicities, and star formation histories, and these can be created in any way you like. 
+Firstly we setup the Synthesizer based mode. More details on how to set up the Synthesizer model can be found in the [Synthesizer documentation](https://synthesizer-project.github.io/). Here we use a BPASS SPS grid, a lognormal star formation history, a single stellar metallicity and a simple emission model including Cloudy nebular emission but no dust reprocessing. The photometric filters used are common JWST/NIRCam wideband filters, but any filters supported by [SVO](https://svo2.cab.inta-csic.es/theory/fps/index.php) or loaded manually can be used. The model parameters are drawn from a Latin hypercube sampling of the parameter space, but this can be done in any way indepedent of SBIFitter. All we are providing to the grid generation is a set of *10,000* galaxies with a range of stellar masses, redshifts, metallicities, and star formation histories, and these can be created in any way you like.
 
 ```python
 from synthesizer.grid import Grid
@@ -73,7 +73,7 @@ N = 10_000  # Number of galaxies in the mock catalogue
 
 # Set some parameter ranges for our model. Any parameters can be used if they are accepted by Synthesizer.
 parameter_prior_ranges = {
-    "stellar_mass": (8.0, 12.0)*Msun,  # log10(M/Msun)
+    "log_stellar_mass": (8.0, 12.0),  # log10(M/Msun)
     "redshift": (0.0, 10.0),  # Redshift
     "log_zmet": (-4.0, -1.4),  # log10(Z)
     "peak_age": (0.0, 1000)*Myr, # Peak age of the SFH in Myr
@@ -112,7 +112,7 @@ from sbifitter import GalaxyBasis, SBI_Fitter
 basis = GalaxyBasis(
     model_name=f"sps_test",
     redshifts=parameter_samples["redshift"],
-    stellar_masses=parameter_samples["stellar_mass"],
+    log_stellar_masses=parameter_samples["log_stellar_mass"],
     grid=grid,
     emission_model=emission_model,
     sfhs=sfh_models,
@@ -120,7 +120,7 @@ basis = GalaxyBasis(
     metal_dists=Z_dists,
 )
 
-basis.create_mock_cat(out_name=f'grid_test', emission_model_key='intrinsic')
+basis.create_mock_cat(out_name=f'grid_test', emission_model_key='intrinsic', overwrite=True, out_dir="./")
 ```
 
 Finally we can train a model using the `SBI_Fitter` class, which will automatically create the feature array and run the training. We have full control over the model architecture and training parameters, and can easily switch between different model types (e.g. MAF, NSF, MDN) from the lampe and sbi backends.
@@ -129,7 +129,7 @@ Here we are use a single Masked Autoregressive Flow (MAF) model, with 90 hidden 
 
 ```python
 empirical_model_fitter = SBI_Fitter.init_from_hdf5(
-    hdf5_path=f"grid_test.hdf5", model_name=f"sbi_test"
+    hdf5_path=f"./grid_test.hdf5", model_name=f"sbi_test"
 )
 empirical_model_fitter.create_feature_array()
 
@@ -163,4 +163,4 @@ We welcome contributions to SBIFitter! If you have suggestions, bug reports, or 
 
 ### License
 
-This project is licensed under the GNU General Public License v3.0 (GPLv3). See the [LICENSE](LICENSE) file for details. This means you can use, modify, and distribute the code freely, but any derivative works must also be open source and distributed under the same license. We warn users that this software is offered "as is", without any warranty or guarantee of fitness for a particular purpose. SBIFitter is under active development, and therefore may change in the future. 
+This project is licensed under the GNU General Public License v3.0 (GPLv3). See the [LICENSE](LICENSE) file for details. This means you can use, modify, and distribute the code freely, but any derivative works must also be open source and distributed under the same license. We warn users that this software is offered "as is", without any warranty or guarantee of fitness for a particular purpose. SBIFitter is under active development, and therefore may change in the future.

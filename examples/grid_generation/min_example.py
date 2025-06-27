@@ -8,7 +8,7 @@ from synthesizer.emission_models.stellar.pacman_model import PacmanEmission  # n
 from synthesizer.grid import Grid
 from synthesizer.instruments import FilterCollection, Instrument
 from synthesizer.parametric import SFH, ZDist
-from unyt import Gyr, K, Msun
+from unyt import Gyr, K
 
 from sbifitter import (
     GalaxyBasis,
@@ -56,7 +56,7 @@ Nmodels = 100
 batch_size = 40_000  # number of models to generate in each batch
 
 redshift = (0.01, 12)
-masses = (6, 12) * Msun
+masses = (6, 12)
 max_redshift = 20  # gives maximum age of SFH at a given redshift
 cosmo = Planck18  # cosmology to use for age calculations
 
@@ -83,9 +83,8 @@ full_params = {
     "max_age": max_age,
 }
 
-all_param_dict = draw_from_hypercube(
-    full_params, Nmodels, rng=42, unlog_keys=["log_tau", "log_masses"]
-)
+all_param_dict = draw_from_hypercube(full_params, Nmodels, rng=42, unlog_keys=["log_tau"])
+
 
 # ---------------------------------------------------------------
 # Synthesizer setup
@@ -138,7 +137,6 @@ galaxy_params = {
 
 name = f"BPASS_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_Chab_min_example"  # noqa: E501
 
-
 # ---------------------------------------------------------------
 # Grid Generation
 
@@ -159,8 +157,8 @@ basis = GalaxyBasis(
 )
 
 basis.create_mock_cat(
-    out_name=name,
-    stellar_masses=all_param_dict["masses"],
+    out_name=f"grid_{name}",
+    log_stellar_masses=all_param_dict["log_masses"],
     emission_model_key="total",
     out_dir=out_dir,
     overwrite=True,

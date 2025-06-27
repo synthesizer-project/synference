@@ -37,7 +37,6 @@ from unyt import (
     Myr,
     Unit,
     dimensionless,
-    kg,
     nJy,
     uJy,
     um,
@@ -54,6 +53,16 @@ from .utils import (
 
 file_path = os.path.dirname(os.path.realpath(__file__))
 grid_folder = os.path.join(os.path.dirname(os.path.dirname(file_path)), "grids")
+
+
+UNIT_DICT = {
+    "log10metallicity": "log10(Zmet)",
+    "metallicity": "Zmet",
+    "av": "mag",
+    "tau_v": "mag",
+    "tau_v_ism": "mag",
+    "tau_v_birth": "mag",
+}
 
 
 def calculate_muv(galaxy, cosmo=Planck18):
@@ -466,9 +475,11 @@ def draw_from_hypercube(
         assert i < j, f"Parameter range {i} must be less than {j}"
         if isinstance(i, unyt_quantity):
             # If the parameter is a unyt_quantity, extract the value and unit
-            low[pos] = i.value
-            high[pos] = j.value
             units.append(i.units)
+            i = i.value
+            j = j.value
+            low[pos] = i
+            high[pos] = j
         else:
             # Otherwise, just use the value
             units.append(None)
@@ -484,15 +495,19 @@ def draw_from_hypercube(
     for i, key in enumerate(param_ranges.keys()):
         samples = scaled_samples[:, i].astype(np.float32)
         if key in unlog_keys:
-            if units[i] is not None and units[i].same_dimensions_as(kg):
-                # If the parameter is in kg, convert to Msun
-                samples = samples / Msun.to(kg).value
-            # If the key is in unlog_keys, raise to power of 10
             samples = 10**samples
+
+            # If the key is in unlog_keys, raise to power of 10
             key = key.replace("log_", "")  # Remove 'log_' prefix if present
         if units[i] is not None:
             # If the parameter has units, convert samples to unyt_quantity
             samples = unyt_array(samples, units=units[i])
+
+        if np.any(~np.isfinite(samples)):
+            raise ValueError(
+                f"Non-finite values found in samples for parameter '{key}'. "
+                "Check the parameter ranges and ensure they are valid."
+            )
         all_param_dict[key] = samples
 
     return all_param_dict
@@ -747,7 +762,7 @@ class GalaxyBasis:
         emission_model: Type[EmissionModel],
         sfhs: List[Type[SFH.Common]],
         metal_dists: List[Type[ZDist.Common]],
-        stellar_masses: Optional[np.ndarray] = None,
+        log_stellar_masses: Optional[np.ndarray] = None,
         galaxy_params: dict = None,
         alt_parametrizations: Dict[str, Tuple[str, callable]] = None,
         cosmo: Type[Cosmology] = Planck18,
@@ -780,6 +795,8 @@ class GalaxyBasis:
             parameter value (so it can be calculated from the other parameters if needed).
         metal_dists : List[Type[ZDist.Common]], optional
             List of metallicity distribution objects, by default None
+        log_stellar_masses : Optional[np.ndarray], optional
+            Array of logarithmic stellar masses in solar masses, by default None.
         cosmo : Type[Cosmology], optional
             Cosmology object, by default Planck18
         instrument : Instrument, optional
@@ -816,7 +833,7 @@ class GalaxyBasis:
         self.cosmo = cosmo
         self.instrument = instrument
         self.redshift_dependent_sfh = redshift_dependent_sfh
-        self.stellar_masses = stellar_masses
+        self.log_stellar_masses = log_stellar_masses
         self.params_to_ignore = params_to_ignore
         self.build_grid = build_grid
 
@@ -828,10 +845,10 @@ class GalaxyBasis:
         if isinstance(self.sfhs, SFH.Common):
             self.sfhs = [self.sfhs]
 
-        if self.stellar_masses is not None:
-            assert isinstance(self.stellar_masses, (unyt_array, unyt_quantity)), (
-                "stellar_masses must be a unyt array or quantity"
-            )
+        # if self.stellar_masses is not None:
+        #    assert isinstance(self.stellar_masses, (unyt_array, unyt_quantity)), (
+        #        "stellar_masses must be a unyt array or quantity"
+        #   )
 
         self.per_particle = False
 
@@ -910,13 +927,16 @@ class GalaxyBasis:
         return values
 
     def _create_galaxies(
-        self, base_masses: Union[unyt_array, unyt_quantity] = 1e9 * Msun
+        self,
+        log_base_masses: 9,
     ) -> List[Type[Galaxy]]:
         """Create galaxies with the specified SFHs, redshifts, and other parameters.
 
         Parameters
         ----------
-        base_masses : unyt_quantity
+        log_base_masses  : Union[float, np.ndarray], optional
+            Base mass (or array of base masses) to use for the galaxies.
+            Units of log10 M sun.
             Default mass (or mass array) to use for the galaxies.
 
         Returns:
@@ -976,7 +996,7 @@ class GalaxyBasis:
                             sfh=sfh_model,
                             redshift=redshift,
                             metal_dist=Z_dist,
-                            stellar_mass=base_masses,
+                            log_stellar_masses=log_base_masses,
                             **params,
                         )
                         save_params = copy.deepcopy(params)
@@ -1075,13 +1095,23 @@ class GalaxyBasis:
         sfh: Type[SFH.Common],
         redshift: float,
         metal_dist: Type[ZDist.Common],
-        stellar_mass: Union[unyt_array, unyt_quantity] = 1e9 * Msun,
+        log_stellar_masses: Union[float, list] = 9,
         **galaxy_kwargs,
     ) -> Type[Galaxy]:
         """Create a new galaxy with the specified parameters."""
         # Initialise the parametric Stars object
 
-        single_mass = stellar_mass[0] if stellar_mass.size > 1 else stellar_mass
+        assert not isinstance(log_stellar_masses, (unyt_array, unyt_quantity)), (
+            "log_stellar_masses must be a float or list of floats, not a unyt array"
+        )
+
+        single_mass = (
+            log_stellar_masses[0]
+            if isinstance(log_stellar_masses, (list))
+            else log_stellar_masses
+        )
+
+        single_mass = 10**single_mass * Msun
 
         param_stars = Stars(
             log10ages=self.grid.log10ages,
@@ -1093,7 +1123,7 @@ class GalaxyBasis:
         )
 
         # Define the number of stellar particles
-        n = stellar_mass.size if isinstance(stellar_mass, unyt_array) else 1
+        n = len(log_stellar_masses) if isinstance(log_stellar_masses, list) else 1
         if n > 1:
             # Sample the parametric SFZH to create "fake" stellar particles
             part_stars = sample_sfzh(
@@ -1101,7 +1131,7 @@ class GalaxyBasis:
                 log10ages=np.log10(param_stars.ages),
                 log10metallicities=np.log10(param_stars.metallicities),
                 nstar=n,
-                current_masses=stellar_mass,
+                current_masses=10**log_stellar_masses * Msun,
                 redshift=redshift,
                 coordinates=np.random.normal(0, 0.01, (n, 3)) * Mpc,
                 centre=np.zeros(3) * Mpc,
@@ -1122,7 +1152,8 @@ class GalaxyBasis:
         return galaxy
 
     def _create_matched_galaxies(
-        self, base_masses: unyt_quantity = 1e9 * Msun
+        self,
+        log_base_masses: Union[float, np.ndarray] = 9,
     ) -> List[Type[Galaxy]]:
         """Creates galaxies where all parameters have been sampled.
 
@@ -1131,8 +1162,8 @@ class GalaxyBasis:
 
         Parameters
         ----------
-        base_masses : unyt_quantity, optional
-            Default mass (or mass array) to use for the galaxies, by default 1e9 * Msun
+        log_base_masses : Union[float, np.ndarray], optional
+            Base mass (or array of base masses) to use for the galaxies.
 
         Returns:
         -------
@@ -1151,9 +1182,6 @@ class GalaxyBasis:
             self.metal_dists
         ), f"""If iterate_redshifts is False, sfhs and metal_dists must be the same
             length, got {len(self.sfhs)} and {len(self.metal_dists)}"""
-        assert isinstance(base_masses, (unyt_array, unyt_quantity)), (
-            "base_masses must be a unyt array or quantity"
-        )
 
         varying_param_values = [
             i for i in self.galaxy_params.values() if type(i) in [list, np.ndarray]
@@ -1190,16 +1218,16 @@ class GalaxyBasis:
 
             # If the mass is an array, use the i-th element,
             try:
-                mass = base_masses[i]
-            except IndexError:
-                mass = base_masses
+                mass = log_base_masses[i]
+            except (IndexError, TypeError):
+                mass = log_base_masses
 
             # Create a new galaxy with the specified parameters
             gal = self.create_galaxy(
                 sfh=sfh,
                 redshift=redshift,
                 metal_dist=metal_dist,
-                stellar_mass=mass,
+                log_stellar_masses=mass,
                 **params,
             )
 
@@ -1451,13 +1479,13 @@ class GalaxyBasis:
         if not self.build_grid:
             idx = np.random.randint(0, len(self.redshifts))
             mass = masses[idx]
-            return self.plot_galaxy(idx, stellar_mass=mass * Msun, **kwargs)
+            return self.plot_galaxy(idx, log_stellar_mass=mass, **kwargs)
 
     def plot_galaxy(
         self,
         idx,
         save: bool = True,
-        stellar_mass: unyt_quantity = 1e9 * Msun,
+        log_stellar_mass: float = 9,
         emission_model_keys: List[str] = ["total"],
         out_dir="./",
     ):
@@ -1477,7 +1505,7 @@ class GalaxyBasis:
                 sfh=self.sfhs[idx],
                 redshift=self.redshifts[idx],
                 metal_dist=self.metal_dists[idx],
-                base_masses=stellar_mass,
+                log_stellar_masses=log_stellar_mass,
                 **galaxy_params,
             )
         else:
@@ -1688,7 +1716,7 @@ class GalaxyBasis:
     def process_base(
         self,
         out_name,
-        stellar_masses: unyt_array = None,
+        log_stellar_masses: unyt_array = None,
         emission_model_key: str = "total",
         out_dir: str = grid_folder,
         n_proc: int = 6,
@@ -1703,19 +1731,19 @@ class GalaxyBasis:
         a single base. This is a convenience method to allow the
         GalaxyBasis to be run seperately.
         """
-        if stellar_masses is None:
-            assert self.stellar_masses is not None, (
-                "stellar_masses must be provided or set in the GalaxyBasis"
+        if log_stellar_masses is None:
+            assert self.log_stellar_masses is not None, (
+                "log_stellar_masses must be provided or set in the GalaxyBasis"
             )
-            stellar_masses = self.stellar_masses
+            log_stellar_masses = self.log_stellar_masses
 
-        assert isinstance(stellar_masses, unyt_array), (
-            "stellar_masses must be a unyt_array"
+        assert not isinstance(log_stellar_masses, unyt_array), (
+            "log_stellar_masses must be a unyt_array"
         )
-        assert len(stellar_masses) == len(
+        assert len(log_stellar_masses) == len(
             self.redshifts
-        ), f"""stellar_masses must be the same length as redshifts,
-            got {len(stellar_masses)} and {len(self.redshifts)},
+        ), f"""log_stellar_masses must be the same length as redshifts,
+            got {len(log_stellar_masses)} and {len(self.redshifts)},
             Calling this method on GalaxyBasis only supports
             the case where all samples have been provided, not
             the case where samples are drawn from a prior and
@@ -1732,7 +1760,7 @@ class GalaxyBasis:
                 )
 
         full_out_path = f"{out_dir}/{out_name}.hdf5"
-        ngalaxies = len(stellar_masses)
+        ngalaxies = len(log_stellar_masses)
         total_batches = int(np.ceil(ngalaxies / batch_size))
 
         if (
@@ -1748,7 +1776,7 @@ class GalaxyBasis:
         if not os.path.exists(out_dir):
             os.makedirs(out_dir)
 
-        galaxies = self._create_galaxies(base_masses=stellar_masses)
+        galaxies = self._create_galaxies(log_base_masses=log_stellar_masses)
 
         self.process_galaxies(
             galaxies,
@@ -1765,7 +1793,7 @@ class GalaxyBasis:
     def create_mock_cat(
         self,
         out_name,
-        stellar_masses: unyt_array = None,
+        log_stellar_masses: np.ndarray = None,
         emission_model_key: str = "total",
         out_dir: str = grid_folder,
         n_proc: int = 6,
@@ -1780,26 +1808,42 @@ class GalaxyBasis:
         you to not have to pass a GalaxyBasis into
         CombinedBasis, and instead just call
         this method which will run the components for you.
+
+        Parameters
+        ----------
+        out_name : str
+            Name of the output file to save the mock catalog.
+        log_stellar_masses : np.ndarray, optional
+            Array of log stellar masses to use for the mock catalog,
+            Units of log10(M sun), by default None.
+            If None, uses the stellar_masses set in the GalaxyBasis.
+        emission_model_key : str, optional
+            Emission model key to use for the mock catalog,
+            by default "total".
+        out_dir : str, optional
+            Directory to save the output file, by default "grid_folder".
+            If "grid_folder", saves to the Synthesizer grids directory.
+
         """
         # make a CombinedBasis object with the current GalaxyBasis
 
-        if stellar_masses is None:
-            assert self.stellar_masses is not None, (
-                "stellar_masses must be provided or set in the GalaxyBasis"
+        if log_stellar_masses is None:
+            assert self.log_stellar_masses is not None, (
+                "log_stellar_masses must be provided or set in the GalaxyBasis"
             )
-            stellar_masses = self.stellar_masses
+            log_stellar_masses = self.log_stellar_masses
 
-        assert isinstance(stellar_masses, unyt_array), (
-            "stellar_masses must be a unyt_array"
+        assert not isinstance(log_stellar_masses, unyt_array), (
+            "log_stellar_masses must be not be a unyt_array"
         )
 
         combined_basis = CombinedBasis(
             bases=[self],
-            total_stellar_masses=stellar_masses,
+            log_stellar_masses=log_stellar_masses,
             redshifts=self.redshifts,
             base_emission_model_keys=[emission_model_key],
             combination_weights=None,
-            out_name=f"grid_{out_name}",
+            out_name=out_name,
             out_dir=out_dir,
             draw_parameter_combinations=False,
         )
@@ -1844,13 +1888,13 @@ class CombinedBasis:
     def __init__(
         self,
         bases: List[Type[GalaxyBasis]],
-        total_stellar_masses: unyt_array,
+        log_stellar_masses: list,
         redshifts: np.ndarray,
         base_emission_model_keys: List[str],
         combination_weights: np.ndarray,
         out_name: str = "combined_basis",
         out_dir: str = grid_folder,
-        base_masses: unyt_array = 1e9 * Msun,
+        log_base_masses: Union[float, np.ndarray] = 9,
         draw_parameter_combinations: bool = False,
     ) -> None:
         """Initialize the CombinedBasis object.
@@ -1859,8 +1903,9 @@ class CombinedBasis:
         ----------
         bases : List[Type[GalaxyBasis]]
             List of GalaxyBasis objects to combine.
-        total_stellar_masses : unyt_array
+        log_stellar_masses : list
             Array of total stellar masses to renormalize fluxes for.
+            in log10(M sun) units.
         redshifts : np.ndarray
             Array of redshifts for the bases.
         base_emission_model_keys : List[str]
@@ -1871,19 +1916,20 @@ class CombinedBasis:
             Name of the output file.
         out_dir : str
             Directory to save the output files.
-        base_masses : unyt_array
+        log_base_masses : unyt_array
             Default mass (or mass array) to use for the galaxies.
+            Units of log10(M sun).
         draw_parameter_combinations : bool
             If True, draw parameter combinations for the galaxies.
             If False, create matched galaxies with the same parameters.
         """
         self.bases = bases
-        self.total_stellar_masses = total_stellar_masses
+        self.log_stellar_masses = log_stellar_masses
         self.redshifts = redshifts
         self.combination_weights = combination_weights
         self.out_name = out_name
         self.out_dir = out_dir
-        self.base_masses = base_masses
+        self.log_base_masses = log_base_masses
         self.base_emission_model_keys = base_emission_model_keys
         self.draw_parameter_combinations = draw_parameter_combinations
 
@@ -1931,7 +1977,7 @@ class CombinedBasis:
 
         for i, base in enumerate(self.bases):
             full_out_path = f"{self.out_dir}/{base.model_name}.hdf5"
-            ngalaxies = len(self.total_stellar_masses)
+            ngalaxies = len(self.log_stellar_masses)
             total_batches = int(np.ceil(ngalaxies / batch_size))
 
             if (
@@ -1950,9 +1996,11 @@ class CombinedBasis:
                 os.makedirs(self.out_dir)
 
             if self.draw_parameter_combinations:
-                galaxies = base._create_galaxies(base_masses=self.base_masses)
+                galaxies = base._create_galaxies(log_base_masses=self.log_base_masses)
             else:
-                galaxies = base._create_matched_galaxies(base_masses=self.base_masses)
+                galaxies = base._create_matched_galaxies(
+                    log_base_masses=self.log_base_masses
+                )
 
             print(f"Created {len(galaxies)} galaxies for base {base.model_name}")
             # Process the galaxies
@@ -2241,11 +2289,14 @@ class CombinedBasis:
 
         total_property_names = {}
         for i, base in enumerate(self.bases):
-            total_property_names[base.model_name] = [
-                f"{base.model_name}/{i}"
-                for i in base.varying_param_names
-                if i not in ignore_keys
-            ]
+            if len(self.bases) > 1:
+                total_property_names[base.model_name] = [
+                    f"{base.model_name}/{i}"
+                    for i in base.varying_param_names
+                    if i not in ignore_keys
+                ]
+            else:
+                total_property_names[base.model_name] = base.varying_param_names
             params = pipeline_outputs[base.model_name]["properties"]
             rename_keys = [i for i in base.varying_param_names if i not in ignore_keys]
             for key in list(params.keys()):
@@ -2309,7 +2360,9 @@ class CombinedBasis:
         param_columns.extend(all_combined_param_names)
 
         for redshift in tqdm(self.redshifts):
-            for total_mass in self.total_stellar_masses:
+            for log_total_mass in self.log_stellar_masses:
+                total_mass = 10**log_total_mass
+
                 for combination in self.combination_weights:
                     mass_weights = np.array(combination) * total_mass
 
@@ -2322,6 +2375,9 @@ class CombinedBasis:
                         z_base = outputs["properties"]["redshift"]
                         mask = z_base == redshift
                         mass = outputs["properties"]["mass"][mask]
+
+                        if isinstance(mass, unyt_array):
+                            mass = mass.to(Msun).value
 
                         # Calculate the scaling factor for each base
                         scaling_factors = mass_weights[i] / mass
@@ -2360,7 +2416,6 @@ class CombinedBasis:
                         # scale them by the scaling factor
                         scaled_supp_params = {}
                         for key, value in supp_params[base.model_name].items():
-                            # print(key, value)
                             if isinstance(value, dict):
                                 scaled_supp_params[key] = {}
                                 for subkey, subvalue in value.items():
@@ -2411,7 +2466,7 @@ class CombinedBasis:
                         params_array[param_idx, i] = redshift
                         param_idx += 1
 
-                        params_array[param_idx, i] = np.log10(total_mass.value)
+                        params_array[param_idx, i] = log_total_mass
                         param_idx += 1
 
                         if len(self.bases) > 1:
@@ -2473,6 +2528,58 @@ class CombinedBasis:
         if save:
             self.save_grid(out, overload_out_name=out_name, overwrite=overwrite)
 
+    def _validate_grid(self, grid_dict: dict) -> None:
+        """Validate the grid dictionary.
+
+        Parameters
+        ----------
+        grid_dict : dict
+            Dictionary containing the grid data.
+            Expected keys are 'photometry', 'parameters', 'parameter_names',
+            and 'filter_codes'.
+
+        Raises:
+        ------
+        ValueError
+            If any of the required keys are missing or if the data is not expected format.
+        """
+        required_keys = [
+            "photometry",
+            "parameters",
+            "parameter_names",
+            "filter_codes",
+        ]
+        for key in required_keys:
+            if key not in grid_dict:
+                raise ValueError(f"Missing required key: {key}")
+
+        if not isinstance(grid_dict["photometry"], np.ndarray):
+            raise ValueError("Photometry must be a numpy array.")
+
+        if not isinstance(grid_dict["parameters"], np.ndarray):
+            raise ValueError("Parameters must be a numpy array.")
+
+        if not isinstance(grid_dict["parameter_names"], list):
+            raise ValueError("Parameter names must be a list.")
+
+        if not isinstance(grid_dict["filter_codes"], list):
+            raise ValueError("Filter codes must be a list.")
+
+        # Check for NAN/INF in photometry and parameters
+
+        assert not np.any(np.isnan(grid_dict["photometry"])), (
+            "Photometry contains NaN values. Please check the input data."
+        )
+        assert not np.any(np.isinf(grid_dict["photometry"])), (
+            "Photometry contains infinite values. Please check the input data."
+        )
+        assert not np.any(np.isnan(grid_dict["parameters"])), (
+            "Parameters contain NaN values. Please check the input data."
+        )
+        assert not np.any(np.isinf(grid_dict["parameters"])), (
+            "Parameters contain infinite values. Please check the input data."
+        )
+
     def save_grid(
         self,
         grid_dict: dict,  # E.g. output from create_grid
@@ -2492,6 +2599,8 @@ class CombinedBasis:
         out_name : str, optional
             Name of the output file, by default 'grid.hdf5'
         """
+        self._validate_grid(grid_dict)
+
         # Check if the output directory exists, if not create it
         if not os.path.exists(self.out_dir):
             os.makedirs(self.out_dir)
@@ -2544,6 +2653,9 @@ class CombinedBasis:
                 ]
             f.attrs["PhotometryUnits"] = "nJy"
 
+            if "parameter_units" in grid_dict:
+                f.attrs["ParameterUnits"] = grid_dict["parameter_units"]
+
             for param in grid_params_to_save:
                 out = []
                 for base in self.bases:
@@ -2566,6 +2678,7 @@ class CombinedBasis:
                     "supplementary_parameters",
                     "supplementary_parameter_names",
                     "supplementary_parameter_units",
+                    "parameter_units",
                 ]:
                     if isinstance(value, (np.ndarray, list)) and isinstance(
                         value[0], str
@@ -2858,7 +2971,7 @@ class CombinedBasis:
         # Validate input arrays
         for array_name, array in [
             ("redshifts", self.redshifts),
-            ("total_stellar_masses", self.total_stellar_masses),
+            ("log_stellar_masses", self.log_stellar_masses),
             ("combination_weights", self.combination_weights),
         ]:
             if len(array) != ngal:
@@ -2907,11 +3020,18 @@ class CombinedBasis:
         for base in self.bases:
             model_name = base.model_name
             # Track parameters unique to this base
-            varying_params = [
-                f"{model_name}/{param}"
-                for param in base.varying_param_names
-                if param not in ignore_keys
-            ]
+            if len(self.bases) > 1:
+                varying_params = [
+                    f"{model_name}/{param}"
+                    for param in base.varying_param_names
+                    if param not in ignore_keys
+                ]
+            else:
+                varying_params = [
+                    param
+                    for param in base.varying_param_names
+                    if param not in ignore_keys
+                ]
             total_property_names[model_name] = varying_params
             param_columns.extend(varying_params)
 
@@ -2966,7 +3086,10 @@ class CombinedBasis:
 
         for pos in range(ngal):
             redshift = self.redshifts[pos]
-            total_mass = self.total_stellar_masses[pos]
+            log_total_mass = self.log_stellar_masses[pos]
+            # mass in solar masses
+            total_mass = 10**log_total_mass
+            #
             weights = self.combination_weights[pos]
 
             # Create per-base data structures to hold galaxy information at this redshift
@@ -2978,7 +3101,7 @@ class CombinedBasis:
                 model_name = base.model_name
                 model_output = pipeline_outputs[model_name]
 
-                masses = np.array([model_output["properties"]["mass"][pos] * Msun])
+                masses = np.array([model_output["properties"]["mass"][pos]])
 
                 if is_multi_base:
                     # Multiple bases: scale by weight for this base
@@ -3061,16 +3184,31 @@ class CombinedBasis:
                 params_array = np.zeros((len(param_columns), num_items))
                 param_idx = 0
 
+                param_units = []
+
                 # Fill standard parameters
                 params_array[param_idx, :] = redshift
+                param_units.append("dimensionless")
                 param_idx += 1
-                params_array[param_idx, :] = np.log10(total_mass.value)
+                params_array[param_idx, :] = log_total_mass
+                param_units.append("log10(Msun/Mstar)")
                 param_idx += 1
 
                 # Fill varying parameters
                 for param_name in total_property_names.get(self.bases[0].model_name, []):
                     if param_name in base["params"]:
                         params_array[param_idx, :] = base["params"][param_name]
+                        if param_name.split("/")[-1].lower() in UNIT_DICT.keys():
+                            param_units.append(
+                                UNIT_DICT[param_name.split("/")[-1].lower()]
+                            )
+                        else:
+                            param_units.append(
+                                str(base["params"][param_name].units)
+                                if isinstance(base["params"][param_name], unyt_array)
+                                else "dimensionless"
+                            )
+
                     param_idx += 1
 
                 # Process supplementary parameters
@@ -3101,6 +3239,7 @@ class CombinedBasis:
                 output_array = np.zeros((len(filter_codes), num_combinations))
                 params_array = np.zeros((len(param_columns), num_combinations))
                 supp_array = np.zeros((len(supp_param_keys), num_combinations))
+                param_units = []
 
                 # Fill arrays
                 for i, combo_indices in enumerate(combinations):
@@ -3113,12 +3252,18 @@ class CombinedBasis:
 
                     # Standard parameters first
                     params_array[param_idx, i] = redshift
+                    if i == 0:
+                        param_units.append("dimensionless")
                     param_idx += 1
-                    params_array[param_idx, i] = np.log10(total_mass.value)
+                    params_array[param_idx, i] = log_total_mass
+                    if i == 0:
+                        param_units.append("log10(Msun/Mstar)")
                     param_idx += 1
-                    if is_multi_base:
-                        params_array[param_idx, i] = weights[0]  # weight fraction
-                        param_idx += 1
+
+                    params_array[param_idx, i] = weights[0]  # weight fraction
+                    param_idx += 1
+                    if i == 0:
+                        param_units.append("dimensionless")
 
                     # Add all varying parameters from each base
                     for j, base in enumerate(self.bases):
@@ -3128,6 +3273,18 @@ class CombinedBasis:
                                 params_array[param_idx, i] = base_data[j]["params"][
                                     param_name
                                 ]
+                                if param_name.split("/")[-1].lower() in UNIT_DICT.keys():
+                                    param_units.append(
+                                        UNIT_DICT[param_name.split("/")[-1].lower()]
+                                    )
+                                else:
+                                    param_units.append(
+                                        str(base_data[j]["params"][param_name].units)
+                                        if isinstance(
+                                            base_data[j]["params"][param_name], unyt_array
+                                        )
+                                        else "dimensionless"
+                                    )
                                 param_idx += 1
 
                     # Fill supplementary parameters
@@ -3167,6 +3324,8 @@ class CombinedBasis:
         print(f"Combined parameters shape: {combined_params.shape}")
         print(f"Combined supplementary parameters shape: {combined_supp_params.shape}")
         print(f"Filter codes: {filter_codes}")
+        print(f"Parameter names: {param_columns}")
+        print(f"Parameter units: {param_units}")
 
         # Check combined_outputs is 2D
         if combined_outputs.ndim == 1:
@@ -3174,6 +3333,11 @@ class CombinedBasis:
                 "Combined outputs should be a 2D array with \
                  shape (n_filters, n_galaxies)."
             )
+
+        assert len(param_units) == len(param_columns), (
+            "Parameter units length does not match parameter columns length."
+            f"Expected {len(param_columns)}, got {len(param_units)}."
+        )
 
         assert combined_outputs.shape[0] == len(filter_codes), (
             "Output photometry shape does not match number of filters."
@@ -3199,6 +3363,7 @@ class CombinedBasis:
             "supplementary_parameters": combined_supp_params,
             "supplementary_parameter_names": supp_param_keys,
             "supplementary_parameter_units": supp_param_units_list,
+            "parameter_units": param_units,
         }
 
         # Update object attributes
@@ -3208,6 +3373,8 @@ class CombinedBasis:
         self.grid_filter_codes = filter_codes
         self.grid_supplementary_parameters = combined_supp_params
         self.grid_supplementary_parameter_names = supp_param_keys
+        self.grid_supplementary_parameter_units = supp_param_units_list
+        self.grid_parameter_units = param_units
 
         # Save results if requested
         if save:
