@@ -177,7 +177,6 @@ def lhc_basis_params(
         "cosmo": Planck18,
         "instrument": mock_instrument,
         "galaxy_params": {"tau_v": all_param_dict["tau_v"]},
-        # "stellar_masses": unyt_array(all_param_dict["masses"], Msun),
         "redshift_dependent_sfh": True,
         "build_grid": False,
         "sfhs": sfh_models,
@@ -193,7 +192,7 @@ def test_parametric_galaxy(test_grid, simple_sfh, simple_zdist):
             metal_dist=simple_zdist,
             metallicities=test_grid.metallicities,
             log10ages=test_grid.log10ages,
-            initial_mass=1e9 * Msun,
+            initial_mass=unyt_array(1e9, units=Msun),
             tau_v=0.2,
         ),
         redshift=7.0,
@@ -245,9 +244,7 @@ def combined_grid_basis_params(grid_basis_params):
 
     return {
         "bases": [basis1, basis2],
-        "total_stellar_masses": unyt_array(
-            [1e9] * len(grid_basis_params["redshifts"]), Msun
-        ),
+        "log_stellar_masses": [9] * len(grid_basis_params["redshifts"]),
         "redshifts": grid_basis_params["redshifts"],
         "base_emission_model_keys": ["total", "total"],
         "combination_weights": np.array(
@@ -255,7 +252,7 @@ def combined_grid_basis_params(grid_basis_params):
         ),
         "out_name": "test_combined",
         "out_dir": f"{test_dir}/test_output/",
-        "base_masses": 1e9 * Msun,
+        "log_base_masses": 9,
         "draw_parameter_combinations": True,
     }
 
@@ -279,9 +276,7 @@ def combined_lhc_basis_params(lhc_basis_params):
 
     return {
         "bases": [basis1, basis2],
-        "total_stellar_masses": unyt_array(
-            [1e9] * len(lhc_basis_params["redshifts"]), Msun
-        ),
+        "log_stellar_masses": [9] * len(lhc_basis_params["redshifts"]),
         "redshifts": lhc_basis_params["redshifts"],
         "base_emission_model_keys": ["total", "total"],
         "combination_weights": np.array(
@@ -292,7 +287,7 @@ def combined_lhc_basis_params(lhc_basis_params):
         ),
         "out_name": "test_combined_lhc",
         "out_dir": f"{test_dir}/test_output/",
-        "base_masses": 1e9 * Msun,
+        "log_base_masses": 9,
         "draw_parameter_combinations": False,
     }
 
@@ -352,8 +347,7 @@ class TestGalaxyBasis:
             sfh=simple_sfh,
             redshift=7.0,
             metal_dist=simple_zdist,
-            base_masses=1e9 * Msun,
-            stellar_mass=1e9 * Msun,
+            log_stellar_masses=9,
             tau_v=0.2,
         )
 
@@ -372,7 +366,7 @@ class TestGalaxyBasis:
         """Test that create_galaxies correctly creates multiple galaxies."""
         basis = GalaxyBasis(**grid_basis_params)
 
-        galaxies = basis._create_galaxies(base_masses=1e8 * Msun)
+        galaxies = basis._create_galaxies(log_base_masses=9)
 
         assert len(galaxies) > 0
         assert basis.create_galaxy
@@ -397,7 +391,7 @@ class TestGalaxyBasis:
         """Test that process_galaxies correctly processes galaxies."""
         basis = GalaxyBasis(**grid_basis_params)
 
-        galaxies = basis._create_galaxies(base_masses=1e9 * Msun)
+        galaxies = basis._create_galaxies(log_base_masses=9)
 
         params = basis.all_parameters
 
@@ -461,7 +455,7 @@ class TestGalaxyBasis:
         basis = GalaxyBasis(**lhc_basis_params)
 
         combined = basis.create_mock_cat(
-            stellar_masses=unyt_array([1e9] * len(lhc_basis_params["redshifts"]), Msun),
+            log_stellar_masses=[9] * len(lhc_basis_params["redshifts"]),
             emission_model_key="total",
             out_name="test_combined_simple",
             out_dir=f"{test_dir}/test_output/",
@@ -718,12 +712,10 @@ class TestFullPipeline:
         # Create the GalaxyBasis with LHC parameters
         basis = GalaxyBasis(**lhc_basis_params)
 
-        stellar_masses = unyt_array(
-            np.random.uniform(1e7, 1e11, size=len(lhc_basis_params["redshifts"])), Msun
-        )
+        stellar_masses = np.random.uniform(7, 11, size=len(lhc_basis_params["redshifts"]))
 
         basis.create_mock_cat(
-            stellar_masses=stellar_masses,
+            log_stellar_masses=stellar_masses,
             emission_model_key="total",
             out_name="test_full_simple",
             out_dir=f"{test_dir}/test_output/",

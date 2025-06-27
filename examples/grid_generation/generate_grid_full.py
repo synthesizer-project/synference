@@ -15,7 +15,7 @@ from synthesizer.grid import Grid
 from synthesizer.instruments import FilterCollection, Instrument
 from synthesizer.parametric import SFH, ZDist
 from tqdm import tqdm
-from unyt import Gyr, K, Msun, dimensionless
+from unyt import Gyr, K, dimensionless
 
 from sbifitter import (
     CombinedBasis,
@@ -101,10 +101,10 @@ except Exception:
 
 av_to_tau_v = 1.086  # conversion factor from Av to tau_v for the dust attenuation curve
 
-Nmodels = 700  # _000
+Nmodels = 7  # 00  # _000
 batch_size = 40_000  # number of models to generate in each batch
 redshift = (0.01, 12)
-masses = (6, 12) * Msun
+masses = (6, 12)
 max_redshift = 20  # gives maximum age of SFH at a given redshift
 cosmo = Planck18  # cosmology to use for age calculations
 
@@ -160,11 +160,9 @@ if sfh_type == SFH.DenseBasis:
 # unlog_keys are keys which should be unlogged after drawing from the hypercube.
 # they will be renamed to not include 'log_' after drawing.
 all_param_dict = draw_from_hypercube(
-    full_params, Nmodels, rng=42, unlog_keys=["log_masses", "log_Av", "log_tau"]
+    full_params, Nmodels, rng=42, unlog_keys=["log_Av", "log_tau"]
 )
 
-
-print(all_param_dict["masses"].units)
 
 # Create the grid
 grid = Grid(
@@ -187,7 +185,7 @@ if isinstance(sfh_type, SFH.DenseBasis):
     sfh_models = []
     for i in tqdm(range(Nmodels)):
         z = all_param_dict["redshift"][i]
-        logmass = all_param_dict["masses"][i]
+        logmass = all_param_dict["log_masses"][i]
         logssfr = all_param_dict["ssfr"][i]
         logsfr = logmass + logssfr
         sfh, tx = generate_random_DB_sfh(
@@ -264,8 +262,7 @@ alt_parametrizations = {
 
 sfh_name = str(sfh_type).split(".")[-1].split("'")[0]
 
-name = f"""BPASS_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}
-        _logN_{np.log10(Nmodels):.1f}_Chab_CF00_v2_logAv_logTau"""
+name = f"BPASS_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_Chab_CF00_v2_logAv_logTau"  # noqa: E501
 
 basis = GalaxyBasis(
     model_name=f"sps_{name}",
@@ -286,7 +283,7 @@ basis = GalaxyBasis(
 
 combined_basis = CombinedBasis(
     bases=[basis],
-    total_stellar_masses=all_param_dict["masses"],
+    log_stellar_masses=all_param_dict["log_masses"],
     base_emission_model_keys=["total"],
     combination_weights=None,
     redshifts=redshifts,
@@ -296,12 +293,12 @@ combined_basis = CombinedBasis(
     # we don't need to combine them again.
 )
 
-for i in range(10):
+"""for i in range(10):
     basis.plot_galaxy(
         idx=i * 10,
         out_dir=f"{out_dir}/plots/{name}/",
-        stellar_mass=all_param_dict["masses"][i * 10],
-    )
+        log_stellar_mass=all_param_dict["log_masses"][i * 10],
+)"""
 
 # Passing in extra analysis function to pipeline to calculate mUV.
 # Any function could be passed in.
