@@ -62,6 +62,7 @@ UNIT_DICT = {
     "tau_v": "mag",
     "tau_v_ism": "mag",
     "tau_v_birth": "mag",
+    "weight_fraction": "dimensionless",
 }
 
 
@@ -591,12 +592,15 @@ def generate_sfh_basis(
             loc=redshifts["min"],
             scale=redshifts["max"] - redshifts["min"],
         )
-    elif isinstance(redshifts, float):
+    elif isinstance(redshifts, (float, int)):
         redshifts = np.array([redshifts])
+        if not iterate_redshifts:
+            # extend redshifts to match the length of sfh_param_arrays
+            redshifts = np.full(len(sfh_param_arrays[0]), redshifts)
     elif isinstance(redshifts, np.ndarray):
-        redshifts = redshifts
+        pass
     else:
-        raise ValueError("redshifts must be a dictionary, float, or numpy array")
+        raise ValueError("redshifts must be a dictionary, float/int, or numpy array")
 
     # Calculate maximum ages at each redshift
 
@@ -821,6 +825,9 @@ class GalaxyBasis:
             alt_parametrizations = {}
         if params_to_ignore is None:
             params_to_ignore = []
+
+        if isinstance(redshifts, (float, int)) and not build_grid:
+            redshifts = np.full(len(sfhs), redshifts)
 
         self.model_name = model_name
         self.sfhs = sfhs
@@ -1933,6 +1940,9 @@ class CombinedBasis:
         self.base_emission_model_keys = base_emission_model_keys
         self.draw_parameter_combinations = draw_parameter_combinations
 
+        if isinstance(redshifts, (int, float)):
+            redshifts = np.full(len(self.log_stellar_masses), redshifts)
+
         if self.combination_weights is None:
             assert len(self.bases) == 1
             self.combination_weights = [1.0] * len(redshifts)
@@ -2353,9 +2363,13 @@ class CombinedBasis:
 
         # Add our standard parameters that are always included
         param_columns = ["redshift", "log_mass"]
+        param_units = {}
+        param_units["redshift"] = "dimensionless"
+        param_units["log_mass"] = "log10(Mstar/Msun)"
 
         if len(self.bases) > 1:
             param_columns.append("weight_fraction")
+            param_units["weight_fraction"] = "dimensionless"
 
         param_columns.extend(all_combined_param_names)
 
@@ -2409,6 +2423,19 @@ class CombinedBasis:
                                 base_params[param_name] = outputs["properties"][
                                     orig_param
                                 ][mask]
+
+                            # add units
+                            if isinstance(base_params[param_name], unyt_array):
+                                short_param_name = param_name.split("/")[-1]
+                                if short_param_name in UNIT_DICT:
+                                    param_units[param_name] = UNIT_DICT[short_param_name]
+                                else:
+                                    param_units[param_name] = str(
+                                        base_params[param_name].units
+                                    )
+                            else:
+                                # If it's not a unyt_array, assume it's dimensionless
+                                param_units[param_name] = str(dimensionless)
 
                         base_param_values.append(base_params)
                         # Get the supplementary parameters for this base
@@ -2507,6 +2534,7 @@ class CombinedBasis:
         combined_outputs = np.hstack(all_outputs)
         combined_params = np.hstack(all_params)
         combined_supp_params = np.hstack(all_supp_params)
+        param_units = [param_units[i] for i in param_columns]
 
         out = {
             "photometry": combined_outputs,
@@ -2516,6 +2544,7 @@ class CombinedBasis:
             "supplementary_parameters": combined_supp_params,
             "supplementary_parameter_names": supp_param_keys,
             "supplementary_parameter_units": supp_param_units,
+            "parameter_units": param_units,
         }
 
         self.grid_photometry = combined_outputs
