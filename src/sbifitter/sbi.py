@@ -137,6 +137,7 @@ class SBI_Fitter:
         raw_photometry_names: list,
         raw_photometry_grid: np.ndarray = None,
         parameter_array: np.ndarray = None,
+        parameter_units: list = None,
         raw_photometry_units: list = nJy,
         simulator: callable = None,
         feature_array: np.ndarray = None,
@@ -190,6 +191,7 @@ class SBI_Fitter:
         self.raw_photometry_names = raw_photometry_names
         self.parameter_array = parameter_array
         self.parameter_names = parameter_names
+        self.parameter_units = parameter_units
 
         self.simulator = simulator
         self.has_simulator = simulator is not None
@@ -346,11 +348,16 @@ class SBI_Fitter:
         parameter_array = output["parameters"].T
         parameter_names = output["parameter_names"]
         raw_photometry_units = output["photometry_units"]
+        parameter_units = output["parameter_units"]
 
         if "supplementary_parameters" in output:
             supplementary_parameters = output["supplementary_parameters"]
             supplementary_parameter_names = output["supplementary_parameter_names"]
             supplementary_parameter_units = output["supplementary_parameter_units"]
+        else:
+            supplementary_parameters = None
+            supplementary_parameter_names = []
+            supplementary_parameter_units = []
 
         return cls(
             name=model_name,
@@ -358,6 +365,7 @@ class SBI_Fitter:
             raw_photometry_names=raw_photometry_names,
             parameter_array=parameter_array,
             parameter_names=parameter_names,
+            parameter_units=parameter_units,
             raw_photometry_units=raw_photometry_units,
             feature_array=None,
             feature_names=None,
@@ -2056,7 +2064,11 @@ class SBI_Fitter:
             print("Prior ranges:")
             print("---------------------------------------------")
             for i, param in enumerate(self.fitted_parameter_names):
-                print(f"{param}: {low[i]:.2f} - {high[i]:.2f}")
+                if self.parameter_units is not None:
+                    unit = f" [{self.parameter_units[i]}]"
+                else:
+                    unit = ""
+                print(f"{param}: {low[i]:.2f} - {high[i]:.2f}{unit}")
             print("---------------------------------------------")
 
         low = torch.tensor(low, dtype=torch.float32, device=self.device)
