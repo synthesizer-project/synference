@@ -73,7 +73,7 @@ N = 10_000  # Number of galaxies in the mock catalogue
 
 # Set some parameter ranges for our model. Any parameters can be used if they are accepted by Synthesizer.
 parameter_prior_ranges = {
-    "stellar_mass": (8.0, 12.0)*Msun,  # log10(M/Msun)
+    "log_stellar_mass": (8.0, 12.0)*Msun,  # log10(M/Msun)
     "redshift": (0.0, 10.0),  # Redshift
     "log_zmet": (-4.0, -1.4),  # log10(Z)
     "peak_age": (0.0, 1000)*Myr, # Peak age of the SFH in Myr
@@ -81,7 +81,7 @@ parameter_prior_ranges = {
 }
 
 # Draw samples from these ranges - this could be done with any sampling method, here we use a simple Latin hypercube sampling.
-parameter_samples = draw_from_hypercube(parameter_prior_ranges, N=N)
+parameter_samples = draw_from_hypercube(parameter_prior_ranges, N=N, unlog_keys='log_stellar_mass')
 
 # Chooose photometric filters and create instrument
 filter_names = ['F090W', 'F115W', 'F150W', 'F200W', 'F277W', 'F356W', 'F444W']
