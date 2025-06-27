@@ -464,7 +464,7 @@ class TestGalaxyBasis:
         )
 
         # Check that the output file exists
-        out_file = f"{test_dir}/test_output/grid_test_combined_simple.hdf5"
+        out_file = f"{test_dir}/test_output/test_combined_simple.hdf5"
         assert os.path.exists(out_file), f"Output file {out_file} was not created."
 
         # Check that the expected keys are in the output file
@@ -726,7 +726,7 @@ class TestFullPipeline:
         # Initialize SBIFitter from the created grid
         fitter = SBI_Fitter.init_from_hdf5(
             model_name="test_sbi_lhc",
-            hdf5_path=f"{test_dir}/test_output/grid_test_full_simple.hdf5",
+            hdf5_path=f"{test_dir}/test_output/test_full_simple.hdf5",
         )
 
         # Create feature array
@@ -740,6 +740,14 @@ class TestFullPipeline:
 
 
 if __name__ == "__main__":
+    # Clear out the test_output directory before running tests
+    output_dir = f"{test_dir}/test_output/"
+    if os.path.exists(output_dir):
+        for file in os.listdir(output_dir):
+            file_path = os.path.join(output_dir, file)
+            if os.path.isfile(file_path):
+                os.remove(file_path)
+
     pytest.main([__file__])
     # To run the tests, use the command:
     # pytest -v ltu-ili_testing/tests/basis_tests.py
