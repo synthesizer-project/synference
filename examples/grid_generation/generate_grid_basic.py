@@ -11,7 +11,6 @@ from synthesizer.emission_models.attenuation import (
 from synthesizer.grid import Grid
 from synthesizer.instruments import FilterCollection, Instrument
 from synthesizer.parametric import SFH, ZDist
-from unyt import Msun
 
 from sbifitter import (
     GalaxyBasis,
@@ -98,9 +97,9 @@ except Exception:
 
 # params
 
-Nmodels = 1000
+Nmodels = 10  # 00
 redshift = (5, 12)
-masses = (6, 11.5) * Msun
+masses = (6, 11.5)  # log10 of stellar mass in solar masses
 max_redshift = 20  # gives maximum age of SFH at a given redshift
 cosmo = Planck18  # cosmology to use for age calculations
 fesc = 0.0  # escape fraction of ionizing photons
@@ -127,7 +126,7 @@ peak_age = (
 
 param_prior_ranges = {
     "redshift": redshift,
-    "masses": masses,
+    "log_masses": masses,
     "tau_v": tau_v,
     "log_zmet": log_zmet,
     "tau": tau,
@@ -136,12 +135,14 @@ param_prior_ranges = {
 
 # Draw samples from Latin Hypercube
 all_param_dict = draw_from_hypercube(
-    param_prior_ranges, Nmodels, rng=42, unlog_keys=["masses"]
+    param_prior_ranges,
+    Nmodels,
+    rng=42,
 )
 
 # Get samples from the LHC draw dict
 redshifts = all_param_dict["redshift"]
-masses = all_param_dict["masses"]
+masses = all_param_dict["log_masses"]
 
 # Load Synthesizer SPS grid
 grid = Grid(
@@ -187,7 +188,7 @@ galaxy_params = {
 sfh_name = str(sfh_type).split(".")[-1].split("'")[0]
 
 name = f"""Pop_II_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_\
-{np.log10(Nmodels):.1f}_BPASS_Chab_Calzetti_v1_fesc0.0_test"""
+{np.log10(Nmodels):.1f}_BPASS_Chab_Calzetti_v1_fesc0.0_testTEST"""
 
 basis = GalaxyBasis(
     model_name=f"sps_{name}",
@@ -195,7 +196,7 @@ basis = GalaxyBasis(
     grid=grid,
     emission_model=emission_model,
     sfhs=sfh_models,
-    stellar_masses=masses,
+    log_stellar_masses=masses,
     cosmo=cosmo,
     instrument=instrument,
     metal_dists=Z_dists,

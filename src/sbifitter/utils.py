@@ -18,6 +18,7 @@ def load_grid_from_hdf5(
     parameters_key: str = "Grid/Parameters",
     filter_codes_attr: str = "FilterCodes",
     parameters_attr: str = "ParameterNames",
+    parameters_units_attr: str = "ParameterUnits",
     supp_key: str = "Grid/SupplementaryParameters",
     supp_attr: str = "SupplementaryParameterNames",
     supp_units_attr: str = "SupplementaryParameterUnits",
@@ -53,12 +54,15 @@ def load_grid_from_hdf5(
         # Load the photometry units
         photometry_units = f.attrs[phot_unit_attr]
 
+        parameter_units = f.attrs.get(parameters_units_attr, None)
+
         output = {
             "photometry": photometry,
             "parameters": parameters,
             "filter_codes": filter_codes,
             "parameter_names": parameter_names,
             "photometry_units": photometry_units,
+            "parameter_units": parameter_units,
         }
 
         # Load supplementary parameters if available
