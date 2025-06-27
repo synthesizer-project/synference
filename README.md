@@ -81,7 +81,7 @@ parameter_prior_ranges = {
 }
 
 # Draw samples from these ranges - this could be done with any sampling method, here we use a simple Latin hypercube sampling.
-parameter_samples = draw_from_hypercube(parameter_prior_ranges, N=N)
+parameter_samples = draw_from_hypercube(parameter_prior_ranges, N=N, unlog_keys=['log_stellar_mass'])
 
 # Chooose photometric filters and create instrument
 filter_names = ['F090W', 'F115W', 'F150W', 'F200W', 'F277W', 'F356W', 'F444W']
@@ -162,5 +162,4 @@ Work in progress.
 We welcome contributions to SBIFitter! If you have suggestions, bug reports, or would like to contribute code, please open an issue or submit a pull request on GitHub. Please see our [Code of Conduct](CODE_OF_CONDUCT.md) for more details on how to contribute and interact with the community.
 
 ### License
-
 This project is licensed under the GNU General Public License v3.0 (GPLv3). See the [LICENSE](LICENSE) file for details. This means you can use, modify, and distribute the code freely, but any derivative works must also be open source and distributed under the same license. We warn users that this software is offered "as is", without any warranty or guarantee of fitness for a particular purpose. SBIFitter is under active development, and therefore may change in the future.
