@@ -63,6 +63,10 @@ UNIT_DICT = {
     "tau_v_ism": "mag",
     "tau_v_birth": "mag",
     "weight_fraction": "dimensionless",
+    "log_sfr": "log10(Msun/yr)",
+    "sfr": "Msun/yr",
+    "log_stellar_mass": "log10(Msun)",
+    "stellar_mass": "Msun",
 }
 
 
@@ -96,6 +100,31 @@ def calculate_muv(galaxy, cosmo=Planck18):
         phots[key] = phot
 
     return phots
+
+
+def calculate_mwa(galaxy):
+    """Calculate the mass-weighted age of a galaxy.
+
+    Parameters
+    ----------
+    galaxy : Galaxy
+        The galaxy object containing stellar spectra.
+
+    Returns:
+    -------
+    float
+        The mass-weighted age of the galaxy in Myr.
+    """
+    if not isinstance(galaxy, Galaxy):
+        raise TypeError("galaxy must be an instance of the Galaxy class")
+
+    if not hasattr(galaxy.stars, "spectra"):
+        raise AttributeError("galaxy.stars must have a spectra attribute")
+
+    # Calculate the mass-weighted age
+    mwa = galaxy.stars.calculate_median_age()
+
+    return mwa.to(Myr)
 
 
 def generate_random_DB_sfh(
@@ -139,6 +168,8 @@ def generate_random_DB_sfh(
         np.random.dirichlet(np.ones((Nparam + 1,)) * tx_alpha, size=size),
         axis=1,
     )[0:, 0:-1][0]
+
+    print("txs", txs)
 
     db_tuple = (logmass, logsfr, Nparam, *txs)
     sfh = SFH.DenseBasis(db_tuple, redshift)
@@ -1018,9 +1049,13 @@ class GalaxyBasis:
                                 new_key,
                                 func,
                             ) in self.alt_parametrizations.items():
-                                if key in save_params:
+                                if isinstance(new_key, str):
                                     save_params[new_key] = func(save_params)
                                     to_remove.append(key)
+                                elif isinstance(new_key, (list, tuple)):
+                                    for k in new_key:
+                                        save_params[k] = func(k, save_params)
+                                to_remove.append(key)
                             for key in to_remove:
                                 save_params.pop(key)
 
@@ -1248,10 +1283,15 @@ class GalaxyBasis:
                 # Apply alternative parametrizations if provided
                 for key, (new_key, func) in self.alt_parametrizations.items():
                     if key in save_params:
-                        save_params[new_key] = func(save_params)
-                        to_remove.append(key)
+                        if isinstance(new_key, str):
+                            save_params[new_key] = func(save_params)
+                            to_remove.append(key)
+                        elif isinstance(new_key, (list, tuple)):
+                            for k in new_key:
+                                save_params[k] = func(k, save_params)
+                                to_remove.append(key)
                 for key in to_remove:
-                    save_params.pop(key)
+                    save_params.pop(key, None)
 
             gal.all_params = save_params
 
@@ -1428,7 +1468,8 @@ class GalaxyBasis:
 
                 for key, params in extra_analysis_functions.items():
                     if callable(params):
-                        func = params
+                        func = copy.deepcopy(params)
+                        params = []
                     else:
                         func = params[0]
                         params = params[1:]
@@ -1619,15 +1660,17 @@ class GalaxyBasis:
                 age = galaxy.stars.calculate_mean_age()
                 zmet = galaxy.stars.calculate_mean_metallicity()
 
-                text_gal[emission_model] = rf"""{emission_model}     \\nAge
-                     {age.to(Myr):.0f}\\n$\log_{{10}}
-                     $Z: {np.log10(zmet.value):.2f}\\nM$_\star$:
+                text_gal[emission_model] = rf"""{emission_model}     \\nAge \
+                     {age.to(Myr):.0f}\\n$\log_{{10}} \
+                     $Z: {np.log10(zmet.value):.2f}\\nM$_\star$: \
                        {np.log10(mass):.1f} M$_\odot$"""
 
         ax[0].legend(loc="upper right", fontsize=6, ncols=3)
         # Set the x-axis limits
         if max_y > 1 * nJy:
             min_y = max(min_y, 1 * nJy)
+        else:
+            min_y = 1e-3 * max_y
         ax[0].set_xlim(0.9 * min_x, 1.1 * max_x)
         ax[0].set_ylim(0.9 * min_y, 2 * max_y)
 
@@ -1669,10 +1712,12 @@ class GalaxyBasis:
         secax = ax[0].secondary_yaxis("right", functions=(jy_to_ab, ab_to_jy))
         # set scalar formatter
 
-        max_age = self.cosmo.age(redshift) - self.cosmo.age(20)
+        max_age = self.cosmo.age(redshift)  # - self.cosmo.age(20)
         max_age = max_age.to(u.Myr).value
 
-        ax[1].set_xlim(0, 1.05 * max_age)
+        ax[1].set_xlim(0, 2 * max_age)
+        # vline at max_age
+        ax[1].axvline(max_age, color="red", linestyle="--", linewidth=0.5)
 
         secax.yaxis.set_major_formatter(ScalarFormatter())
         secax.yaxis.set_minor_formatter(ScalarFormatter())
@@ -3225,6 +3270,7 @@ class CombinedBasis:
 
                 # Fill varying parameters
                 for param_name in total_property_names.get(self.bases[0].model_name, []):
+                    print(param_name)
                     if param_name in base["params"]:
                         params_array[param_idx, :] = base["params"][param_name]
                         if param_name.split("/")[-1].lower() in UNIT_DICT.keys():
