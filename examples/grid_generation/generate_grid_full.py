@@ -15,12 +15,13 @@ from synthesizer.grid import Grid
 from synthesizer.instruments import FilterCollection, Instrument
 from synthesizer.parametric import SFH, ZDist
 from tqdm import tqdm
-from unyt import Gyr, K, dimensionless
+from unyt import K, dimensionless
 
 from sbifitter import (
     CombinedBasis,
     GalaxyBasis,
     calculate_muv,
+    calculate_mwa,
     draw_from_hypercube,
     generate_constant_R,
     generate_random_DB_sfh,
@@ -101,10 +102,10 @@ except Exception:
 
 av_to_tau_v = 1.086  # conversion factor from Av to tau_v for the dust attenuation curve
 
-Nmodels = 7  # 00  # _000
+Nmodels = 10  # 00  # _000
 batch_size = 40_000  # number of models to generate in each batch
-redshift = (0.01, 12)
-masses = (6, 12)
+redshift = (0.00, 12)
+masses = (4, 12)
 max_redshift = 20  # gives maximum age of SFH at a given redshift
 cosmo = Planck18  # cosmology to use for age calculations
 
@@ -120,14 +121,14 @@ log_zmet = (-3, -1.39)  # max of grid (e.g. 0.04)
 
 
 # SFH
-# sfh_type = SFH.DenseBasis
-# tx_alpha = 5
-# Nparam_SFH = 5
-# ssfr = (-12, -7) # log10(sSFR) in yr^-1
+sfh_type = SFH.DenseBasis
+tx_alpha = 1  # alpha parameter for the Dense Basis SFH
+Nparam_SFH = 3  # number of SFH parameters to draw from the prior
+ssfr = (-12, -7)  # log10(sSFR) in yr^-1
 
-sfh_type = SFH.DelayedExponential
-log_tau = (-2, 1) * Gyr  # log-uniform between 0.01 and 100 Gyr
-max_age = (0.00, 0.99)  # normalized to maximum age of the universe at that redshift.
+# sfh_type = SFH.DelayedExponential
+# log_tau = (-2, 1) * Gyr  # log-uniform between 0.01 and 100 Gyr
+# max_age = (0.00, 0.99)  # normalized to maximum age of the universe at that redshift.
 
 # ---------------------------------------------------------------
 
@@ -140,14 +141,10 @@ full_params = {
     "log_Av": logAv,  # Av in magnitudes
     "dust_birth_fraction": dust_birth_fraction,
     "log_zmet": log_zmet,
-    "log_tau": log_tau,
-    "max_age": max_age,
+    "ssfr": ssfr,  # log10(sSFR) in yr^-1
 }
 
 if sfh_type == SFH.DenseBasis:
-    Nparam_SFH = 5  # number of SFH parameters to draw from the prior
-    tx_alpha = 5  # alpha parameter for the Dense Basis SFH
-
     # Add dummy parameters for the SFH
     for i in tqdm(range(Nparam_SFH)):
         j = 100 * (i + 1) / (Nparam_SFH + 1)
@@ -155,13 +152,17 @@ if sfh_type == SFH.DenseBasis:
             0,
             1,
         )  # dummy parameters for the SFH
+elif sfh_type == SFH.DelayedExponential:
+    # Add parameters for the delayed exponential SFH
+    # full_params["log_tau"] = log_tau
+    # full_params["max_age"] = max_age  # normalized to maximum age of the universe
+    # at that redshift.
+    pass
 
 # Draw samples from Latin Hypercube.
 # unlog_keys are keys which should be unlogged after drawing from the hypercube.
 # they will be renamed to not include 'log_' after drawing.
-all_param_dict = draw_from_hypercube(
-    full_params, Nmodels, rng=42, unlog_keys=["log_Av", "log_tau"]
-)
+all_param_dict = draw_from_hypercube(full_params, Nmodels, rng=42, unlog_keys=["log_Av"])
 
 
 # Create the grid
@@ -180,14 +181,16 @@ Z_dists = [
 redshifts = np.array(all_param_dict["redshift"])
 
 
-if isinstance(sfh_type, SFH.DenseBasis):
+if sfh_type == SFH.DenseBasis:
     # Draw SFH params from prior
     sfh_models = []
+    logsfrs = []
     for i in tqdm(range(Nmodels)):
         z = all_param_dict["redshift"][i]
         logmass = all_param_dict["log_masses"][i]
         logssfr = all_param_dict["ssfr"][i]
         logsfr = logmass + logssfr
+        logsfrs.append(logsfr)
         sfh, tx = generate_random_DB_sfh(
             size=Nmodels,
             Nparam=Nparam_SFH,
@@ -202,6 +205,9 @@ if isinstance(sfh_type, SFH.DenseBasis):
             all_param_dict[f"sfh_quantile_{100 * (j + 1) / (Nparam_SFH + 1):.0f}"][i] = (
                 tx[j]
             )
+    full_params.pop("ssfr", None)  # remove ssfr from full_params
+    # Add logSFR to all_param_dict
+    all_param_dict["log_sfr"] = np.array(logsfrs)
 else:
     sfh_models, _ = generate_sfh_basis(
         sfh_type=sfh_type,
@@ -251,18 +257,55 @@ galaxy_params = {
 # parameter dictionary and returns the new parameter value (so it can be calculated from
 # the other parameters if needed).
 
+
+def db_sf_convert(param, param_dict):
+    db_tuple = param_dict["db_tuple"]
+    print(param, db_tuple)
+    # dp_tuple has the folliwng
+    # mass, sfr, tx_alpha, *sfh_quantiles
+    if param.startswith("sfh_quantile_"):
+        # Convert the SFH quantile parameters to the Dense Basis SFH format
+        j = int(np.round(int(param.split("_")[-1]) / 100 * (Nparam_SFH + 1)))
+        print(j)
+        return db_tuple[j + 2]  # +3 because first three are mass, sfr, tx_alpha
+    elif param == "log_sfr":
+        # Convert log_sfr to the Dense Basis SFH format
+        return db_tuple[1]
+    elif param == "log_masses":
+        # Convert log_masses to the Dense Basis SFH format
+        return db_tuple[0]
+    elif param == "tx_alpha":
+        # Convert tx_alpha to the Dense Basis SFH format
+        return db_tuple[2]
+    elif param == "log_ssfr":
+        # Convert log_ssfr to the Dense Basis SFH format
+        return db_tuple[1] - db_tuple[0]
+    else:
+        raise ValueError(f"Unknown parameter {param.str} in db_tuple conversion.")
+
+
+# These convert between the actual galaxy/emitter parameters and the
+# parameters we want to sample.
 alt_parametrizations = {
     "tau_v_birth": (
         "dust_birth_fraction",
         lambda x: x["tau_v_birth"] / x["tau_v_ism"],
     ),
     "tau_v_ism": ("Av", lambda x: x["tau_v_ism"] * av_to_tau_v),
+    "db_tuple": (
+        ["log_sfr"]
+        + [
+            f"sfh_quantile_{100 * (j + 1) / (Nparam_SFH + 1):.0f}"
+            for j in range(Nparam_SFH)
+        ],
+        db_sf_convert,
+    ),  # noqa: E501
 }
 
 
 sfh_name = str(sfh_type).split(".")[-1].split("'")[0]
 
-name = f"BPASS_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_Chab_CF00_v2_logAv_logTau"  # noqa: E501
+name = f"BPASS_Chab_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_CF00_v1"  # noqa: E501
 
 basis = GalaxyBasis(
     model_name=f"sps_{name}",
@@ -293,18 +336,19 @@ combined_basis = CombinedBasis(
     # we don't need to combine them again.
 )
 
-"""for i in range(10):
+for i in range(10):
     basis.plot_galaxy(
-        idx=i * 10,
+        idx=i,
         out_dir=f"{out_dir}/plots/{name}/",
-        log_stellar_mass=all_param_dict["log_masses"][i * 10],
-)"""
+        log_stellar_mass=all_param_dict["log_masses"][i],
+    )
 
 # Passing in extra analysis function to pipeline to calculate mUV.
 # Any function could be passed in.
 combined_basis.process_bases(
     overwrite=True,
     mUV=(calculate_muv, cosmo),
+    mwa=calculate_mwa,
     n_proc=n_proc,
     verbose=False,
     batch_size=batch_size,
