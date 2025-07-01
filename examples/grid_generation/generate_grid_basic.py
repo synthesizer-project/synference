@@ -70,6 +70,7 @@ if os.path.exists(path):
     filterset = FilterCollection(path=path)
 else:
     filterset = FilterCollection(filter_codes=filter_codes)
+    filterset.write_filters(path)
 
 
 # Consistent wavelength grid for both SPS grids and filters
@@ -97,7 +98,7 @@ except Exception:
 
 # params
 
-Nmodels = 10  # 00
+Nmodels = 10_000 # 00
 redshift = (5, 12)
 masses = (6, 11.5)  # log10 of stellar mass in solar masses
 max_redshift = 20  # gives maximum age of SFH at a given redshift
@@ -187,8 +188,7 @@ galaxy_params = {
 
 sfh_name = str(sfh_type).split(".")[-1].split("'")[0]
 
-name = f"""Pop_II_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_\
-{np.log10(Nmodels):.1f}_BPASS_Chab_Calzetti_v1_fesc0.0_testTEST"""
+name = f"BPASS_Chab_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_Calzetti_v1" # noqa: E501
 
 basis = GalaxyBasis(
     model_name=f"sps_{name}",

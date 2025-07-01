@@ -71,6 +71,7 @@ instrument = "HST+JWST"
 path = f"{os.path.dirname(__file__)}/filters/{instrument}.hdf5"
 
 if os.path.exists(path):
+    print(f'Loading filters from {path}')
     filterset = FilterCollection(path=path)
 else:
     filterset = FilterCollection(filter_codes=filter_codes)
@@ -102,8 +103,8 @@ except Exception:
 
 av_to_tau_v = 1.086  # conversion factor from Av to tau_v for the dust attenuation curve
 
-Nmodels = 10  # 00  # _000
-batch_size = 40_000  # number of models to generate in each batch
+Nmodels = 10_000  # 00  # _000
+batch_size = 50_000  # number of models to generate in each batch
 redshift = (0.00, 12)
 masses = (4, 12)
 max_redshift = 20  # gives maximum age of SFH at a given redshift
@@ -192,7 +193,6 @@ if sfh_type == SFH.DenseBasis:
         logsfr = logmass + logssfr
         logsfrs.append(logsfr)
         sfh, tx = generate_random_DB_sfh(
-            size=Nmodels,
             Nparam=Nparam_SFH,
             tx_alpha=tx_alpha,
             redshift=z,
@@ -260,13 +260,11 @@ galaxy_params = {
 
 def db_sf_convert(param, param_dict):
     db_tuple = param_dict["db_tuple"]
-    print(param, db_tuple)
     # dp_tuple has the folliwng
     # mass, sfr, tx_alpha, *sfh_quantiles
     if param.startswith("sfh_quantile_"):
         # Convert the SFH quantile parameters to the Dense Basis SFH format
         j = int(np.round(int(param.split("_")[-1]) / 100 * (Nparam_SFH + 1)))
-        print(j)
         return db_tuple[j + 2]  # +3 because first three are mass, sfr, tx_alpha
     elif param == "log_sfr":
         # Convert log_sfr to the Dense Basis SFH format

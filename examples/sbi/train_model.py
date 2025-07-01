@@ -3,6 +3,7 @@ import multiprocessing as mp
 import sys
 from ast import literal_eval
 from dataclasses import dataclass
+import os
 
 import torch
 from astropy.table import Table
@@ -21,6 +22,8 @@ except RuntimeError as e:
 # Setup parsing
 parser = ArgumentParser(description="SBI SED Fitting")
 
+file_dir = os.path.dirname(__file__)
+
 
 @dataclass
 class Args:
@@ -35,7 +38,7 @@ class Args:
     n_nets: int = 1
     model_name: str = "BPASS_Chab_DelayedExpSFH_0.01_z_12_CF00_v1"
     name_append: str = ""
-    grid_path: str = """/home/tharvey/work/output/grid_BPASS_DelayedExponential_SFH_0.01_z_12_logN_5.7_Chab_CF00_v1.hdf5"""  # noqa
+    grid_path: str = f"{file_dir}/../../grids/grid_BPASS_Chab_DenseBasis_SFH_0.0_z_12_logN_1.0_CF00_v1.hdf5" # noqa
     hidden_features: int = 64
     num_transforms: int = 6
     num_components: int = 10
