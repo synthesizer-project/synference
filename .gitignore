@@ -19,6 +19,7 @@ grids/*
 scripts/filters/
 *.joblib
 *.npz
+examples/grid_generation/filters/*
 
 # Jupyter Notebook checkpoints
 .ipynb_checkpoints
