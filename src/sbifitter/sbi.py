@@ -12,6 +12,8 @@ from contextlib import redirect_stdout
 from datetime import datetime
 from io import StringIO
 from typing import Any, Dict, List, Optional, Tuple, Union
+import jax
+import jax.numpy as jnp
 
 import ili
 import matplotlib.pyplot as plt
@@ -4484,3 +4486,497 @@ class ModelComparison:
         self.model1 = model1
         self.model2 = model2
         self.data = data
+
+
+class Simformer_Fitter(SBI_Fitter):
+    """Simformer Fitter for SBI models.
+
+    """
+    def __init__(self, name: str = "simformer_fitter", **kwargs):
+        """Initialize the Simformer Fitter."""
+        super().__init__(name=name, **kwargs)
+
+        self.simformer_task = None
+
+    @classmethod
+    def init_from_hdf5(cls,
+            model_name,
+            hdf5_path: str = None,
+            return_output: bool = False,
+            **kwargs):
+        """Initialize the Simformer Fitter."""
+
+        return super().init_from_hdf5(
+            model_name,
+            hdf5_path,
+            return_output,
+            **kwargs,
+        )
+
+    def run_single_sbi(self,
+            backend: str = "jax",
+            num_training_simulations: int = 10_000,
+            train_test_fraction: float = 0.1,
+            random_seed = 42,
+            set_self: bool = True,
+            verbose: bool = True,
+            model_config_dict = {
+                    "name": "ScoreTransformer",
+                    "d_model": 128,
+                    "n_heads": 4,
+                    "n_layers": 4,
+                    "d_feedforward": 256,
+                    "dropout": 0.1,
+                    "max_len": 5000,  # Adjust based on theta_dim + x_dim
+                    "tokenizer": {"name": "LinearTokenizer", "encoding_dim": 64},
+                    "use_output_scale_fn": True,
+                },
+                sde_config_dict = {
+                    "name": "VPSDE",  # or "VESDE"
+                    "beta_min": 0.1,
+                    "beta_max": 20.0,
+                    "num_steps": 1000,
+                    "T_min": 1e-05,
+                    "T_max": 1.0,
+                },
+                train_config_dict = {
+                    "learning_rate": 1e-4,  # Initial learning rate for training # used
+                    "min_learning_rate": 1e-6,  # Minimum learning rate for training # used
+                    "z_score_data": True,  # Whether to z-score the data # used
+                    "total_number_steps_scaling": 5,  # Scaling factor for total number of steps
+                    "max_number_steps": 1e8,  # Maximum number of steps for training # used
+                    "min_number_steps": 1e4,  # Minimum number of steps for training # used
+                    "training_batch_size": 64,  # Batch size for training # used
+                    "val_every": 100,  # Validate every 100 steps # used
+                    "clip_max_norm": 10.0,  # Gradient clipping max norm # used
+                    "condition_mask_fn": {
+                        "name": "joint"
+                    },  # Use the base mask function defined in the task
+                    "edge_mask_fn": {"name": "none"},
+                    "validation_fraction": 0.1,  # Fraction of data to use for validation # used
+                    "val_repeat": 5,  # Number of times to repeat validation # used
+                    "stop_early_count": 5,  # Number of steps to wait before stopping early # used
+                    "rebalance_loss": False,  # Whether to rebalance the loss # used
+                }
+    ):
+        """
+
+        """
+        
+        from .simformer import GalaxyPhotometryTask
+        from omegaconf import OmegaConf
+        from scoresbibm.methods.score_transformer import train_transformer_model
+
+        priors = self.create_priors()
+
+        if self.has_simulator:
+            print('Using online simulator for training.')
+            simulator_function = self.simulator
+        else:
+            print('Using pre-generated samples for training.')
+            assert self.feature_array is not None, \
+                "Feature array must be provided for pre-generated samples."
+
+            # dummy function which retuens None
+            simulator_function = lambda x: None
+
+        task = GalaxyPhotometryTask(name=self.name,
+                backend = backend,
+                prior_dict = priors,
+                param_names_ordered = self.fitted_parameter_names,
+                run_simulator_fn = simulator_function,
+                num_filters = len(self.feature_names))
+
+        
+        method_config_dict = {
+            "device": str(self.device),  # Ensure this matches device setup
+            "sde": sde_config_dict,
+            "model": model_config_dict,
+            "train": train_config_dict,
+        }
+
+                # Convert the main method_cfg to OmegaConf DictConfig
+        method_cfg = OmegaConf.create(method_config_dict)
+        master_rng_key = jax.random.PRNGKey(random_seed)
+
+
+        if self.has_simulator:
+            print(f"Generating {num_training_simulations} training simulations...")
+            training_data = task.get_data(num_samples=num_training_simulations)
+            theta_train = training_data["theta"]
+            x_train = training_data["x"]
+            num_validation_simulations = int(num_training_simulations * train_test_fraction)
+
+            validation_data = task.get_data(num_samples=num_validation_simulations)
+
+        else:
+            train_indices, test_indices = self.split_dataset(
+                        train_fraction=train_test_fraction,
+                        random_seed=random_seed,
+                        verbose=verbose,
+            )
+
+            x = jnp.array(self.feature_array, dtype=jnp.float32)
+            theta = jnp.array(self.fitted_parameter_array, dtype=jnp.float32)
+
+            training_data = {
+                "theta": theta[train_indices],
+                "x": x[train_indices],
+            }
+
+            validation_data = {
+                "theta": theta[test_indices],
+                "x": x[test_indices],
+            }
+
+
+        if verbose:
+            print(f"Starting training at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        
+        trained_score_model = train_transformer_model(
+            task=task,
+            data=training_data,  # Expects dict {"theta": ..., "x": ...} with JAX arrays
+            method_cfg=method_cfg,
+            rng=master_rng_key,
+        )
+        if verbose:
+            print(f"Finished training at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+        if set_self:
+            self.simformer_task = task
+            self.posteriors = trained_score_model
+
+        if verbose:
+            print(f"Saving model at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+        self.save_model_to_pkl(task=task,
+            posteriors=trained_score_model,
+            output_folder=f"{code_path}/models/{self.name}/",
+        )
+
+        # Evaluate model.
+
+        test_x = validation_data["x"]
+        theta_val = validation_data["theta"]
+
+        if verbose:
+            print(f"Evaluating model at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+        self.plot_diagnostics(task=task, 
+            X_test=test_x,
+            y_test=theta_val,
+            posteriors=trained_score_model,
+            num_samples=1000,
+            num_evaluations=25,
+            rng_seed=random_seed,
+            plots_dir=f"{code_path}/models/{self.name}/plots/",
+        )
+
+    def load_model_from_pkl(self, 
+            model_dir: str,
+            model_name: str = "simformer",
+            set_self: bool = True):
+
+        from .simformer import load_full_model
+
+        load_full_model(
+            model_dir,
+            model_name,
+        )
+
+    def save_model_to_pkl(self,
+                        task=None,
+                        posteriors=None,
+                        output_folder: str = f"{code_path}/models/name/"):
+
+        if task is None:
+            task = self.simformer_task
+        if posteriors is None:
+            posteriors = self.posteriors
+        
+        if task is None or posteriors is None:
+            raise ValueError("Task and posteriors must be provided.")
+
+        from scoresbibm.utils.data_utils import save_model
+
+        output_folder = output_folder.replace("name", self.name)
+
+        if not os.path.exists(output_folder):
+            os.makedirs(output_folder)
+
+        save_model(
+            model=posteriors,
+            dir_path=f"{output_folder}",
+            model_id=name,
+        )
+
+
+        if (
+            posteriors.z_score_params is not None
+            and posteriors.z_score_params["z_score_fn"] is None
+        ):
+            zscore, un_zscore = get_z_score_fn(
+                posteriors.z_score_params["mean_per_node_id"],
+                posteriors.z_score_params["std_per_node_id"],
+            )
+            posteriors.z_score_params["z_score_fn"] = zscore
+            posteriors.z_score_params["un_z_score_fn"] = un_zscore
+
+
+        save_dict = {
+            "_x_dim": task.get_x_dim(),
+            "_theta_dim": task.get_theta_dim(),
+            "prior_dict": priors_ranges_dict,
+            "param_names_ordered": task.param_names_ordered,
+            "backend": task.backend,
+            "method_config_dict": method_config_dict,
+        }
+
+
+        dump(
+            save_dict,
+            os.path.join(output_folder, f"{self.name}_params.pkl"),
+            
+        )
+
+    def plot_diagnostics(self, X_test=None, y_test=None, num_samples=1000, num_evaluations=25, task=None, posteriors=None, rng_seed: int = 42,
+        plots_dir: str = f"{code_path}/models/name/plots/",):
+
+
+        if task is None:
+            task = self.simformer_task
+
+        if posteriors is None:
+            posteriors = self.posteriors
+
+        master_rng_key = jax.random.PRNGKey(rng_seed)
+
+        from scoresbibm.evaluation.eval_metrics import c2st
+        from scoresbibm.evaluation.eval_task import eval_inference_task
+
+        eval_inference_task(
+            task=task,
+            model=posteriors,
+            metric_fn=c2st,  # Use the c2st metric function
+            metric_params={"condition_mask_fn": "posterior"},
+            rng=master_rng_key,
+            num_samples=num_samples,
+            num_evaluations=num_evaluations,
+        )
+
+        self.plot_coverage(
+            num_samples=num_samples,
+            num_evaluations=num_evaluations,
+            task=task,
+            posteriors=posteriors,
+            rng_seed=rng_seed,
+            plots_dir=plots_dir,
+        )
+
+    def plot_sample_accuracy(self,
+                    num_samples=1000,
+                    X_test=None,
+                    y_test=None,
+                    task=None,
+                    posteriors=None,
+                    rng_seed: int = 42,
+                    plots_dir: str = f"{code_path}/models/name/plots/",
+    ):
+
+        if task is None:
+            task = self.simformer_task
+        
+        if posteriors is None:
+            posteriors = self.posteriors
+
+        master_rng_key = jax.random.PRNGKey(rng_seed)
+
+        posterior_condition_mask = jnp.array([0] * task.get_theta_dim() + [1] * task.get_x_dim(), dtype=jnp.bool_)
+        
+        y_test_recovered = self.sample_posterior(
+            X_test=X_test,
+            num_samples=1000,
+            posteriors=trained_score_model,
+            rng_seed=random_seed,
+            attention_mask=posterior_condition_mask,
+        )
+
+        # Get 16, 50 and 84 percentiles for each parameter for each test sample
+
+
+        fig, ax = plt.subplots(nrows=1, ncols=len(task.param_names_ordered), figsize=(15, 5))
+
+        for i, param in enumerate(task.param_names_ordered):
+            # Get the 16th, 50th and 84th percentiles for the parameter
+            p16, p50, p84 = np.percentile(y_test_recovered[:, i], [16, 50, 84])
+            ax[i].errorbar(
+                y_test[:, i],
+                p50, 
+                yerr=[p50 - p16, p84 - p50],
+                fmt="o",
+            )
+
+            ax[i].set_title(param)
+
+        plt.tight_layout()
+
+        plots_dir = plots_dir.replace("name", self.name)
+
+        if not os.path.exists(plots_dir):
+            os.makedirs(plots_dir)
+        # TODO: Rename to match convention
+        plt.savefig(os.path.join(plots_dir, f"sample_accuracy_plot_{self._timestamp}.png"))
+
+    def plot_coverage(self, 
+                    num_samples=1000,
+                    num_evaluations=25,
+                    task=None,
+                    posteriors=None,
+                    rng_seed: int = 42,
+                    plots_dir: str = f"{code_path}/models/name/plots/",
+    ):
+
+        metric_values, eval_time = eval_coverage(
+            task=task,
+            model=posteriors,
+            metric_params={
+                "num_samples": num_samples,
+                "num_evaluations": num_evaluations,
+                "condition_mask_fn": "posterior",  # posterior, joint, likelihood,
+                # random or structured random
+                "num_bins": 20,  # Number of bins for histogram
+                "sample_kwargs": {},
+                "log_prob_kwargs": {},
+                "batch_size": 64,  # Batch size for sampling
+            },
+            rng=master_rng_key,
+        )
+
+        plt.plot(metric_values[0], metric_values[1], marker="o", label="Coverage")
+        plt.plot([0, 1], [0, 1], "k--", label="Ideal Coverage")
+        plt.xlabel("Predicted Percentile")
+        plt.ylabel("Empirical Percentile")
+        plt.legend()
+        
+        plt.title(f"Coverage Plot (num_samples={num_samples}, num_evaluations={num_evaluations})")
+
+        plots_dir = plots_dir.replace("name", self.name)
+
+        if not os.path.exists(plots_dir):
+            os.makedirs(plots_dir)
+
+        plt.savefig(os.path.join(plots_dir, f"coverage_plot_{self._timestamp}.png"))
+
+    def plot_posterior(self):
+        pass
+            
+    def sample_posterior(self,
+                        X_test,
+                        num_samples: int = 1000,
+                        posteriors: object = None,
+                        rng_seed: int = 42,
+                        attention_mask: Union[str, np.ndarray] = 'full'):
+
+        """Sample from the posterior distribution.
+
+        Parameters
+        ----------
+
+        X_test : np.ndarray
+            Test data to sample from the posterior.
+
+        num_samples : int, optional
+            Number of samples to draw from the posterior. Default is 1000.
+        posteriors : object, optional
+            Posteriors to use for sampling. If None, will use the posteriors
+            stored in the object.
+        attention_mask : Union[str, np.ndarray], optional
+            Attention mask to use for sampling. Can be 'full' or a numpy array.
+            Default is 'full'. Full means you have full observations for all bands.
+            If you have missing bands, you can provide a numpy array with
+            the shape
+
+        TODO: Make this work for multidimensional X_test.
+
+        """
+        master_rng_key = jax.random.PRNGKey(rng_seed)
+
+        num_theta = len(self.feature_names)
+        num_x = len(self.fitted_parameter_names)
+
+        assert X_test.shape[1] == num_x or attention_mask != 'full', \
+            f"Must provide the all features or a manual attention mask. "
+
+        mask_theta = np.zeros(num_theta, dtype=np.bool_)
+
+        if attention_mask == 'full':
+            mask_x = np.ones(num_x, dtype=np.bool_)
+        else:
+            mask_x = attention_mask.astype(np.bool_)
+
+
+        X_test = np.atleast_2d(X_test)
+
+        all_samples = []
+
+        for x in X_test:
+            x = x[~mask_bool]
+            x = jnp.array([x], dtype=jnp.float32)
+
+            posterior_condition_mask = jnp.array(mask_theta + mask_x, dtype=jnp.bool_)
+            samples = reloaded_model.sample_batched(
+                num_samples=num_samples,
+                x_o=x,
+                condition_mask=posterior_condition_mask,
+                rng=master_rng_key,
+            )
+
+            samples = np.array(samples[0], dtype=np.float32)
+            all_samples.append(samples)
+
+        all_samples = np.array(all_samples, dtype=np.float32)
+
+        # if X_test is 1-dimensional, flatten the output
+        if X_test.shape[0] == 1:
+            all_samples = all_samples[0]
+
+        return all_samples
+
+
+        '''theta_samples = samples[:, :theta_dim]
+        if attention_mask != 'full':
+            phot_samples = samples[:, theta_dim:]
+            return theta_samples, phot_samples
+        else:
+            return theta_samples'''
+
+    def create_priors(
+            self,
+            override_prior_ranges: dict = {},
+            verbose: bool = True):
+        from .simformer import GalaxyPrior
+        
+        priors_sbi = super().create_priors(
+            override_prior_ranges=override_prior_ranges,
+            verbose=verbose,
+        ).base_dist
+        num = len(self.fitted_parameter_names)
+
+        prior_ranges = {}
+        for i, name in enumerate(self.fitted_parameter_names):
+            low = float(priors_sbi.low[i])
+            high = float(priors_sbi.high[i])
+            prior_ranges[name] = (low, high)
+
+
+        prior = GalaxyPrior(prior_ranges,
+                            self.fitted_parameter_names)
+
+        return prior
+
+
+    def optimize_sbi(self):
+        raise NotImplementedError(
+            "Simformer_Fitter does not implement optimize_sbi method. "
+        )
+    
