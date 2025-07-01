@@ -18,7 +18,7 @@ from .utils import (
 
 
 try:
-    from .sbi import SBI_Fitter, MissingPhotometryHandler
+    from .sbi import SBI_Fitter, MissingPhotometryHandler, Simformer_Fitter
 except ImportError as e:
     print(e)
     print('Dependencies for SBI not installed. Only the grid generation functions will be available.')
@@ -37,6 +37,7 @@ __all__ = [
     "calculate_mwa",
     "SBI_Fitter",
     "MissingPhotometryHandler",
+    "Simformer_Fitter",
     "GalaxySimulator",
     "generate_random_DB_sfh",
     "EmpiricalUncertaintyModel",
