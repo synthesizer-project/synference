@@ -11,9 +11,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import torch
-from omegaconf import OmegaConf  # To create DictConfig-like objects if needed
-from scoresbibm.methods.score_transformer import train_transformer_model
-from scoresbibm.tasks.base_task import InferenceTask
 from synthesizer.emission_models import (
     TotalEmission,
 )
@@ -28,86 +25,20 @@ from unyt import (
     Myr,
 )
 
-from sbifitter import GalaxySimulator
-
-file_path = os.path.dirname(os.path.realpath(__file__))
-grid_folder = os.path.join(os.path.dirname(os.path.dirname(file_path)), "grids")
-output_folder = os.path.join(os.path.dirname(os.path.dirname(file_path)), "models")
-
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-# --- Helper Class for Prior ---
-class GalaxyPrior:
-    """
-    A simple prior distribution handler for galaxy parameters.
-    Samples uniformly from ranges specified for each parameter.
-    """
+try:
+    from omegaconf import OmegaConf  # To create DictConfig-like objects if needed
+    from scoresbibm.methods.score_transformer import train_transformer_model
+    from scoresbibm.tasks.base_task import InferenceTask
+except Exception as e:
+    print(e)
 
-    def __init__(
-        self,
-        prior_ranges: Dict[str, Tuple[float, float]],
-        param_order: List[str],
-    ):
-        self.prior_ranges = prior_ranges
-        self.param_order = param_order
-        self.theta_dim = len(param_order)
+    class InferenceTask:
+        pass
 
-        self.distributions = []
-        for param_name in self.param_order:
-            low, high = self.prior_ranges[param_name]
-            self.distributions.append(
-                torch.distributions.Uniform(
-                    torch.tensor(float(low)), torch.tensor(float(high))
-                )
-            )
 
-    def sample(
-        self, sample_shape: Tuple[int], sample_lhc=False, rng=None
-    ) -> torch.Tensor:
-        """
-        Generates samples from the prior.
-        Args:
-            sample_shape: A tuple containing the number of samples, e.g., (num_samples,).
-        Returns:
-            A PyTorch tensor of shape (num_samples, theta_dim).
-        """
-        if not sample_lhc:
-            num_samples = sample_shape[0]
-            samples_per_param = [
-                dist.sample((num_samples, 1)) for dist in self.distributions
-            ]
-        else:
-            # Use boundaries, but sample from Latin Hypercube
-            from scipy.stats.qmc import LatinHypercube
 
-            sampler = LatinHypercube(d=self.theta_dim, rng=rng)
-            lhc_samples = sampler.random(n=sample_shape[0])
-            samples_per_param = []
-            for i, dist in enumerate(self.distributions):
-                low, high = self.prior_ranges[self.param_order[i]]
-                # Scale LHC samples to the range of the distribution
-                scaled_samples = low + (high - low) * lhc_samples[:, i : i + 1]
-                samples_per_param.append(
-                    torch.tensor(scaled_samples, dtype=torch.float32)
-                )
-
-        return torch.cat(samples_per_param, dim=1)
-
-    def log_prob(self, theta: torch.Tensor) -> torch.Tensor:
-        """
-        Calculates the log probability of theta under the prior.
-        Assumes theta is a batch of shape (num_samples, theta_dim).
-        """
-        if theta.ndim == 1:
-            theta = theta.unsqueeze(0)  # Make it (1, theta_dim)
-
-        log_probs_per_param = []
-        for i, dist in enumerate(self.distributions):
-            log_probs_per_param.append(dist.log_prob(theta[:, i]))
-
-        # Sum log_probs for independent parameters
-        return torch.sum(torch.stack(log_probs_per_param, dim=1), dim=1)
 
 
 # --- Custom Simformer Task ---
@@ -130,6 +61,7 @@ class GalaxyPhotometryTask(InferenceTask):
     ):
         super().__init__(name, backend)
 
+
         if (
             prior_dict is None
             or param_names_ordered is None
@@ -145,9 +77,13 @@ class GalaxyPhotometryTask(InferenceTask):
         self._theta_dim = len(param_names_ordered)
         self._x_dim = num_filters
 
-        self.prior_dist = GalaxyPrior(
-            prior_ranges=prior_dict, param_order=self.param_names_ordered
-        )
+        if isinstance(prior_dict, GalaxyPrior):
+            self.prior_dist = prior_dict
+        else:
+            self.prior_dist = GalaxyPrior(
+                prior_ranges=prior_dict, param_order=self.param_names_ordered
+            )
+
         self.run_simulator_fn = run_simulator_fn
 
     def get_theta_dim(self) -> int:
@@ -251,7 +187,125 @@ class GalaxyPhotometryTask(InferenceTask):
         return base_mask_fn
 
 
+
+# --- Helper Class for Prior ---
+class GalaxyPrior:
+    """
+    A simple prior distribution handler for galaxy parameters.
+    Samples uniformly from ranges specified for each parameter.
+    """
+
+    def __init__(
+        self,
+        prior_ranges: Dict[str, Tuple[float, float]],
+        param_order: List[str],
+    ):
+        self.prior_ranges = prior_ranges
+        self.param_order = param_order
+        self.theta_dim = len(param_order)
+
+        self.distributions = []
+        for param_name in self.param_order:
+            low, high = self.prior_ranges[param_name]
+            self.distributions.append(
+                torch.distributions.Uniform(
+                    torch.tensor(float(low)), torch.tensor(float(high))
+                )
+            )
+
+    def sample(
+        self, sample_shape: Tuple[int], sample_lhc=False, rng=None
+    ) -> torch.Tensor:
+        """
+        Generates samples from the prior.
+        Args:
+            sample_shape: A tuple containing the number of samples, e.g., (num_samples,).
+        Returns:
+            A PyTorch tensor of shape (num_samples, theta_dim).
+        """
+        if not sample_lhc:
+            num_samples = sample_shape[0]
+            samples_per_param = [
+                dist.sample((num_samples, 1)) for dist in self.distributions
+            ]
+        else:
+            # Use boundaries, but sample from Latin Hypercube
+            from scipy.stats.qmc import LatinHypercube
+
+            sampler = LatinHypercube(d=self.theta_dim, rng=rng)
+            lhc_samples = sampler.random(n=sample_shape[0])
+            samples_per_param = []
+            for i, dist in enumerate(self.distributions):
+                low, high = self.prior_ranges[self.param_order[i]]
+                # Scale LHC samples to the range of the distribution
+                scaled_samples = low + (high - low) * lhc_samples[:, i : i + 1]
+                samples_per_param.append(
+                    torch.tensor(scaled_samples, dtype=torch.float32)
+                )
+
+        return torch.cat(samples_per_param, dim=1)
+
+    def log_prob(self, theta: torch.Tensor) -> torch.Tensor:
+        """
+        Calculates the log probability of theta under the prior.
+        Assumes theta is a batch of shape (num_samples, theta_dim).
+        """
+        if theta.ndim == 1:
+            theta = theta.unsqueeze(0)  # Make it (1, theta_dim)
+
+        log_probs_per_param = []
+        for i, dist in enumerate(self.distributions):
+            log_probs_per_param.append(dist.log_prob(theta[:, i]))
+
+        # Sum log_probs for independent parameters
+        return torch.sum(torch.stack(log_probs_per_param, dim=1), dim=1)
+
+
+def load_full_model(dir_path, model_id, simulator=None):
+    """Load a full model from the specified directory and model ID."""
+    from joblib import load
+    from scoresbibm.tasks import get_task
+    from scoresbibm.utils.edge_masks import get_edge_mask_fn
+    from scoresbibm.utils.data_utils import load_model
+
+
+    model = load_model(
+        dir_path=dir_path,
+        model_id=model_id,
+    )
+
+    try:
+        meta = load(f"{dir_path}/models/data_{model_id}.joblib")
+
+        model.__dict__.update(meta)
+        task_name = model.edge_mask_fn_params.get("task")
+        task = get_task(task_name)
+        task.__dict__.update(meta)
+
+        task.prior_dist = GalaxyPrior(
+            prior_ranges=task.prior_dict, param_order=task.param_names_ordered
+        )
+
+        model.edge_mask_fn = get_edge_mask_fn(model.edge_mask_fn_params["name"], task)
+
+        if simulator is not None:
+            model.simulator = simulator
+        else:
+            print(
+                "No simulator provided. Please provide a simulator to use with the model."
+            )
+    except FileNotFoundError:
+        pass
+
+    return model
+
 if __name__ == "__main__":
+
+
+    file_path = os.path.dirname(os.path.realpath(__file__))
+    grid_folder = os.path.join(os.path.dirname(os.path.dirname(file_path)), "grids")
+    output_folder = os.path.join(os.path.dirname(os.path.dirname(file_path)), "models")
+
     # Define sfh and zdist instances or classes as used by GalaxySimulator
     sfh_model_class = SFH.LogNormal
     zdist_model_class = ZDist.DeltaConstant
@@ -297,6 +351,7 @@ if __name__ == "__main__":
         dust_emission_model=None,
     )
     emitter_params_dict = {"stellar": ["tau_v"]}
+    from sbifitter import GalaxySimulator
     galaxy_simulator_instance = GalaxySimulator(
         sfh_model=sfh_model_class,  # Pass the class
         zdist_model=zdist_model_class,  # Pass the class
@@ -536,3 +591,5 @@ if __name__ == "__main__":
     with open("trained_galaxy_score_model_params.pkl", "wb") as f:
         pickle.dump(trained_score_model.score_model_params, f)
     print("Model parameters saved (example).")
+
+

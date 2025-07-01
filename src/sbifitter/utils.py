@@ -4,13 +4,13 @@ import operator
 import os
 import re
 import sys
-from typing import Dict, List, Union
+from typing import Dict, List, Union, Tuple
 
 import h5py
 import numpy as np
 import scipy.stats
 from unyt import Angstrom, Jy, nJy, unyt_array
-
+import torch
 
 def load_grid_from_hdf5(
     hdf5_path: str,
@@ -413,3 +413,4 @@ def f_jy_err_to_asinh(
 
     f_b = f_b.to(Jy).value
     return 2.5 * np.log10(np.e) * f_jy_err / np.sqrt(f_jy**2 + (2 * f_b) ** 2)
+

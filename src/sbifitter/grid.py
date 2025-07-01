@@ -4835,7 +4835,7 @@ class GalaxySimulator(object):
 
 
 def create_uncertainity_models_from_EPOCHS_cat(
-    file, bands, new_band_names=None, plot=False, **kwargs
+    file, bands, new_band_names=None, plot=False, old=False, **kwargs
 ):
     """Create uncertainty models from an EPOCHS catalog file.
 
@@ -4862,7 +4862,10 @@ def create_uncertainity_models_from_EPOCHS_cat(
     if isinstance(bands, str):
         bands = [bands]
 
-    table = Table.read(file)
+    if not isinstance(file, Table):
+        table = Table.read(file)
+    else:
+        table = file
     unc_models = {}
 
     if new_band_names is not None:
@@ -4877,9 +4880,15 @@ def create_uncertainity_models_from_EPOCHS_cat(
         if f"loc_depth_{band}" not in table.colnames:
             raise ValueError(f"Column loc_depth_{band} not found in the table.")
 
-        mag = table[f"MAG_APER_{band}_aper_corr"][:, 0]
-        flux = (u.Jy * table[f"FLUX_APER_{band}_aper_corr_Jy"][:, 0]).to("Jy").value
-        flux_err = (table[f"loc_depth_{band}"][:, 0] * u.ABmag).to("Jy").value / 5
+        mag = table[f"MAG_APER_{band}_aper_corr"]
+
+        flux = (u.Jy * table[f"FLUX_APER_{band}_aper_corr_Jy"]).to("Jy").value
+        flux_err = (table[f"loc_depth_{band}"] * u.ABmag).to("Jy").value / 5
+
+        if old:
+            mag = mag[:, 0]
+            flux = flux[:, 0]
+            flux_err = flux[:, 0]
 
         mag_err = (2.5 * flux_err) / (flux * np.log(10))
         mask = (mag != -99) & (np.isfinite(mag)) & (mag_err >= 0)
