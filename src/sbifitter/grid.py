@@ -128,7 +128,6 @@ def calculate_mwa(galaxy):
 
 
 def generate_random_DB_sfh(
-    size=1,
     Nparam=3,
     tx_alpha=5,
     redshift=6,
@@ -165,11 +164,9 @@ def generate_random_DB_sfh(
         An array of time series parameters for the SFH.
     """
     txs = np.cumsum(
-        np.random.dirichlet(np.ones((Nparam + 1,)) * tx_alpha, size=size),
+        np.random.dirichlet(np.ones((Nparam + 1,)) * tx_alpha, size=1),
         axis=1,
     )[0:, 0:-1][0]
-
-    print("txs", txs)
 
     db_tuple = (logmass, logsfr, Nparam, *txs)
     sfh = SFH.DenseBasis(db_tuple, redshift)
@@ -3270,7 +3267,6 @@ class CombinedBasis:
 
                 # Fill varying parameters
                 for param_name in total_property_names.get(self.bases[0].model_name, []):
-                    print(param_name)
                     if param_name in base["params"]:
                         params_array[param_idx, :] = base["params"][param_name]
                         if param_name.split("/")[-1].lower() in UNIT_DICT.keys():
