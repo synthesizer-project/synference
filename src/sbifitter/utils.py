@@ -414,3 +414,88 @@ def f_jy_err_to_asinh(
     f_b = f_b.to(Jy).value
     return 2.5 * np.log10(np.e) * f_jy_err / np.sqrt(f_jy**2 + (2 * f_b) ** 2)
 
+
+
+def save_emission_model(model):
+
+    # store fixed parameters of the emission model
+    fixed_params = model.fixed_parameters
+            
+    if fixed_params is None:
+        fixed_params = {}
+
+    for k, m in model._models.items():
+        for i, j in m.fixed_parameters.items():
+            if i not in fixed_params.keys():
+                fixed_params[i] = j
+            else:
+                if isinstance(fixed_params[i], str) and not isinstance(j, str):
+                    fixed_params[i] = j
+
+    dust_attenuation_keys = {}
+    if 'attenuated' in model._transformation.keys():
+        dust_law = model._transformation['attenuated'][1]
+        dust_attenuation_keys.update(dust_law.__dict__)
+        dust_attenuation_keys.pop('description')
+        dust_attenuation_keys.pop('_required_params')
+        dust_law = type(dust_law).__name__
+        
+    else:
+        dust_law = None
+
+    dust_emission_keys = {}
+
+    if 'dust_emission' in model._models:
+        dust_em = model._models['dust_emission'].generator
+        dust_emission_keys.update(dust_em.__dict__)
+        dust_emission_model = type(dust_em).__name__
+    else:
+        dust_emission_model = None
+
+    fixed_param_units = []
+    for k, v in fixed_params.items():
+        if hasattr(v, 'units'):
+            fixed_param_units.append(str(v.units))
+            fixed_params[k] = v.value
+        else:
+            fixed_param_units.append('')
+
+    fixed_parameter_keys = list(fixed_params.keys())
+    fixed_parameter_values = list(fixed_params.values())
+
+    dust_attenuation_units = []
+    for k, v in dust_attenuation_keys.items():
+        if hasattr(v, 'units'):
+            dust_attenuation_units.append(str(v.units))
+            dust_attenuation_keys[k] = v.value
+        else:
+            dust_attenuation_units.append('')
+
+    dust_attenuation_values = list(dust_attenuation_keys.values())
+    dust_attenuation_keys = list(dust_attenuation_keys.keys())
+
+    dust_emission_units = []
+    for k, v in dust_emission_keys.items():
+        if hasattr(v, 'units'):
+            dust_emission_units.append(str(v.units))
+            dust_emission_keys[k] = v.value
+        else:
+            dust_emission_units.append('')
+
+    dust_emission_values = list(dust_emission_keys.values())
+    dust_emission_keys = list(dust_emission_keys.keys())
+
+        
+    return {
+        "fixed_parameter_keys": fixed_parameter_keys,
+        "fixed_parameter_values": fixed_parameter_values,
+        "fixed_parameter_units": fixed_param_units,
+        "dust_law": dust_law,
+        "dust_attenuation_keys": dust_attenuation_keys,
+        "dust_attenuation_values": dust_attenuation_values,
+        "dust_attenuation_units": dust_attenuation_units,
+        "dust_emission": dust_emission_model,
+        "dust_emission_keys": dust_emission_keys,
+        "dust_emission_values": dust_emission_values,
+        "dust_emission_units": dust_emission_units,
+    }

@@ -3,6 +3,7 @@
 import copy
 import inspect
 import os
+from dill.source import getsource
 from collections import defaultdict
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Tuple, Type, Union
@@ -49,6 +50,7 @@ from .utils import (
     f_jy_err_to_asinh,
     f_jy_to_asinh,
     list_parameters,
+    save_emission_model
 )
 
 file_path = os.path.dirname(os.path.realpath(__file__))
@@ -489,8 +491,20 @@ def draw_from_hypercube(
     if unlog_keys is None:
         unlog_keys = []
 
+    # check if model takes 'rng' or 'seed' as an argument
+    if "rng" in inspect.signature(model).parameters:
+        key = "rng"
+    elif "seed" in inspect.signature(model).parameters:
+        key = "seed"
+    else:
+        raise ValueError(
+            "The model must accept either 'rng' or 'seed' as an argument."
+        )
+
+    rng_ = {key:rng} if rng is not None else {}
+
     # Create a Latin Hypercube sampler
-    sampler = model(d=len(param_ranges), rng=rng)
+    sampler = model(d=len(param_ranges), **rng_)
 
     # Generate samples in the unit hypercube
     sample = sampler.random(int(N))
@@ -1078,6 +1092,8 @@ class GalaxyBasis:
         # Remove any paremters which are just [None]
         to_remove = []
         fixed_param_names = []
+        fixed_param_values = []
+        fixed_param_units = []
         varying_param_names = []
 
         for key, value in all_parameters.items():
@@ -1087,6 +1103,10 @@ class GalaxyBasis:
             # check if all values are the same.
             if len(np.unique(value)) == 1:
                 fixed_param_names.append(key)
+                fixed_param_units.append(
+                    str(value[0].units) if isinstance(value[0], unyt_quantity) else ''
+                )
+                fixed_param_values.append(value[0])
             else:
                 varying_param_names.append(key)
 
@@ -1120,6 +1140,8 @@ class GalaxyBasis:
 
         self.varying_param_names = varying_param_names
         self.fixed_param_names = fixed_param_names
+        self.fixed_param_values = fixed_param_values
+        self.fixed_param_units = fixed_param_units
         self.all_parameters = all_parameters
 
         for key in to_remove:
@@ -1128,6 +1150,226 @@ class GalaxyBasis:
         print("Finished creating galaxies.")
 
         return self.galaxies
+
+    def _check_model_simplicity(self, parameter_transforms_to_save=None, verbose=True) -> bool:
+        '''Check if the model is simple enough to be stored in a file.
+
+        Checks include:
+            All SFHs are the same underlying SFH class.
+            All metallicity distributions are the same underlying ZDist class.
+            Single emission model class.
+            We understand emitter parameters and can store them.
+            We can store the grid path and filter names.
+            We can serialize alt_parametrizations.
+
+        If the model is simple enough, we can store in HDF5 and
+        allow creation of a GalaxySimulator from it.
+        '''
+
+        accept = True
+
+        sfh_classes = set(type(sfh) for sfh in self.sfhs)
+        if len(sfh_classes) > 1:
+            if verbose:
+                print(
+                    f"SFH classes are not all the same: {sfh_classes}. "
+                    "Cannot store model."
+                )
+            accept = False
+
+        if type(self.sfhs[0]).__name__ not in SFH.parametrisations:
+            if verbose:
+                print(SFH.parametrisations)
+                print(
+                    f"SFH class {type(self.sfhs[0]).__name__} is not in SFH.parametrisations. "
+                    "Cannot store model."
+                )
+            accept = False
+
+        metal_dist_classes = set(type(metal_dist) for metal_dist in self.metal_dists)
+        if len(metal_dist_classes) > 1:
+            if verbose:
+                print(
+                    f"Metallicity distribution classes are not all the same: {metal_dist_classes}. "
+                    "Cannot store model."
+                )
+            accept = False
+
+        if type(self.metal_dists[0]).__name__ not in ZDist.parametrisations:
+            if verbose:
+                print(
+                    f"Metallicity distribution class {type(self.metal_dists[0]).__name__} "
+                    "is not in ZDist.parametrisations. Cannot store model."
+                )
+            accept = False
+
+        if not isinstance(self.emission_model, EmissionModel):
+            if verbose:
+                print(
+                    f"Emission model is not an instance of EmissionModel: {self.emission_model}. "
+                    "Cannot store model."
+                )
+            accept = False
+
+        # check emission model in synthesizer.emission_models.PREMADE_MODELS
+
+        from synthesizer.emission_models import PREMADE_MODELS
+
+        if type(self.emission_model).__name__ not in PREMADE_MODELS:
+            if verbose:
+                print(
+                    f"Emission model {type(self.emission_model).__name__} is not in PREMADE_MODELS. "
+                    "Cannot store model."
+                )
+            accept = False
+
+        em_args = inspect.signature(type(self.emission_model)).parameters
+        forbidden_args = ['nlr_grid', 'blr_grid', 'covering_fraction',
+                          'covering_fraction_nlr', 'covering_fraction_blr',
+                          'torus_emission_model', 'dust_curve_ism',
+                          'dust_curve_birth', 
+                          'dust_emission_ism', 'dust_emission_birth']
+
+        for arg in forbidden_args:
+            if arg in em_args:
+                if verbose:
+                    print(
+                        f"Emission model {type(self.emission_model).__name__} has forbidden argument '{arg}'. "
+                        "Cannot store model."
+                    )
+                accept = False
+        # can we we convert functions in alt_parametrizations to strings? 
+        # and load with ast.literal_eval?
+
+        if parameter_transforms_to_save is not None:
+            for key, value in parameter_transforms_to_save.items():
+                # value should be (str, callable) or (list/tuple, callable)
+                if isinstance(value, tuple) or callable(value):
+                    if callable(value):
+                        value = (key, value)
+
+                    if len(value) != 2 or not callable(value[1]):
+                        accept = False
+                    else:
+                        try:
+                            # Check if we can get the source code of the function
+                            getsource(value[1])
+                        except Exception:
+                            if verbose:
+                                print(
+                                    f"Cannot serialize function for alt_parametrization '{key}': {value[1]}"
+                                )
+                            accept = False
+                else:
+                    accept = False
+
+        return accept
+
+    
+
+
+    def _store_model(self, model_path: str, overwrite=False, group: str = "Model",
+                    other_info: dict = None, parameter_transforms_to_save= None) -> bool:
+
+        if not self._check_model_simplicity(parameter_transforms_to_save):
+            print(f"Model is too complex to be stored in a file.")
+            return False
+
+        # if not overwrite, append to existing file
+        if os.path.exists(model_path) and not overwrite:
+            open_mode = "a"
+        else:
+            open_mode = "w"
+
+        with h5py.File(model_path, open_mode) as f:
+            base = f.create_group(group)
+
+            # store grid_name and grid_dir
+            base.attrs["grid_name"] = self.grid.grid_name
+            base.attrs["grid_dir"] = self.grid.grid_dir
+
+            # store emission model class name
+            em_group = base.create_group("EmissionModel")
+
+            em_group.attrs["name"] = type(self.emission_model).__name__
+
+            # store emission model parameters
+            em_model_params = save_emission_model(self.emission_model)
+
+            em_group.attrs["parameter_keys"] = em_model_params["fixed_parameter_keys"]
+            em_group.attrs["parameter_values"] = em_model_params["fixed_parameter_values"]
+            em_group.attrs["parameter_units"] = em_model_params["fixed_parameter_units"]
+
+            if em_model_params['dust_law'] is not None:
+                em_group.attrs["dust_law"] = em_model_params["dust_law"]
+                em_group.attrs["dust_attenuation_keys"] = em_model_params["dust_attenuation_keys"]
+                em_group.attrs["dust_attenuation_values"] = em_model_params["dust_attenuation_values"]
+                em_group.attrs["dust_attenuation_units"] = em_model_params["dust_attenuation_units"]
+
+            if em_model_params['dust_emission'] is not None:
+                em_group.attrs["dust_emission"] = em_model_params["dust_emission"]
+                em_group.attrs["dust_emission_keys"] = em_model_params["dust_emission_keys"]
+                em_group.attrs["dust_emission_values"] = em_model_params["dust_emission_values"]
+                em_group.attrs["dust_emission_units"] = em_model_params["dust_emission_units"]
+
+            # Store a version of astropy cosmo
+            cosmo_yaml = self.cosmo.to_format("yaml")
+            base.attrs["cosmology"] = cosmo_yaml
+
+            # store instrument.filter_codes
+
+            base.attrs["instrument"] = self.instrument.label if self.instrument else None
+            if self.instrument:
+                base.attrs["filters"] = self.instrument.filters.filter_codes
+
+            instrument_group = base.create_group("Instrument")
+
+            self.instrument.to_hdf5(instrument_group)
+
+            # store sfh class
+            base.attrs["sfh_class"] = type(self.sfhs[0]).__name__
+            # store metallicity distribution class
+            base.attrs["metallicity_distribution_class"] = type(self.metal_dists[0]).__name__
+
+            base.attrs["model_name"] = self.model_name
+
+            if other_info is None:
+                other_info = {}
+
+            for key, value in other_info.items():
+                if isinstance(value, (list, np.ndarray)):
+                    # Store as a dataset
+                    base.create_dataset(key, data=np.array(value))
+                    # if a unyt quantity, store the units as an attribute
+                    if isinstance(value, unyt_array):
+                        base[key].attrs["units"] = str(value.units)
+                else:
+                    # Store as an attribute
+                    base.attrs[key] = value
+
+            base.attrs["stellar_params"] = list(self.galaxy_params.keys())
+
+            if parameter_transforms_to_save is not None:
+                transforms_group = base.create_group("Transforms")
+                for key, value in parameter_transforms_to_save.items():
+                    if isinstance(value, tuple) or callable(value):
+                        if callable(value):
+                            value = (key, value)
+                        # Store the new parameter name and the function as a string
+                        transforms_group.create_dataset(
+                            key, data=getsource(value[1]).encode("utf-8")
+                        )
+                        transforms_group[key].attrs["new_parameter_name"] = value[0]
+                    
+
+            # Store param_order
+            base.attrs["varying_param_names"] = self.varying_param_names
+            base.attrs["fixed_param_names"] = self.fixed_param_names
+            base.attrs["fixed_param_values"] = self.fixed_param_values
+            base.attrs["fixed_param_units"] = self.fixed_param_units
+
+            
+
 
     def create_galaxy(
         self,
@@ -1297,7 +1539,8 @@ class GalaxyBasis:
         # Use sets instead of lists for faster lookups and unique values
         self.all_parameters = defaultdict(set)
         self.all_params = {}
-
+        
+        param_units = {}
         # Process all galaxies in one pass
         for i, gal in enumerate(self.galaxies):
             # Store the galaxy parameters directly
@@ -1306,6 +1549,8 @@ class GalaxyBasis:
             # Add unique values to sets using update operation
             for key, value in gal.all_params.items():
                 if isinstance(value, (unyt_quantity, unyt_array)):
+                    unit = str(value.units)
+                    param_units[key] = unit
                     value = value.value
                 if isinstance(value, np.ndarray):
                     value = value.tolist()
@@ -1318,6 +1563,7 @@ class GalaxyBasis:
         # Remove any paremters which are just [None]
         to_remove = []
         fixed_param_names = []
+        fixed_param_values = []
         varying_param_names = []
 
         for key, value in self.all_parameters.items():
@@ -1327,6 +1573,7 @@ class GalaxyBasis:
             # check if all values are the same.
             if len(np.unique(value)) == 1:
                 fixed_param_names.append(key)
+                fixed_param_values.append(value[0])
             else:
                 varying_param_names.append(key)
 
@@ -1336,6 +1583,13 @@ class GalaxyBasis:
 
         self.varying_param_names = varying_param_names
         self.fixed_param_names = fixed_param_names
+        self.fixed_param_values = fixed_param_values
+        self.fixed_param_units = []
+        for key in fixed_param_names:
+            if key in param_units:
+                self.fixed_param_units.append(param_units[key])
+            else:
+                self.fixed_param_units.append('')
 
         for key in to_remove:
             self.all_parameters.pop(key)
@@ -1506,6 +1760,8 @@ class GalaxyBasis:
                     # Add the varying and fixed parameters to the file
                     f.attrs["varying_param_names"] = self.varying_param_names
                     f.attrs["fixed_param_names"] = self.fixed_param_names
+                    f.attrs["fixed_param_values"] = self.fixed_param_values
+                    f.attrs["fixed_param_units"] = self.fixed_param_units
 
                     f.create_dataset("Wavelengths", data=wav)
                     f["Wavelengths"].attrs["Units"] = "Angstrom"
@@ -1849,6 +2105,7 @@ class GalaxyBasis:
         overwrite: Union[bool, List[bool]] = False,
         verbose=False,
         batch_size: int = 40_000,
+        parameter_transforms_to_save: dict[str, (str, callable)] = None,
         **extra_analysis_functions,
     ):
         """Convenience method which calls CombinedBasis.
@@ -1872,6 +2129,31 @@ class GalaxyBasis:
         out_dir : str, optional
             Directory to save the output file, by default "grid_folder".
             If "grid_folder", saves to the Synthesizer grids directory.
+        n_proc : int, optional
+            Number of processes to use for the pipeline, by default 6.
+        overwrite : Union[bool, List[bool]], optional
+            If True, overwrites the output file if it exists,
+            by default False. If a list, must be the same length as bases.
+        verbose : bool, optional
+            If True, prints verbose output during processing,
+            by default False.
+        batch_size : int, optional
+            Size of each batch of galaxies to process,
+            by default 40,000.
+        parameter_transforms_to_save : Dict[str: (str, callable)], optional
+            Dictionary of parameter transforms to save in the output file.
+            Only used for for saving with the simulator to allow
+            reconstruction of the model later.
+            Should be a dictionary where keys are the parameter names
+            in the model, and the values are a tuple.
+            The tuple should be (str, callable), where the str is the
+            new parameter name to save, and the callable is the function
+            which takes the model parameters and returns the new parameter value.
+            It can also be (List[str], callable) if the function returns multiple values.
+            (e.g. converting one parameter to many.)
+            Finally, if you are adding a new parameter which is not in the
+            model, you can a direct str: callable pair, which will add a new 
+            parameter to the model based on the callable function.
 
         """
         # make a CombinedBasis object with the current GalaxyBasis
@@ -1906,6 +2188,16 @@ class GalaxyBasis:
         )
 
         combined_basis.create_grid(overwrite=overwrite)
+
+        out_path = f"{combined_basis.out_dir}/{combined_basis.out_name}"
+        if not out_path.endswith(".hdf5"):
+            out_path += ".hdf5"
+
+        self._store_model(out_path,
+                        other_info = {'emission_model_key': emission_model_key,
+                                      'timestamp': datetime.now().isoformat()},
+                        parameter_transforms_to_save=parameter_transforms_to_save)
+
 
         print("Processed the bases and saved the output.")
 
@@ -2118,6 +2410,8 @@ class CombinedBasis:
                     # Load in which parameters are varying and fixed
                     base.varying_param_names = f.attrs["varying_param_names"]
                     base.fixed_param_names = f.attrs["fixed_param_names"]
+                    base.fixed_param_units = f.attrs["fixed_param_units"]
+                    base.fixed_param_values = f.attrs["fixed_param_values"]
 
                     galaxies = f["Galaxies"]
 
@@ -4266,6 +4560,7 @@ class GalaxySimulator(object):
         depth_sigma: int = 5,
         noise_models: Union[None, Dict[str, EmpiricalUncertaintyModel]] = None,
         fixed_params: dict = None,
+        photometry_to_remove = None,
     ) -> None:
         """Parameters
 
@@ -4336,6 +4631,11 @@ class GalaxySimulator(object):
             Keys are the parameter names and values are the fixed values.
             This is used to fix parameters in the simulation.
             If None, no parameters are fixed. Default is None.
+        photometry_to_remove : list
+            List of photometry to remove from the output.
+            This is used to remove specific filters from the output.
+            If None, no photometry is removed. Default is None.
+            Should match filter codes in the instrument filters.
 
         """
         if fixed_params is None:
@@ -4346,6 +4646,15 @@ class GalaxySimulator(object):
             param_transforms = {}
         if emitter_params is None:
             emitter_params = {"stellar": [], "galaxy": []}
+        if extra_functions is None:
+            extra_functions = []
+        if photometry_to_remove is None:
+            photometry_to_remove = []
+        if not isinstance(required_keys, list):
+            raise TypeError(
+                f"required_keys must be a list. Got {type(required_keys)} instead."
+            )
+        
 
         assert isinstance(grid, Grid), (
             f"Grid must be a subclass of Grid. Got {type(grid)} instead."
@@ -4374,7 +4683,15 @@ class GalaxySimulator(object):
         self.normalize_method = normalize_method
         self.fixed_params = fixed_params
         self.depths = depths
-
+        
+        if len(photometry_to_remove) > 0:
+            filter_codes = instrument.filters.filter_codes
+            new_filters = []
+            for filter_code in filter_codes:
+                if filter_code not in photometry_to_remove:
+                    new_filters.append(filter_code)
+            instrument.filters = FilterCollection(filters=new_filters)
+            
         if noise_models is not None:
             assert isinstance(noise_models, dict), (
                 f"Noise models must be a dictionary. Got {type(noise_models)} instead."
@@ -4441,6 +4758,9 @@ class GalaxySimulator(object):
                 self.zdist_params.append(key)
 
         self.emitter_params = emitter_params
+        self.num_emitter_params = np.sum(
+            [len(emitter_params[key]) for key in emitter_params]
+        )
         self.emission_model.save_spectra(emission_model_key)
 
         self.total_possible_keys = (
@@ -4450,6 +4770,250 @@ class GalaxySimulator(object):
             + self.optional_zdist_params
             + required_keys
         )
+
+    @classmethod
+    def from_grid(
+        cls,
+        grid_path: str,
+        override_emission_model: Union[None, EmissionModel] = None,
+        **kwargs,
+    ):
+
+        # Open h5py, look for 'Model' and instatiate by reading the grid. 
+
+        if not os.path.exists(grid_path):
+            raise FileNotFoundError(
+                f"Grid path {grid_path} does not exist. Cannot create GalaxySimulator."
+            )
+
+        with h5py.File(grid_path, "r") as f:
+            if "Model" not in f:
+                raise ValueError(
+                    f"""Grid file {grid_path} does not contain 'Model' group.
+                    Cannot create GalaxySimulator."""
+                )
+
+            model_group = f["Model"]
+
+            # Step 1. Make grid
+            lam = unyt_array(model_group["Instrument/Filters/Header/Wavelengths"][:], units=Angstrom)
+
+            grid_name = model_group.attrs['grid_name']
+            grid_dir = model_group.attrs.get('grid_dir', None)
+
+            grid = Grid(
+                grid_name,
+                grid_dir,
+                new_lam=lam)
+
+            # Step 2. Make instrument
+            instrument = Instrument._from_hdf5(model_group['Instrument'])
+
+
+            # Step 3 - recreate cosmology
+            cosmo_mapping = model_group.attrs.get('cosmology', None)
+
+            cosmo = Cosmology.from_format(cosmo_mapping, format='yaml')
+
+            # Step 4 - Collect sfh_model
+
+            sfh_model_name = model_group.attrs.get("sfh_class", None)
+
+            sfh_model = getattr(SFH, sfh_model_name, None)
+            if sfh_model is None:
+                raise ValueError(
+                    f"""SFH model {sfh_model_name} not found in SFH module.
+                    Cannot create GalaxySimulator."""
+                )
+
+            zdist_model_name = model_group.attrs.get("metallicity_distribution_class", None)
+
+            zdist_model = getattr(ZDist, zdist_model_name, None)
+            if zdist_model is None:
+                raise ValueError(
+                    f"""ZDist model {zdist_model_name} not found in ZDist module.
+                    Cannot create GalaxySimulator."""
+                )
+
+            # recreate emission model
+            em_group = model_group['EmissionModel']
+            emission_model_key = model_group.attrs.get("emission_model_key", "total")
+
+            if override_emission_model is not None:
+                emission_model = override_emission_model
+
+            else:
+                
+                emission_model_name = em_group.attrs['name']
+                import synthesizer.emission_models as em
+                import synthesizer.emission_models.attenuation as dm
+                import synthesizer.emission_models.dust as dem
+
+                emission_model = getattr(em, emission_model_name, None)
+
+                if emission_model is None:
+                    raise ValueError(
+                        f"""Emission model {emission_model_name} not found in synthesizer.emission_models.
+                        Cannot create GalaxySimulator."""
+                    )
+                
+
+                if 'dust_law' in em_group.attrs:
+                    dust_model_name = em_group.attrs['dust_law']
+                    dust_model = getattr(dm, dust_model_name, None)
+
+                    if dust_model is None:
+                        raise ValueError(
+                            f"""Dust model {dust_model_name} not found in synthesizer.emission_models.
+                            Cannot create GalaxySimulator."""
+                        )   
+
+                    dust_model_params = {}
+                    dust_param_keys = em_group.attrs['dust_attenuation_keys']
+                    dust_param_values = em_group.attrs['dust_attenuation_values']
+                    dust_param_units = em_group.attrs['dust_attenuation_units']
+
+                    for key, value, unit in zip(
+                        dust_param_keys, dust_param_values, dust_param_units
+                    ):
+                        if unit != "":
+                           dust_model_params[key] = unyt_array(value, unit)
+                        else:
+                            dust_model_params[key] = value
+
+                    dust_model = dust_model(**dust_model_params)
+                else:
+                    dust_model = None
+
+                if 'dust_emission' in em_group.attrs:
+                    dust_emission_model_name = em_group.attrs['dust_emission']
+                    dust_emission_model = getattr(dem, dust_emission_model_name, None)
+
+                    if dust_emission_model is None:
+                        raise ValueError(
+                            f"""Dust emission model {dust_emission_model_name} not found in synthesizer.emission_models.
+                            Cannot create from_grid."""
+                        )
+
+                    dust_emission_model_params = {}
+                    dust_emission_param_keys = em_group.attrs['dust_emission_keys']
+                    dust_emission_param_values = em_group.attrs['dust_emission_values']
+                    dust_emission_param_units = em_group.attrs['dust_emission_units']
+                    for key, value, unit in zip(
+                        dust_emission_param_keys,
+                        dust_emission_param_values,
+                        dust_emission_param_units,
+                    ):
+                        if unit != "":
+                            dust_emission_model_params[key] = unyt_array(value, unit)
+                        else:
+                            dust_emission_model_params[key] = value
+
+                    dust_emission_model = dust_emission_model(
+                        **dust_emission_model_params
+                    )
+                else:
+                    dust_emission_model = None
+
+                em_keys = em_group.attrs['parameter_keys']
+                em_values = em_group.attrs['parameter_values']
+                em_units = em_group.attrs['parameter_units']
+
+                emission_model_params = {}
+                for key, value, unit in zip(em_keys, em_values, em_units):
+                    if unit != "":
+                        emission_model_params[key] = unyt_array(value, unit)
+                    else:
+                        emission_model_params[key] = value
+
+                if dust_model is not None:
+                    emission_model_params['dust_curve'] = dust_model
+
+                if dust_emission_model is not None:
+                    emission_model_params["dust_emission_model"] = dust_emission_model
+
+                emission_model = emission_model(
+                    grid=grid,
+                    **emission_model_params,
+                )
+
+            # Step 5 - Collect emitter params
+
+            stellar_params = model_group.attrs.get("stellar_params", {})
+
+            emitter_params = {
+                "stellar": stellar_params,
+                "galaxy": {},
+            }
+
+            # Step 7 - work out order and units
+            param_order = f.attrs['ParameterNames']
+            units = f.attrs.get('ParameterUnits')
+            ignore = ['dimensionless', 'log', 'mag']
+
+            param_units = {}
+            for p, u in zip(
+                param_order, units
+            ):
+                skip = False
+                for i in ignore:
+                    if i in u:
+                        skip = True
+                        break
+                if not skip:
+                    param_units[p] = Unit(u)
+
+            # Step 8 - fixed_params
+
+            fixed_param_names = model_group.attrs.get("fixed_param_names", [])
+            fixed_param_values = model_group.attrs.get("fixed_param_values", [])
+            fixed_param_units = model_group.attrs.get("fixed_param_units", [])
+            fixed_params = {}
+            for name, value, unit in zip(
+                fixed_param_names, fixed_param_values, fixed_param_units
+            ):
+                if unit != "":
+                    fixed_params[name] = unyt_array(value, unit)
+                else:
+                    fixed_params[name] = value
+
+
+            # Step 9 - Collect param transforms.
+            # TEMP 
+            param_transforms = {}
+
+            if 'Transforms' in model_group:
+                transform_group = model_group['Transforms']
+                for key in transform_group.keys():
+                    # need to evaluate the function
+                    code = transform_group[key][()].decode('utf-8')
+                    code = f'\n{code}\n'
+                    func = exec(code, globals(), locals())
+                    func_name = code.split('def ')[-1].split('(')[0]
+                    func = locals()[func_name]
+                    param_transforms[key] = func
+                    if 'new_parameter_name' in transform_group[key].attrs:
+                        new_key = transform_group[key].attrs['new_parameter_name']
+                        param_transforms[key] = (new_key, func)
+            
+
+            return cls(
+                sfh_model=sfh_model,
+                zdist_model=zdist_model,
+                grid=grid,
+                emission_model=emission_model,
+                emission_model_key=emission_model_key,
+                instrument=instrument,
+                cosmo=cosmo,
+                emitter_params=emitter_params,
+                param_order=param_order, 
+                param_units=param_units,
+                param_transforms=param_transforms,
+                fixed_params=fixed_params,
+                **kwargs,
+            )
+
+
 
     def simulate(self, params):
         """Simulate photometry from the given parameters.
@@ -4468,7 +5032,6 @@ class GalaxySimulator(object):
             in self.output_type. Values are the corresponding photometry arrays.
         """
         params = copy.deepcopy(params)
-        params.update(self.fixed_params)
 
         if not isinstance(params, dict):
             if self.param_order is None:
@@ -4481,6 +5044,8 @@ class GalaxySimulator(object):
             ), f"""Parameter array length {len(params)} does not match parameter order
                   length {len(self.param_order)}. Cannot create photometry."""
             params = {i: j for i, j in zip(self.param_order, params)}
+
+        params.update(self.fixed_params)
 
         for key in self.required_keys:
             if key not in params:
@@ -4497,8 +5062,26 @@ class GalaxySimulator(object):
                 params[key] = params[key] * self.param_units[key]
 
         for key in self.param_transforms:
-            if key in params:
-                params[key] = self.param_transforms[key](params[key])
+            value = self.param_transforms[key]
+            if isinstance(value, tuple):
+                name = self.param_transforms[key][0]
+                func = self.param_transforms[key][1]
+
+                if key in params:
+                    params[name] = func(params[key])
+                else:
+                    params[name] = func(params)
+            elif callable(value):
+                params[key] = value(params[key])
+
+        # Check if we have all SFH and ZDist parameters
+        for key in self.sfh_params + self.zdist_params:
+            if key not in params:
+                raise ValueError(
+                    f"""Missing required parameter {key} for SFH or ZDist.
+                    Cannot create photometry."""
+                )
+
 
         sfh = self.sfh_model(
             **{i: params[i] for i in self.sfh_params},
@@ -4532,19 +5115,15 @@ class GalaxySimulator(object):
 
         # Check we understand all the parameters
 
-        assert len(found_params) == len(
-            self.emitter_params
-        ), f"""Found {len(found_params)} parameters but expected
-            {len(self.emitter_params)}. Cannot create photometry."""
+
+        assert len(found_params) == self.num_emitter_params, (
+         f"""Found {len(found_params)} parameters but expected
+            {self.num_emitter_params}. Cannot create photometry.""")
 
         stellar_keys = {}
         if "stellar" in self.emitter_params:
             for key in found_params:
                 stellar_keys[key] = params[key]
-
-        # print(type(stellar_keys['tau_v']))
-        # stellar_keys['tau_v'] = 0.0
-        # print(stellar_keys)
 
         stars = Stars(
             log10ages=self.grid.log10ages,
@@ -4628,6 +5207,11 @@ class GalaxySimulator(object):
             if "fnu" in self.output_type:
                 fluxes = convert(outputs["fnu"])
                 outputs["fnu"] = fluxes
+        elif self.out_flux_unit == "asinh":
+            raise NotImplementedError(
+                """asinh fluxes not implemented yet.
+                Please use AB or Jy units."""
+            )
         else:
             if "photo_fnu" in self.output_type:
                 outputs["photo_fnu"] = fluxes.to(self.out_flux_unit).value
