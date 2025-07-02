@@ -2795,7 +2795,7 @@ class SBI_Fitter:
             self._ensemble_model_types = ensemble_model_types
             self._ensemble_model_args = ensemble_model_args
             if learning_type == "online" or initial_training_from_grid:
-                self._simulator = simulator
+                self.simulator = simulator
                 self._num_simulations = num_simulations
                 self._num_online_rounds = num_online_rounds
                 self._initial_training_from_grid = initial_training_from_grid
@@ -2956,6 +2956,71 @@ class SBI_Fitter:
             **model_args,
         )
 
+    def recreate_simulator_from_grid(self, set_self=True, **kwargs):
+        """Recreate the simulator from the HDF5 grid.
+
+        Simple grids (single SFH, ZDist, one basis)
+        with pre-existing simple EmissionModels
+        can be recreated as a simulator, allowing
+        for SED recovery without manual 
+        specification of the simulator function.
+
+        Two possible use cases, either to generate
+        samples for fitting (in which case we want
+        the config to closely match the feature 
+        array) or to recover the SED, in
+        which case we aren't concerned about
+        depths, noise models, etc.
+
+        """
+
+
+        # grid path
+        grid_path = self.grid_path
+        
+        if self.has_simulator:
+            return self.simulator
+
+        default_kwargs = {'normalize_method': None,
+                            'include_phot_errors': False,
+                            'depths': None,
+                            'depth_sigma': None,
+                            'noise_models': None,
+                            'out_flux_unit': 'AB'}
+
+
+        if self.feature_array_flags != {}:
+            flags = self.feature_array_flags
+
+            flag_params = {'normalize_method': flags['normalize_method'],
+            'include_phot_errors': flags['include_errors_in_feature_array'],
+            'depths': flags['depths'],
+            'depth_sigma': 5,
+            'noise_models': flags['empirical_noise_models'],
+            'photometry_to_remove': flags['photometry_to_remove'],
+            'out_flux_unit': flags['normed_flux_units']}
+
+            default_kwargs.update(flag_params)
+
+        default_kwargs.update(kwargs)
+
+        try:
+            simulator = GalaxySimulator.from_grid(grid_path, 
+                                                    **default_kwargs)
+        except ValueError as e:
+            print(f"""Could not recreate simulator from grid. This model \
+                    may not be compatible. A GalaxySimulator object can \
+                    be provided manually to recover the SED.""")
+            return None
+
+        if set_self:
+            self.simulator = simulator
+            self.has_simulator = True
+            print(f"Simulator recreated from grid at {grid_path}.")
+
+        return simulator
+
+        
     def recover_SED(
         self,
         X_test: np.ndarray,
@@ -3002,9 +3067,11 @@ class SBI_Fitter:
             posteriors = self.posteriors
 
         if simulator is None:
-            if not hasattr(self, "_simulator"):
+            self.recreate_simulator_from_grid(set_self=True)
+
+            if not hasattr(self, "simulator"):
                 raise ValueError("Simulator must be provided or set in the object.")
-            simulator = self._simulator
+            simulator = self.simulator
 
         if prior is None:
             if not hasattr(self, "_prior"):
