@@ -206,6 +206,15 @@ basis = GalaxyBasis(
     ],  # This is dependent on the redshift and should not be included in the basis
 )
 
+def z_to_max_age(params, max_redshift=20):
+    """Convert redshift to maximum age of the SFH at that redshift."""
+    z = params["redshift"]
+    from cosmology import Planck18 as cosmo
+    
+    age = cosmo.age(z) - cosmo.age(max_redshift) 
+    age = age.to_value("Myr") * u.Myr
+    return age
+
 # This is the simple way-
 # it runs the following three steps for you.
 
@@ -217,6 +226,8 @@ basis.create_mock_cat(
     verbose=False,
     batch_size=40_000,
     mUV=(calculate_muv, cosmo),  # Calculate mUV for the mock catalogue.
+    parameter_transforms_to_save={'max_age': z_to_max_age},  # Save function to calculate the maximum age of the SFH at that redshift.
+
 )
 
 """
