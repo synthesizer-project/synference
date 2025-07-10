@@ -98,9 +98,9 @@ except Exception:
 
 # params
 
-Nmodels = 10_000 # 00
-redshift = (5, 12)
-masses = (6, 11.5)  # log10 of stellar mass in solar masses
+Nmodels = 100_000 # 00
+redshift = (0.00, 12)
+masses = (5, 12)  # log10 of stellar mass in solar masses
 max_redshift = 20  # gives maximum age of SFH at a given redshift
 cosmo = Planck18  # cosmology to use for age calculations
 fesc = 0.0  # escape fraction of ionizing photons

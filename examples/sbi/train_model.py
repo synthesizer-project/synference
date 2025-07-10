@@ -80,15 +80,19 @@ def main_task(args: Args) -> None:
         print(f"Training started at {datetime.datetime.now()}", file=sys.stdout)
         print(f"Arguments: {args}", file=sys.stdout)
 
-    table = Table.read(args.data_err_file, format="fits")
-    bands = [i.split("_")[-1] for i in table.colnames if i.startswith("loc_depth")]
-    new_band_names = ["HST/ACS_WFC.F606W"] + [
-        f"JWST/NIRCam.{band.upper()}" for band in bands[1:]
-    ]
+    if args.scatter_fluxes > 0:
 
-    empirical_noise_models = create_uncertainity_models_from_EPOCHS_cat(
-        args.data_err_file, bands[1:], new_band_names[1:], plot=False
-    )
+        table = Table.read(args.data_err_file, format="fits")
+        bands = [i.split("_")[-1] for i in table.colnames if i.startswith("loc_depth")]
+        new_band_names = ["HST/ACS_WFC.F606W"] + [
+            f"JWST/NIRCam.{band.upper()}" for band in bands[1:]
+        ]
+
+        empirical_noise_models = create_uncertainity_models_from_EPOCHS_cat(
+            args.data_err_file, bands[1:], new_band_names[1:], plot=False
+        )
+    else:
+        empirical_noise_models = {}
 
     additional_model_args = {}
     if args.additional_model_args:
@@ -127,7 +131,7 @@ def main_task(args: Args) -> None:
         empirical_noise_models=empirical_noise_models
         if args.include_errors_in_feature_array
         else None,
-        photometry_to_remove=unused_filters,
+        photometry_to_remove=unused_filters if args.include_errors_in_feature_array else None,
         norm_mag_limit=args.norm_mag_limit,
         drop_dropouts=args.drop_dropouts,
         drop_dropout_fraction=args.drop_dropout_fraction,
