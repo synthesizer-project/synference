@@ -4,6 +4,7 @@ import operator
 import os
 import re
 import sys
+import io
 from typing import Dict, List, Union, Tuple
 
 import h5py
@@ -11,6 +12,7 @@ import numpy as np
 import scipy.stats
 from unyt import Angstrom, Jy, nJy, unyt_array
 import torch
+import pickle
 
 def load_grid_from_hdf5(
     hdf5_path: str,
@@ -377,7 +379,7 @@ def f_jy_to_asinh(
         )
 
     asinh = (
-        -2.5 * np.log10(np.e) * (np.asinh(f_jy / (2 * f_b)) + np.log(f_b / (3631 * Jy)))
+        -2.5 * np.log10(np.e) * (np.arcsinh(f_jy / (2 * f_b)) + np.log(f_b / (3631 * Jy)))
     )
     return asinh
 
@@ -499,3 +501,10 @@ def save_emission_model(model):
         "dust_emission_values": dust_emission_values,
         "dust_emission_units": dust_emission_units,
     }
+
+
+class CPU_Unpickler(pickle.Unpickler):
+    def find_class(self, module, name):
+        if module == 'torch.storage' and name == '_load_from_bytes':
+            return lambda b: torch.load(io.BytesIO(b), map_location='cpu')
+        else: return super().find_class(module, name)

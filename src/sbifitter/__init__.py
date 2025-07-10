@@ -16,6 +16,11 @@ from .utils import (
     f_jy_to_asinh
 )
 
+from .noise_models import (
+    EmpiricalUncertaintyModel, create_uncertainity_models_from_EPOCHS_cat,
+    DepthUncertaintyModel, UncertaintyModel, AsinhEmpiricalUncertaintyModel
+)
+
 
 try:
     from .sbi import SBI_Fitter, MissingPhotometryHandler, Simformer_Fitter
@@ -41,6 +46,7 @@ __all__ = [
     "GalaxySimulator",
     "generate_random_DB_sfh",
     "EmpiricalUncertaintyModel",
+    "AsinhEmpiricalUncertaintyModel",
     "test_out_of_distribution",
     "create_uncertainity_models_from_EPOCHS_cat",
     "load_grid_from_hdf5",
@@ -53,4 +59,5 @@ __all__ = [
     "create_sqlite_db",
     "f_jy_err_to_asinh",
     "f_jy_to_asinh",
+
 ]
