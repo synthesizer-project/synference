@@ -44,7 +44,8 @@ from unyt import Jy, nJy, unyt_array, unyt_quantity
 
 # astropy, scipy, matplotlib, tqdm, synthesizer, unyt, h5py, numpy,
 # ili, torch, sklearn, optuna, joblib, pandas, tarp, astropy.table
-from .grid import CombinedBasis, EmpiricalUncertaintyModel, GalaxySimulator
+from .grid import CombinedBasis, GalaxySimulator
+from .noise_models import EmpiricalUncertaintyModel
 from .utils import (
     FilterArithmeticParser,
     TimeoutException,
@@ -394,7 +395,36 @@ class SBI_Fitter:
         """
         # Needs to load the training data and parameters from the basis
         pass
+    
+    @classmethod
+    def load_saved_model(cls,
+                        model_file, 
+                        grid_path: Optional[str] = None):
+        """Load a prefit SBI model from a file.
+        
+        Args:
+            model_file: Path to the saved model file.
+        """
 
+        # grid_path is saved in the model file
+        posterior, stats, params = cls.load_model_from_pkl(model_file, set_self=True)
+
+        if grid_path is None:
+            grid_path = params.get("grid_path", None)
+
+            if grid_path is None:
+                raise ValueError("Grid path not found in model file. Please provide it.")
+
+        # Initialize the SBI_Fitter with the loaded parameters
+        fitter = cls.init_from_hdf5(
+            model_name=params["name"],
+            hdf5_path=grid_path,
+            return_output=False,
+        )
+
+        return fitter
+
+        
     def _apply_depths(
         self,
         depths: unyt_array,
@@ -577,6 +607,7 @@ class SBI_Fitter:
                     flux,
                     true_flux_units=flux_units,
                     out_units=normed_flux_units,
+                    asinh_softening_parameters=asinh_softening_parameters,
                 )
                 # print(filter_name, noisy_flux.max())
 
@@ -1044,7 +1075,6 @@ class SBI_Fitter:
                     / (np.log(10) * phot.to("uJy").value)
                 )
 
-                print(phot_errors.max())
             if not converted:
                 phot_mag = -2.5 * np.log10(phot.to("uJy").value) + 23.9
                 mask = phot.to("uJy").value < 0
@@ -1853,6 +1883,7 @@ class SBI_Fitter:
         num_samples: int = 1000,
         timeout_seconds_per_row: int = 5,
         override_transformations: dict = {},
+        append_to_input: bool = True,
     ):
         """Infer posteriors for observational data.
 
@@ -1887,12 +1918,15 @@ class SBI_Fitter:
             A dictionary of transformations to override the defaults in
             self.feature_array_flags. This can be used to change the normalization method,
             extra features, etc.
+        append_to_input : bool
+            If True, append the quantiles to the input observations DataFrame/Table.
 
         Returns:
         -------
         observations : Union[Table, pd.DataFrame]
             The original observations with additional columns for the quantiles of the
-            fitted parameters.
+            fitted parameters, or a new Table with the quantiles if
+            append_to_input is False.
         """
         feature_array, obs_mask = self.create_features_from_observations(
             observations,
@@ -1911,17 +1945,22 @@ class SBI_Fitter:
         )
 
         print("Obtained posterior samples.")
+
+        if append_to_input:
+            # Append the quantiles to the input DataFrame
+            table = observations.copy()
+        else:
+            table = Table()
         # Do quantiles, get column names from self.simple_fitted_parameter_names
-        print(samples.shape)
         for i, param in enumerate(self.simple_fitted_parameter_names):
             samples_i = samples[:, i]
             samples_q = np.quantile(samples_i, quantiles, axis=1)
             for j, quant in enumerate(samples_q):
                 print(param, quant)
-                observations[f"{param}_{int(quantiles[j] * 100)}"] = np.nan
-                observations[f"{param}_{int(quantiles[j] * 100)}"][~obs_mask] = quant
+                table[f"{param}_{int(quantiles[j] * 100)}"] = np.nan
+                table[f"{param}_{int(quantiles[j] * 100)}"][~obs_mask] = quant
 
-        return observations
+        return table
 
     def create_dataframe(self, data="all"):
         """Create a DataFrame from the training data.
@@ -2306,6 +2345,7 @@ class SBI_Fitter:
             save_model=False,
             plot=False,
             verbose=verbose,
+            evaluate_model=False,
             **parameters,
         )
 
@@ -2407,6 +2447,8 @@ class SBI_Fitter:
         online_training_xobs: np.ndarray = None,
         load_existing_model: bool = True,
         use_existing_indices: bool = True,
+        evaluate_model: bool = True,
+        save_method: str = "torch",
     ) -> tuple:
         """Run a single SBI training instance.
 
@@ -2466,6 +2508,10 @@ class SBI_Fitter:
             load_existing_model: Whether to load an existing model if it exists.
             use_existing_indices: Whether to use
                 existing train and test indices if they exist.
+            evaluate_model: Whether to evaluate the model after training.
+                Computes metrics like log probability and PIT.
+            save_method: Method to save the model. Either 'torch', 'pickle',
+                'joblib' or 'h5py'. h5py not implented for model posteriors.
 
         Returns:
             A tuple containing the posterior distribution and training statistics.
@@ -2837,16 +2883,60 @@ class SBI_Fitter:
                 param_dict["parameter_array"] = self.fitted_parameter_array
                 param_dict["feature_array_flags"] = self.feature_array_flags
 
-            dump(
-                param_dict,
-                f"{out_dir}/{self.name}{name_append}_params.pkl",
-                compress=3,
-            )
+            # convery any torch tensors to numpy arrays on the cpu for compatibility
+            for key, value in param_dict.items():
+                if isinstance(value, torch.Tensor):
+                    param_dict[key] = value.cpu().numpy()
+            
+            save_path = f"{out_dir}/{self.name}{name_append}_params.pkl",
+            if save_method == 'torch':
+                with open(save_path, "wb") as f:
+                    torch.save(
+                        param_dict,
+                        save_path,x
+                    )
+            elif save_method == 'pickle':
+                with open(save_path, "wb") as f:
+                    pickle.dump(
+                        param_dict,
+                        f,
+                        protocol=pickle.HIGHEST_PROTOCOL,
+                    )
+            elif save_method == 'joblib':
+                from joblib import dump
+                dump(param_dict, save_path, compress=3)
+            elif save_method == 'hdf5':
+                import h5py
+                with h5py.File(save_path, "w") as f:
+                    for key, value in param_dict.items():
+                        if isinstance(value, np.ndarray):
+                            f.create_dataset(key, data=value)
+                        elif isinstance(value, torch.Tensor):
+                            f.create_dataset(key, data=value.cpu().numpy())
+                        else:
+                            f.attrs[key] = value
+            else:
+                raise ValueError(
+                    "Invalid save method. Use 'torch', 'pickle' or 'joblib'."
+                )
+
 
         end_time = datetime.now()
 
         elapsed_time = end_time - start_time
         print(f"Time to train model(s): {elapsed_time}")
+
+        if evaluate_model:
+            print("Evaluating model...")
+            metrics = self.evaluate_model(
+                posteriors=posteriors,
+                X_test=X_test,
+                y_test=y_test,
+            )
+            # dump metrics to json file
+            metrics_path = f"{out_dir}/{self.name}{name_append}_metrics.json"
+            with open(metrics_path, "w") as f:
+                json.dump(metrics, f, indent=4)
 
         if plot:
             if learning_type == "offline":
@@ -3490,12 +3580,10 @@ class SBI_Fitter:
         )
         shape = test_sample.shape
 
-        print("drawin samples")
-
         # Draw samples from the posterior
         samples = np.zeros((len(X_test_array), num_samples, shape[1]))
         samples[0] = test_sample  # First sample is already drawn
-        for i in tqdm(range(1, len(X_test_array))):
+        for i in tqdm(range(1, len(X_test_array)), desc="Sampling from posterior"):
             try:
                 samples[i] = sample_with_timeout(
                     sampler,
@@ -3515,14 +3603,43 @@ class SBI_Fitter:
 
         return samples
 
-    def _evaluate_model(
+    def evaluate_model(
         self,
-        posteriors: list,
-        X_test: np.ndarray,
-        y_test: np.ndarray,
+        posteriors: list = None,
+        X_test: np.ndarray = None,
+        y_test: np.ndarray = None,
         num_samples: int = 1000,
+        verbose: bool = True,
+        samples = None,
+        independent_metrics: bool = True,
     ) -> dict:
         """Evaluate the trained model on test data.
+
+        Metrics:
+        - mse - Mean Squared Error
+            Average of the squared differences between predicted and actual values.
+            Lower values indicate better fit.
+        - rmse - Root Mean Squared Error
+            Square root of the mean squared error. 
+            Provides error in the same units as the target variable.
+        - mae - Mean Absolute Error
+            Average of the absolute differences between predicted and actual values.
+            Less sensitive to outliers than MSE.
+        - median_ae - Median Absolute Error
+            Median of the absolute differences between predicted and actual values.
+            Robust to outliers, providing a better measure of central tendency in the presence of noise.
+        - r_squared - Coefficient of Determination
+            Proportion of variance in the target variable that can be explained by the model.
+        - rmse_norm - Normalized RMSE
+            RMSE divided by the range of the target variable.
+        - mae_norm - Normalized MAE
+            MAE divided by the range of the target variable.
+        - tarp - Tests of Accuracy with Random Points (TARP)
+            Probability that the model's predictions fall within a certain range of the true values.
+        - log_dpit_max - Logarithm of the maximum distance between the predicted and true values
+        - mean_log_prob - Mean log probability of the predictions given the true values.
+
+        TODO: Split per model for ensemble models.
 
         Parameters:
             X_test: Test feature array.
@@ -3530,26 +3647,127 @@ class SBI_Fitter:
             X_scaler: Scaler for the features (if used).
             y_scaler: Scaler for the targets (if used).
             num_samples: Number of samples to draw from the posterior.
+            verbose: Whether to print verbose output.
+            posteriors: List of posterior distributions. If None, will use the stored
+                posteriors.
+            samples: Precomputed samples from the posterior. If None, will draw samples
+                from the posterior using the `sample_posterior` method.
+            independent_metrics: If True, calculate metrics independently for each parameter.
+        Raises:
+            ValueError: If posteriors or test data are not provided.
 
         Returns:
             A dictionary of evaluation metrics.
         """
-        # Draw samples from the posterior
-        samples = self.sample_posterior(
-            X_test, num_samples=num_samples, posteriors=posteriors
-        )
+        if posteriors is None:
+            if hasattr(self, "posteriors"):
+                posteriors = self.posteriors
+            else:
+                raise ValueError("Posteriors must be provided or set in the object.")
+        
+        if X_test is None or y_test is None:
+            if hasattr(self, "_X_test") and hasattr(self, "_y_test"):
+                X_test = self._X_test
+                y_test = self._y_test
+            else:
+                raise ValueError("X_test and y_test must be provided or set in the object.")
+
+        if samples is None:
+            # Draw samples from the posterior
+            samples = self.sample_posterior(
+                X_test, num_samples=num_samples, posteriors=posteriors
+            )   
 
         # Calculate basic metrics
         mean_pred = np.mean(samples, axis=1)
         median_pred = np.median(samples, axis=1)
 
+        if independent_metrics:
+            axis = 0 # Calculate metrics independently for each parameter
+        else:
+            axis = None  # Calculate metrics across all parameters
+        # R-squared
+        ss_res = np.sum((y_test - mean_pred) ** 2, axis=axis)
+        ss_tot = np.sum((y_test - np.mean(y_test)) ** 2, axis=axis)
+
+        # Normalized metrics
+        rmse_normalized = np.sqrt(np.mean((y_test - mean_pred) ** 2, axis=axis)) / np.std(y_test)
+        mae_normalized = np.mean(np.abs(y_test - mean_pred), axis=axis) / np.std(y_test)
+
+        # PIT
+        pit = self.calculate_PIT(X_test, y_test, samples=samples, posteriors=posteriors)
+                   
+        dpit_max = np.max(np.abs(pit - np.linspace(0, 1, len(pit))))
+        log_dpit_max = -0.5 * np.log(dpit_max)
+
         # Calculate metrics
         metrics = {
-            "mse": np.mean((y_test - mean_pred) ** 2),
-            "rmse": np.sqrt(np.mean((y_test - mean_pred) ** 2)),
-            "mae": np.mean(np.abs(y_test - mean_pred)),
-            "median_ae": np.median(np.abs(y_test - median_pred)),
+            "MSE": np.mean((y_test - mean_pred) ** 2, axis=axis), 
+            "RMSE": np.sqrt(np.mean((y_test - mean_pred) ** 2, axis=axis)),
+            "mean_ae": np.mean(np.abs(y_test - mean_pred), axis=axis),
+            "median_ae": np.median(np.abs(y_test - median_pred), axis=axis),
+            "R_squared":  1 - (ss_res / ss_tot),
+            "RMSE_norm": rmse_normalized,
+            "mean_ae_norm": mae_normalized,
+            "tarp": np.array([self.calculate_TARP(
+                X_test, y_test, samples=samples, posteriors=posteriors).cpu().numpy()]),
+            "log_dpit_max": log_dpit_max,
+            "mean_log_prob": np.mean(self.log_prob(X_test, y_test, posteriors))
         }
+
+        print(metrics)
+
+        if verbose:
+            # print a nicely formatted table of the metrics.
+            # For metrics which are per parameter, print as a table
+            # with parameter names as columns.
+            param_metrics = []
+            full_metrics = []
+            
+            for metric in metrics:
+                if isinstance(metrics[metric], np.ndarray) \
+                and hasattr(metrics[metric], "__len__") \
+                and len(metrics[metric]) == len(self.fitted_parameter_names):
+                    param_metrics.append(metric)
+                else:
+                    full_metrics.append(metric)
+            
+            # Print full metrics
+            print("="*60)
+            print("MODEL PERFORMANCE METRICS")
+            print("="*60)
+            
+            if len(full_metrics) > 0:
+                print("\nFull Model Metrics:")
+                print("-" * 40)
+                for metric in full_metrics:
+                    metric_name = metric.replace('_', ' ').title()
+                    num = metrics[metric]
+                    if isinstance(num, np.ndarray):
+                        num = num.item()
+                    print(f"{metric_name:.<25} {metrics[metric]:.6f}")
+            
+            # Print parameter-specific metrics
+            if len(param_metrics) > 0:
+                print(f"\nParameter-Specific Metrics:")
+                print("-" * 40)
+                
+                # Create header
+                header = f"{'Metric':<15}"
+                for param_name in self.fitted_parameter_names:
+                    header += f"{param_name:>12}"
+                print(header)
+                print("-" * len(header))
+                
+                # Print each metric row
+                for metric in param_metrics:
+                    metric_name = metric.replace('_', ' ').title()
+                    row = f"{metric_name:<15}"
+                    for i, param_name in enumerate(self.fitted_parameter_names):
+                        row += f"{metrics[metric][i]:>12.6f}"
+                    print(row)
+            
+            print("="*60)
 
         return metrics
 
@@ -3676,6 +3894,49 @@ class SBI_Fitter:
 
         return fig
 
+    def plot_histogram_feature_array(
+        self,
+        bins="knuth",
+        plots_dir: str = f"{code_path}/models/name/plots/",
+        seperate_test_train=False,
+        max_bins_row=6,
+    ):
+        """Plot histogram of each feature using astropy.visualization.hist."""
+        nrow = int(np.ceil(len(self.feature_names) / max_bins_row))
+        ncol = min(len(self.feature_names), max_bins_row)
+        fig, axes = plt.subplots(
+            nrow, ncol, figsize=(15, 3 * nrow), squeeze=False
+        )
+        axes = axes.flatten()  # Flatten the axes array for easier indexing
+
+        for i, feature in enumerate(self.feature_names):
+            axes[i].set_title(feature)
+            unit = f' ({self.feature_units[i]})' if i < len(self.feature_units) else ""
+            axes[i].set_xlabel(f"Value {unit}")
+
+            if seperate_test_train:
+                hist(self._X_train[:, i], ax=axes[i], bins=bins, label="Train")
+                hist(self._X_test[:, i], ax=axes[i], bins=bins, label="Test")
+                axes[i].legend()
+            else:
+                hist(self.feature_array[:, i], ax=axes[i], bins=bins)
+
+        # Hide unused axes
+        for j in range(i + 1, len(axes)):
+            axes[j].axis("off")
+
+        plt.tight_layout()
+
+        plots_dir = plots_dir.replace("name", self.name)
+
+        if not os.path.exists(plots_dir):
+            os.makedirs(plots_dir)
+
+        print("saving", f"{plots_dir}/feature_histogram.png")
+        fig.savefig(f"{plots_dir}/feature_histogram.png", dpi=300)
+
+        return fig
+
     def plot_posterior(
         self,
         ind: int = "random",
@@ -3741,6 +4002,7 @@ class SBI_Fitter:
         num_samples: int = 1000,
         posteriors: object = None,
         num_bootstrap=200,
+        samples: np.ndarray = None,
     ) -> np.ndarray:
         """Calculate the total absolute residual probability (TARP).
 
@@ -3756,7 +4018,8 @@ class SBI_Fitter:
         tarp : 1-dimensional array
             The TARP values.
         """
-        samples = self.sample_posterior(X, num_samples=num_samples, posteriors=posteriors)
+        if samples is None:
+            samples = self.sample_posterior(X, num_samples=num_samples, posteriors=posteriors)
 
         ecp, _ = tarp.get_tarp_coverage(
             samples,
@@ -3776,6 +4039,7 @@ class SBI_Fitter:
         y: np.ndarray,
         num_samples: int = 1000,
         posteriors: object = None,
+        samples: np.ndarray = None,
     ) -> np.ndarray:
         """Calculate the probability integral transform (PIT) for the samples.
 
@@ -3791,7 +4055,9 @@ class SBI_Fitter:
         pit : 1-dimensional array
             The PIT values.
         """
-        samples = self.sample_posterior(X, num_samples=num_samples, posteriors=posteriors)
+
+        if samples is None:
+            samples = self.sample_posterior(X, num_samples=num_samples, posteriors=posteriors)
 
         pit = np.empty(len(y))
         for i in range(len(y)):
@@ -3834,8 +4100,8 @@ class SBI_Fitter:
             posteriors = self.posteriors
 
         for i in tqdm(range(len(X)), disable=not verbose, desc="Log prob"):
-            x = torch.tensor([X[i]], dtype=torch.float32, device=self.device)
-            theta = torch.tensor([y[i]], dtype=torch.float32, device=self.device)
+            x = torch.tensor(np.array([X[i]]), dtype=torch.float32, device=self.device)
+            theta = torch.tensor(np.array([y[i]]), dtype=torch.float32, device=self.device)
             lp[i] = posteriors.log_prob(x=x, theta=theta)  # norm_posterior=True)
 
         return lp
@@ -4028,10 +4294,19 @@ class SBI_Fitter:
                     Please specify a single file."""
                 )
             model_file = files[0]
+        
+        try:
+            with open(model_file, "rb") as f:
+                posteriors = load(f)
+        except RuntimeError as e:
+            # probably because we ran this model on
+            # with a GPU which is not available now.
+            #with open(model_file, "rb") as f:
+            #    posteriors = torch.load(f, map_location=torch.device(self.device))
+            from .utils import CPU_Unpickler
+            with open(model_file, "rb") as f:
+                posteriors = CPU_Unpickler(f).load()
 
-        with open(model_file, "rb") as f:
-            posteriors = load(f)
-        #
         stats = model_file.replace("posterior.pkl", "summary.json")
 
         if os.path.exists(stats):
@@ -4050,8 +4325,13 @@ class SBI_Fitter:
 
         params = model_file.replace("posterior.pkl", "params.pkl")
         if os.path.exists(params):
-            with open(params, "rb") as f:
-                params = load(f)
+            try:
+                with open(params, "rb") as f:
+                    params = load(f)
+            except RuntimeError as e:
+                from .utils import CPU_Unpickler
+                with open(params, "rb") as f:
+                    params = CPU_Unpickler(f).load()
 
             if set_self:
                 # Set attributes of class again.
@@ -4583,10 +4863,13 @@ class Simformer_Fitter(SBI_Fitter):
     def run_single_sbi(self,
             backend: str = "jax",
             num_training_simulations: int = 10_000,
-            train_test_fraction: float = 0.1,
+            train_test_fraction: float = 0.9,
             random_seed = 42,
             set_self: bool = True,
             verbose: bool = True,
+            load_existing_model: bool = True,
+            name_append: str = "timestamp",
+            save_method: str = "torch",
             model_config_dict = {
                     "name": "ScoreTransformer",
                     "d_model": 128,
@@ -4626,13 +4909,67 @@ class Simformer_Fitter(SBI_Fitter):
                     "rebalance_loss": False,  # Whether to rebalance the loss # used
                 }
     ):
-        """
+        """Train a Simformer model using the provided configurations.
+
+        This method sets up the Simformer task, prepares the data,
+        and trains the model using the specified configurations,
+        and saves the trained model to a pickle file.
+
+        Parameters:
+        ----------
+
+        backend : str, optional
+            Backend to use for training. Default is "jax". 
+            Options are 'jax' and 'torch'.
+        num_training_simulations : int, optional
+            Number of training simulations to generate. Default is 10,000.
+            Only used if `has_simulator` is True, otherwise
+            the `feature_array` is used.
+        train_test_fraction : float, optional
+            Fraction of samples to use for training.
+            Default is 0.9.
+        random_seed : int, optional
+            Random seed for reproducibility. Default is 42.
+        set_self : bool, optional
+            If True, sets the trained model and task to the instance attributes.
+            Default is True.
+        verbose : bool, optional
+            If True, prints progress information during training.
+            Default is True.
+        load_existing_model : bool, optional
+            If True, loads an existing model from a pickle file if it exists.
+            Default is True.
+        name_append : str, optional
+            String to append to the model name in the output file.
+            Default is "timestamp", which appends the current timestamp.
+        model_config_dict : dict, optional
+            Configuration dictionary for the model. Default is a pre-defined configuration.
+        sde_config_dict : dict, optional
+            Configuration dictionary for the SDE (Stochastic Differential Equation).
+            Default is a pre-defined configuration for VPSDE.
+        train_config_dict : dict, optional
+            Configuration dictionary for the training process.
+            Default is a pre-defined configuration.
+
 
         """
         
         from .simformer import GalaxyPhotometryTask
         from omegaconf import OmegaConf
-        from scoresbibm.methods.score_transformer import train_transformer_model
+        from scoresbibm.methods.score_transformer import train_transformer_model, get_z_score_fn
+
+        if name_append == "timestamp":
+            name_append = f"_{self._timestamp}"
+
+        out_path = f"{code_path}/models/{self.name}/{self.name}{name_append}_posterior.pkl"
+        if load_existing_model and os.path.exists(out_path):
+            print(f"Loading existing model from {out_path}")
+            self.load_model_from_pkl(
+                model_dir=f"{code_path}/models/{self.name}/",
+                model_name=f"{self.name}{name_append}_posterior.pkl",
+                set_self=set_self,
+            )
+            return
 
         priors = self.create_priors()
 
@@ -4702,7 +5039,7 @@ class Simformer_Fitter(SBI_Fitter):
         
         trained_score_model = train_transformer_model(
             task=task,
-            data=training_data,  # Expects dict {"theta": ..., "x": ...} with JAX arrays
+            data=training_data,
             method_cfg=method_cfg,
             rng=master_rng_key,
         )
@@ -4716,13 +5053,16 @@ class Simformer_Fitter(SBI_Fitter):
         if verbose:
             print(f"Saving model at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
+        
         self.save_model_to_pkl(task=task,
             posteriors=trained_score_model,
             output_folder=f"{code_path}/models/{self.name}/",
+            name_append=name_append,
+            method_config_dict=method_config_dict,
+            save_method=save_method,
         )
 
         # Evaluate model.
-
         test_x = validation_data["x"]
         theta_val = validation_data["theta"]
 
@@ -4754,7 +5094,10 @@ class Simformer_Fitter(SBI_Fitter):
     def save_model_to_pkl(self,
                         task=None,
                         posteriors=None,
-                        output_folder: str = f"{code_path}/models/name/"):
+                        name_append='',
+                        output_folder: str = f"{code_path}/models/name/",
+                        save_method='torch',
+                        **extras):
 
         if task is None:
             task = self.simformer_task
@@ -4764,20 +5107,32 @@ class Simformer_Fitter(SBI_Fitter):
         if task is None or posteriors is None:
             raise ValueError("Task and posteriors must be provided.")
 
-        from scoresbibm.utils.data_utils import save_model
-
         output_folder = output_folder.replace("name", self.name)
 
         if not os.path.exists(output_folder):
             os.makedirs(output_folder)
 
-        save_model(
-            model=posteriors,
-            dir_path=f"{output_folder}",
-            model_id=name,
-        )
+        file_name = os.path.join(output_folder, f"{self.name}{name_append}_posterior.pkl")
+
+        if save_method == 'torch':
+            from torch import save
+            # Save trained model using PyTorch
+            save(posteriors, file_name)
+        elif save_method == 'joblib':
+            from joblib import dump, load
+            # Save trained model using joblib
+            dump(posteriors, file_name, compress=3)
+        elif save_method == 'pickle':
+            import pickle
+            # Save trained model using pickle
+            with open(file_name, 'wb') as f:
+                pickle.dump(posteriors, f)
+        elif save_method == 'hdf5':
+            raise NotImplementedError("HDF5 saving is not implemented yet.")
 
 
+        from scoresbibm.methods.score_transformer import get_z_score_fn
+        # Why is this here?
         if (
             posteriors.z_score_params is not None
             and posteriors.z_score_params["z_score_fn"] is None
@@ -4793,18 +5148,28 @@ class Simformer_Fitter(SBI_Fitter):
         save_dict = {
             "_x_dim": task.get_x_dim(),
             "_theta_dim": task.get_theta_dim(),
-            "prior_dict": priors_ranges_dict,
+            "prior_dict": task.prior_dist.prior_ranges,
             "param_names_ordered": task.param_names_ordered,
             "backend": task.backend,
-            "method_config_dict": method_config_dict,
+            "timestamp": self._timestamp,
         }
 
-
-        dump(
-            save_dict,
-            os.path.join(output_folder, f"{self.name}_params.pkl"),
+        save_dict.update(extras)
+        
+        param_path = os.path.join(output_folder, f"{self.name}{name_append}_params.pkl"),
             
-        )
+        if save_method == 'torch':
+            from torch import save
+            save(save_dict, param_path)
+        elif save_method == 'joblib':
+            dump(save_dict, param_path, compress=3)
+        elif save_method == 'pickle':
+            with open(param_path, 'wb') as f:
+                pickle.dump(save_dict, f)
+        elif save_method == 'hdf5':
+            raise NotImplementedError("HDF5 saving is not implemented yet.")
+    
+        
 
     def plot_diagnostics(self, X_test=None, y_test=None, num_samples=1000, num_evaluations=25, task=None, posteriors=None, rng_seed: int = 42,
         plots_dir: str = f"{code_path}/models/name/plots/",):

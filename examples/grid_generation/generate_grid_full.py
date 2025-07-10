@@ -103,9 +103,9 @@ except Exception:
 
 av_to_tau_v = 1.086  # conversion factor from Av to tau_v for the dust attenuation curve
 
-Nmodels = 10_000  # 00  # _000
+Nmodels = 1000  # 00  # _000
 batch_size = 50_000  # number of models to generate in each batch
-redshift = (0.00, 12)
+redshift = (0.01, 12)
 masses = (4, 12)
 max_redshift = 20  # gives maximum age of SFH at a given redshift
 cosmo = Planck18  # cosmology to use for age calculations
