@@ -1,18 +1,19 @@
 """Utility functions for SBIFitter."""
 
+import io
 import operator
 import os
+import pickle
 import re
 import sys
-import io
-from typing import Dict, List, Union, Tuple
+from typing import Dict, List, Union
 
 import h5py
 import numpy as np
 import scipy.stats
-from unyt import Angstrom, Jy, nJy, unyt_array
 import torch
-import pickle
+from unyt import Angstrom, Jy, nJy, unyt_array
+
 
 def load_grid_from_hdf5(
     hdf5_path: str,
@@ -422,7 +423,7 @@ def save_emission_model(model):
 
     # store fixed parameters of the emission model
     fixed_params = model.fixed_parameters
-            
+
     if fixed_params is None:
         fixed_params = {}
 
@@ -441,7 +442,7 @@ def save_emission_model(model):
         dust_attenuation_keys.pop('description')
         dust_attenuation_keys.pop('_required_params')
         dust_law = type(dust_law).__name__
-        
+
     else:
         dust_law = None
 
@@ -487,7 +488,7 @@ def save_emission_model(model):
     dust_emission_values = list(dust_emission_keys.values())
     dust_emission_keys = list(dust_emission_keys.keys())
 
-        
+
     return {
         "fixed_parameter_keys": fixed_parameter_keys,
         "fixed_parameter_values": fixed_parameter_values,
