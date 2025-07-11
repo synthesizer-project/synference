@@ -3,10 +3,9 @@
 import copy
 import inspect
 import os
-from dill.source import getsource
 from collections import defaultdict
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional, Tuple, Type, Union
+from typing import Any, Dict, List, Optional, Tuple, Type, Union
 
 import astropy.units as u
 import h5py
@@ -14,10 +13,8 @@ import matplotlib.patheffects as PathEffects
 import matplotlib.pyplot as plt
 import numpy as np
 from astropy.cosmology import Cosmology, Planck18, z_at_value
-from astropy.table import Column, Table
+from dill.source import getsource
 from matplotlib.ticker import FuncFormatter, ScalarFormatter
-from scipy import stats
-from scipy.interpolate import interp1d
 from scipy.linalg import inv
 from scipy.stats import qmc
 from synthesizer.conversions import lnu_to_fnu
@@ -46,14 +43,10 @@ from unyt import (
     yr,
 )
 
-from .utils import (
-    f_jy_err_to_asinh,
-    f_jy_to_asinh,
-    list_parameters,
-    save_emission_model
+from .noise_models import (
+    EmpiricalUncertaintyModel,
 )
-
-from .noise_models import EmpiricalUncertaintyModel, create_uncertainity_models_from_EPOCHS_cat
+from .utils import list_parameters, save_emission_model
 
 file_path = os.path.dirname(os.path.realpath(__file__))
 grid_folder = os.path.join(os.path.dirname(os.path.dirname(file_path)), "grids")
@@ -1154,7 +1147,7 @@ class GalaxyBasis:
         return self.galaxies
 
     def _check_model_simplicity(self, parameter_transforms_to_save=None, verbose=True) -> bool:
-        '''Check if the model is simple enough to be stored in a file.
+        """Check if the model is simple enough to be stored in a file.
 
         Checks include:
             All SFHs are the same underlying SFH class.
@@ -1166,8 +1159,7 @@ class GalaxyBasis:
 
         If the model is simple enough, we can store in HDF5 and
         allow creation of a GalaxySimulator from it.
-        '''
-
+        """
         accept = True
 
         sfh_classes = set(type(sfh) for sfh in self.sfhs)
@@ -1229,7 +1221,7 @@ class GalaxyBasis:
         forbidden_args = ['nlr_grid', 'blr_grid', 'covering_fraction',
                           'covering_fraction_nlr', 'covering_fraction_blr',
                           'torus_emission_model', 'dust_curve_ism',
-                          'dust_curve_birth', 
+                          'dust_curve_birth',
                           'dust_emission_ism', 'dust_emission_birth']
 
         for arg in forbidden_args:
@@ -1240,7 +1232,7 @@ class GalaxyBasis:
                         "Cannot store model."
                     )
                 accept = False
-        # can we we convert functions in alt_parametrizations to strings? 
+        # can we we convert functions in alt_parametrizations to strings?
         # and load with ast.literal_eval?
 
         if parameter_transforms_to_save is not None:
@@ -1267,14 +1259,14 @@ class GalaxyBasis:
 
         return accept
 
-    
+
 
 
     def _store_model(self, model_path: str, overwrite=False, group: str = "Model",
                     other_info: dict = None, parameter_transforms_to_save= None) -> bool:
 
         if not self._check_model_simplicity(parameter_transforms_to_save):
-            print(f"Model is too complex to be stored in a file.")
+            print("Model is too complex to be stored in a file.")
             return False
 
         # if not overwrite, append to existing file
@@ -1362,7 +1354,7 @@ class GalaxyBasis:
                             key, data=getsource(value[1]).encode("utf-8")
                         )
                         transforms_group[key].attrs["new_parameter_name"] = value[0]
-                    
+
 
             # Store param_order
             base.attrs["varying_param_names"] = self.varying_param_names
@@ -1370,7 +1362,7 @@ class GalaxyBasis:
             base.attrs["fixed_param_values"] = self.fixed_param_values
             base.attrs["fixed_param_units"] = self.fixed_param_units
 
-            
+
 
 
     def create_galaxy(
@@ -1541,7 +1533,7 @@ class GalaxyBasis:
         # Use sets instead of lists for faster lookups and unique values
         self.all_parameters = defaultdict(set)
         self.all_params = {}
-        
+
         param_units = {}
         # Process all galaxies in one pass
         for i, gal in enumerate(self.galaxies):
@@ -2154,7 +2146,7 @@ class GalaxyBasis:
             It can also be (List[str], callable) if the function returns multiple values.
             (e.g. converting one parameter to many.)
             Finally, if you are adding a new parameter which is not in the
-            model, you can a direct str: callable pair, which will add a new 
+            model, you can a direct str: callable pair, which will add a new
             parameter to the model based on the callable function.
 
         """
@@ -3879,7 +3871,7 @@ class GalaxySimulator(object):
             raise TypeError(
                 f"required_keys must be a list. Got {type(required_keys)} instead."
             )
-        
+
 
         assert isinstance(grid, Grid), (
             f"Grid must be a subclass of Grid. Got {type(grid)} instead."
@@ -3908,7 +3900,7 @@ class GalaxySimulator(object):
         self.normalize_method = normalize_method
         self.fixed_params = fixed_params
         self.depths = depths
-        
+
         if len(photometry_to_remove) > 0:
             filter_codes = instrument.filters.filter_codes
             new_filters = []
@@ -3916,7 +3908,7 @@ class GalaxySimulator(object):
                 if filter_code not in photometry_to_remove:
                     new_filters.append(filter_code)
             instrument.filters = FilterCollection(filters=new_filters)
-            
+
         if noise_models is not None:
             assert isinstance(noise_models, dict), (
                 f"Noise models must be a dictionary. Got {type(noise_models)} instead."
@@ -4003,8 +3995,27 @@ class GalaxySimulator(object):
         override_emission_model: Union[None, EmissionModel] = None,
         **kwargs,
     ):
+        """Create a GalaxySimulator from a grid file.
 
-        # Open h5py, look for 'Model' and instatiate by reading the grid. 
+        This method reads a grid file in HDF5 format, extracts the necessary
+        components such as the grid, instrument, cosmology, SFH model,
+        and emission model, and then instantiates a GalaxySimulator object.
+
+        Parameters
+        ----------
+        grid_path : str
+            Path to the grid file in HDF5 format.
+        override_emission_model : Union[None, EmissionModel], optional
+            If provided, this emission model will override the one in the grid file.
+        **kwargs : dict
+            Additional keyword arguments to pass to the GalaxySimulator constructor.
+
+        Returns:
+        -------
+        GalaxySimulator
+            An instance of GalaxySimulator initialized with the grid data.
+        """
+        # Open h5py, look for 'Model' and instatiate by reading the grid.
 
         if not os.path.exists(grid_path):
             raise FileNotFoundError(
@@ -4068,7 +4079,7 @@ class GalaxySimulator(object):
                 emission_model = override_emission_model
 
             else:
-                
+
                 emission_model_name = em_group.attrs['name']
                 import synthesizer.emission_models as em
                 import synthesizer.emission_models.attenuation as dm
@@ -4081,7 +4092,7 @@ class GalaxySimulator(object):
                         f"""Emission model {emission_model_name} not found in synthesizer.emission_models.
                         Cannot create GalaxySimulator."""
                     )
-                
+
 
                 if 'dust_law' in em_group.attrs:
                     dust_model_name = em_group.attrs['dust_law']
@@ -4091,7 +4102,7 @@ class GalaxySimulator(object):
                         raise ValueError(
                             f"""Dust model {dust_model_name} not found in synthesizer.emission_models.
                             Cannot create GalaxySimulator."""
-                        )   
+                        )
 
                     dust_model_params = {}
                     dust_param_keys = em_group.attrs['dust_attenuation_keys']
@@ -4204,7 +4215,7 @@ class GalaxySimulator(object):
 
 
             # Step 9 - Collect param transforms.
-            # TEMP 
+            # TEMP
             param_transforms = {}
 
             if 'Transforms' in model_group:
@@ -4220,7 +4231,7 @@ class GalaxySimulator(object):
                     if 'new_parameter_name' in transform_group[key].attrs:
                         new_key = transform_group[key].attrs['new_parameter_name']
                         param_transforms[key] = (new_key, func)
-            
+
 
             return cls(
                 sfh_model=sfh_model,
@@ -4231,7 +4242,7 @@ class GalaxySimulator(object):
                 instrument=instrument,
                 cosmo=cosmo,
                 emitter_params=emitter_params,
-                param_order=param_order, 
+                param_order=param_order,
                 param_units=param_units,
                 param_transforms=param_transforms,
                 fixed_params=fixed_params,

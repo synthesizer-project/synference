@@ -6,7 +6,7 @@ from .grid import (
     generate_sfh_grid, generate_metallicity_distribution, generate_emission_models, 
     generate_sfh_basis, GalaxyBasis, CombinedBasis,
     calculate_muv, calculate_mwa, draw_from_hypercube, GalaxySimulator, generate_random_DB_sfh,
-    EmpiricalUncertaintyModel, test_out_of_distribution, create_uncertainity_models_from_EPOCHS_cat
+    test_out_of_distribution
 )
 
 from .utils import (
@@ -27,6 +27,9 @@ try:
 except ImportError as e:
     print(e)
     print('Dependencies for SBI not installed. Only the grid generation functions will be available.')
+
+
+from .simformer import UncertainityModelTask
 
 
 __all__ = [
@@ -59,5 +62,5 @@ __all__ = [
     "create_sqlite_db",
     "f_jy_err_to_asinh",
     "f_jy_to_asinh",
-
+    "UncertainityModelTask",
 ]

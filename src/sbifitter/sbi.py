@@ -4,6 +4,7 @@ import copy
 import glob
 import json
 import os
+import pickle
 import queue
 import signal
 import threading
@@ -11,11 +12,11 @@ import time
 from contextlib import redirect_stdout
 from datetime import datetime
 from io import StringIO
-from typing import Any, Dict, List, Optional, Tuple, Union
-import jax
-import jax.numpy as jnp
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import ili
+import jax
+import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 import optuna
@@ -395,17 +396,21 @@ class SBI_Fitter:
         """
         # Needs to load the training data and parameters from the basis
         pass
-    
+
     @classmethod
     def load_saved_model(cls,
-                        model_file, 
+                        model_file,
                         grid_path: Optional[str] = None):
         """Load a prefit SBI model from a file.
-        
-        Args:
-            model_file: Path to the saved model file.
-        """
 
+        Argument:
+            model_file: Path to the saved model file.
+            grid_path: Optional path to the grid file. If not provided,
+                it will be loaded from the model file parameters.
+
+        Returns:
+            Instance of SBI_Fitter initialized with the loaded model.
+        """
         # grid_path is saved in the model file
         posterior, stats, params = cls.load_model_from_pkl(model_file, set_self=True)
 
@@ -424,7 +429,7 @@ class SBI_Fitter:
 
         return fitter
 
-        
+
     def _apply_depths(
         self,
         depths: unyt_array,
@@ -820,8 +825,9 @@ class SBI_Fitter:
         drop_dropouts: bool = False,
         drop_dropout_fraction: float = 1.0,
         asinh_softening_parameters: Union[
-            unyt_array, List[unyt_array], Dict[str, unyt_array], str
+            unyt_array, List[unyt_array], Dict[str, unyt_array], str,
         ] = None,
+        max_rows: int = -1,
     ) -> np.ndarray:
         """Create a feature array from the raw photometry grid.
 
@@ -914,6 +920,10 @@ class SBI_Fitter:
                 If a dict, it should map filter names to the softening parameters.
                 Or it can be 'SNR_{level} to set it from the noise model
                 or depths.
+            max_rows: int, default -1.
+                The maximum number of rows to return in the feature array.
+                If -1, all rows are returned. If >0 and len(feature_array) > max_rows,
+                rows are randomly sampled to return only max_rows rows.
 
             TODO: How should normalization work with the scattering?
 
@@ -1469,6 +1479,31 @@ class SBI_Fitter:
                     {drop_dropout_fraction * 100}% of bands are at the norm_mag_limit."""
                 )
                 delete_rows.extend(dropout_rows.tolist())
+
+        if max_rows > 0 and (feature_array.shape[1] - len(delete_rows)) > max_rows:
+            # select rows to delete to reduce the feature array to max_rows
+            if verbose:
+                print(
+                    f"""Reducing feature array from {feature_array.shape[1]} to \
+                    {max_rows} rows."""
+                )
+
+            # Randomly sample max_rows rows from the feature array
+            options = np.setdiff1d(
+                np.arange(feature_array.shape[1]),
+                delete_rows,
+            )
+
+            random_indices = np.random.choice(
+                options,
+                size=max_rows,
+                replace=False,
+            )
+
+            # Add the random indices to the delete rows
+            delete_rows.extend(
+                [i for i in options if i not in random_indices]
+            )
 
         # Remove any rows in delete_rows
         if len(delete_rows) > 0:
@@ -2105,7 +2140,7 @@ class SBI_Fitter:
             print("Prior ranges:")
             print("---------------------------------------------")
             for i, param in enumerate(self.fitted_parameter_names):
-                if self.parameter_units is not None:
+                if self.parameter_units is not None and len(self.parameter_units) > i:
                     unit = f" [{self.parameter_units[i]}]"
                 else:
                     unit = ""
@@ -2887,13 +2922,13 @@ class SBI_Fitter:
             for key, value in param_dict.items():
                 if isinstance(value, torch.Tensor):
                     param_dict[key] = value.cpu().numpy()
-            
+
             save_path = f"{out_dir}/{self.name}{name_append}_params.pkl",
             if save_method == 'torch':
                 with open(save_path, "wb") as f:
                     torch.save(
                         param_dict,
-                        save_path,x
+                        save_path,
                     )
             elif save_method == 'pickle':
                 with open(save_path, "wb") as f:
@@ -3052,22 +3087,20 @@ class SBI_Fitter:
         Simple grids (single SFH, ZDist, one basis)
         with pre-existing simple EmissionModels
         can be recreated as a simulator, allowing
-        for SED recovery without manual 
+        for SED recovery without manual
         specification of the simulator function.
 
         Two possible use cases, either to generate
         samples for fitting (in which case we want
-        the config to closely match the feature 
+        the config to closely match the feature
         array) or to recover the SED, in
         which case we aren't concerned about
         depths, noise models, etc.
 
         """
-
-
         # grid path
         grid_path = self.grid_path
-        
+
         if self.has_simulator:
             return self.simulator
 
@@ -3095,10 +3128,10 @@ class SBI_Fitter:
         default_kwargs.update(kwargs)
 
         try:
-            simulator = GalaxySimulator.from_grid(grid_path, 
+            simulator = GalaxySimulator.from_grid(grid_path,
                                                     **default_kwargs)
-        except ValueError as e:
-            print(f"""Could not recreate simulator from grid. This model \
+        except ValueError:
+            print("""Could not recreate simulator from grid. This model \
                     may not be compatible. A GalaxySimulator object can \
                     be provided manually to recover the SED.""")
             return None
@@ -3110,7 +3143,7 @@ class SBI_Fitter:
 
         return simulator
 
-        
+
     def recover_SED(
         self,
         X_test: np.ndarray,
@@ -3620,7 +3653,7 @@ class SBI_Fitter:
             Average of the squared differences between predicted and actual values.
             Lower values indicate better fit.
         - rmse - Root Mean Squared Error
-            Square root of the mean squared error. 
+            Square root of the mean squared error.
             Provides error in the same units as the target variable.
         - mae - Mean Absolute Error
             Average of the absolute differences between predicted and actual values.
@@ -3653,6 +3686,7 @@ class SBI_Fitter:
             samples: Precomputed samples from the posterior. If None, will draw samples
                 from the posterior using the `sample_posterior` method.
             independent_metrics: If True, calculate metrics independently for each parameter.
+
         Raises:
             ValueError: If posteriors or test data are not provided.
 
@@ -3664,7 +3698,7 @@ class SBI_Fitter:
                 posteriors = self.posteriors
             else:
                 raise ValueError("Posteriors must be provided or set in the object.")
-        
+
         if X_test is None or y_test is None:
             if hasattr(self, "_X_test") and hasattr(self, "_y_test"):
                 X_test = self._X_test
@@ -3676,7 +3710,7 @@ class SBI_Fitter:
             # Draw samples from the posterior
             samples = self.sample_posterior(
                 X_test, num_samples=num_samples, posteriors=posteriors
-            )   
+            )
 
         # Calculate basic metrics
         mean_pred = np.mean(samples, axis=1)
@@ -3696,13 +3730,13 @@ class SBI_Fitter:
 
         # PIT
         pit = self.calculate_PIT(X_test, y_test, samples=samples, posteriors=posteriors)
-                   
+
         dpit_max = np.max(np.abs(pit - np.linspace(0, 1, len(pit))))
         log_dpit_max = -0.5 * np.log(dpit_max)
 
         # Calculate metrics
         metrics = {
-            "MSE": np.mean((y_test - mean_pred) ** 2, axis=axis), 
+            "MSE": np.mean((y_test - mean_pred) ** 2, axis=axis),
             "RMSE": np.sqrt(np.mean((y_test - mean_pred) ** 2, axis=axis)),
             "mean_ae": np.mean(np.abs(y_test - mean_pred), axis=axis),
             "median_ae": np.median(np.abs(y_test - median_pred), axis=axis),
@@ -3723,7 +3757,7 @@ class SBI_Fitter:
             # with parameter names as columns.
             param_metrics = []
             full_metrics = []
-            
+
             for metric in metrics:
                 if isinstance(metrics[metric], np.ndarray) \
                 and hasattr(metrics[metric], "__len__") \
@@ -3731,12 +3765,12 @@ class SBI_Fitter:
                     param_metrics.append(metric)
                 else:
                     full_metrics.append(metric)
-            
+
             # Print full metrics
             print("="*60)
             print("MODEL PERFORMANCE METRICS")
             print("="*60)
-            
+
             if len(full_metrics) > 0:
                 print("\nFull Model Metrics:")
                 print("-" * 40)
@@ -3746,19 +3780,19 @@ class SBI_Fitter:
                     if isinstance(num, np.ndarray):
                         num = num.item()
                     print(f"{metric_name:.<25} {metrics[metric]:.6f}")
-            
+
             # Print parameter-specific metrics
             if len(param_metrics) > 0:
-                print(f"\nParameter-Specific Metrics:")
+                print("\nParameter-Specific Metrics:")
                 print("-" * 40)
-                
+
                 # Create header
                 header = f"{'Metric':<15}"
                 for param_name in self.fitted_parameter_names:
                     header += f"{param_name:>12}"
                 print(header)
                 print("-" * len(header))
-                
+
                 # Print each metric row
                 for metric in param_metrics:
                     metric_name = metric.replace('_', ' ').title()
@@ -3766,7 +3800,7 @@ class SBI_Fitter:
                     for i, param_name in enumerate(self.fitted_parameter_names):
                         row += f"{metrics[metric][i]:>12.6f}"
                     print(row)
-            
+
             print("="*60)
 
         return metrics
@@ -3868,12 +3902,20 @@ class SBI_Fitter:
         bins="knuth",
         plots_dir: str = f"{code_path}/models/name/plots/",
         seperate_test_train=False,
+        max_bins_row=6,
     ):
         """Plot histogram of each parameter using astropy.visualization.hist."""
-        fig, axes = plt.subplots(1, len(self.fitted_parameter_names), figsize=(15, 5))
+        nrow = int(np.ceil(len(self.fitted_parameter_names) / max_bins_row))
+        ncol = min(len(self.fitted_parameter_names), max_bins_row)
+        fig, axes = plt.subplots(
+            nrow, ncol, figsize=(15, 3 * nrow), squeeze=False
+        )
+        axes = axes.flatten()  # Flatten the axes array for easier indexing
+
         for i, param in enumerate(self.simple_fitted_parameter_names):
             axes[i].set_title(param)
-            axes[i].set_xlabel("Value")
+            unit = f' ({self.feature_units[i]})' if i < len(self.feature_units) else ""
+            axes[i].set_xlabel(f"Value{unit}")
             axes[i].set_ylabel("Count")
             if seperate_test_train:
                 hist(self._y_train[:, i], ax=axes[i], bins=bins, label="Train")
@@ -3881,6 +3923,10 @@ class SBI_Fitter:
                 axes[i].legend()
             else:
                 hist(self.fitted_parameter_array[:, i], ax=axes[i], bins=bins)
+
+        # Hide unused axes
+        for j in range(i + 1, len(axes)):
+            axes[j].axis("off")
 
         plt.tight_layout()
 
@@ -4055,7 +4101,6 @@ class SBI_Fitter:
         pit : 1-dimensional array
             The PIT values.
         """
-
         if samples is None:
             samples = self.sample_posterior(X, num_samples=num_samples, posteriors=posteriors)
 
@@ -4294,11 +4339,11 @@ class SBI_Fitter:
                     Please specify a single file."""
                 )
             model_file = files[0]
-        
+
         try:
             with open(model_file, "rb") as f:
                 posteriors = load(f)
-        except RuntimeError as e:
+        except RuntimeError:
             # probably because we ran this model on
             # with a GPU which is not available now.
             #with open(model_file, "rb") as f:
@@ -4328,7 +4373,7 @@ class SBI_Fitter:
             try:
                 with open(params, "rb") as f:
                     params = load(f)
-            except RuntimeError as e:
+            except RuntimeError:
                 from .utils import CPU_Unpickler
                 with open(params, "rb") as f:
                     params = CPU_Unpickler(f).load()
@@ -4836,9 +4881,7 @@ class ModelComparison:
 
 
 class Simformer_Fitter(SBI_Fitter):
-    """Simformer Fitter for SBI models.
-
-    """
+    """Simformer Fitter for SBI models."""
     def __init__(self, name: str = "simformer_fitter", **kwargs):
         """Initialize the Simformer Fitter."""
         super().__init__(name=name, **kwargs)
@@ -4852,7 +4895,6 @@ class Simformer_Fitter(SBI_Fitter):
             return_output: bool = False,
             **kwargs):
         """Initialize the Simformer Fitter."""
-
         return super().init_from_hdf5(
             model_name,
             hdf5_path,
@@ -4870,6 +4912,7 @@ class Simformer_Fitter(SBI_Fitter):
             load_existing_model: bool = True,
             name_append: str = "timestamp",
             save_method: str = "torch",
+            task_func: Callable = None,
             model_config_dict = {
                     "name": "ScoreTransformer",
                     "d_model": 128,
@@ -4919,7 +4962,7 @@ class Simformer_Fitter(SBI_Fitter):
         ----------
 
         backend : str, optional
-            Backend to use for training. Default is "jax". 
+            Backend to use for training. Default is "jax".
             Options are 'jax' and 'torch'.
         num_training_simulations : int, optional
             Number of training simulations to generate. Default is 10,000.
@@ -4942,6 +4985,12 @@ class Simformer_Fitter(SBI_Fitter):
         name_append : str, optional
             String to append to the model name in the output file.
             Default is "timestamp", which appends the current timestamp.
+        save_method : str, optional
+            Method to use for saving the model. Default is "torch".
+            Options are 'torch' and 'pickle'.
+        task_func : Callable, optional
+            Function to create the task. If None, uses the default
+            `GalaxyPhotometryTask` from `simformer`.
         model_config_dict : dict, optional
             Configuration dictionary for the model. Default is a pre-defined configuration.
         sde_config_dict : dict, optional
@@ -4953,10 +5002,15 @@ class Simformer_Fitter(SBI_Fitter):
 
 
         """
-        
-        from .simformer import GalaxyPhotometryTask
         from omegaconf import OmegaConf
-        from scoresbibm.methods.score_transformer import train_transformer_model, get_z_score_fn
+        from scoresbibm.methods.score_transformer import (
+            train_transformer_model,
+        )
+
+        if task_func is None:
+            from .simformer import GalaxyPhotometryTask as task_func
+        else:
+            task_func = task_func
 
         if name_append == "timestamp":
             name_append = f"_{self._timestamp}"
@@ -4984,14 +5038,14 @@ class Simformer_Fitter(SBI_Fitter):
             # dummy function which retuens None
             simulator_function = lambda x: None
 
-        task = GalaxyPhotometryTask(name=self.name,
+        task = task_func(name=self.name,
                 backend = backend,
                 prior_dict = priors,
                 param_names_ordered = self.fitted_parameter_names,
                 run_simulator_fn = simulator_function,
                 num_filters = len(self.feature_names))
 
-        
+
         method_config_dict = {
             "device": str(self.device),  # Ensure this matches device setup
             "sde": sde_config_dict,
@@ -5007,8 +5061,7 @@ class Simformer_Fitter(SBI_Fitter):
         if self.has_simulator:
             print(f"Generating {num_training_simulations} training simulations...")
             training_data = task.get_data(num_samples=num_training_simulations)
-            theta_train = training_data["theta"]
-            x_train = training_data["x"]
+
             num_validation_simulations = int(num_training_simulations * train_test_fraction)
 
             validation_data = task.get_data(num_samples=num_validation_simulations)
@@ -5036,7 +5089,7 @@ class Simformer_Fitter(SBI_Fitter):
 
         if verbose:
             print(f"Starting training at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        
+
         trained_score_model = train_transformer_model(
             task=task,
             data=training_data,
@@ -5053,7 +5106,7 @@ class Simformer_Fitter(SBI_Fitter):
         if verbose:
             print(f"Saving model at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
-        
+
         self.save_model_to_pkl(task=task,
             posteriors=trained_score_model,
             output_folder=f"{code_path}/models/{self.name}/",
@@ -5069,7 +5122,7 @@ class Simformer_Fitter(SBI_Fitter):
         if verbose:
             print(f"Evaluating model at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
-        self.plot_diagnostics(task=task, 
+        self.plot_diagnostics(task=task,
             X_test=test_x,
             y_test=theta_val,
             posteriors=trained_score_model,
@@ -5079,11 +5132,21 @@ class Simformer_Fitter(SBI_Fitter):
             plots_dir=f"{code_path}/models/{self.name}/plots/",
         )
 
-    def load_model_from_pkl(self, 
+    def load_model_from_pkl(self,
             model_dir: str,
             model_name: str = "simformer",
             set_self: bool = True):
+        """Load a Simformer model from a pickle file.
 
+        Parameters:
+        model_dir : str
+            Directory where the model file is located.
+        model_name : str, optional
+            Name of the model file to load. Default is "simformer".
+        set_self : bool, optional
+            If True, sets the loaded model and task to the instance attributes.
+            Default is True.
+        """
         from .simformer import load_full_model
 
         load_full_model(
@@ -5098,12 +5161,33 @@ class Simformer_Fitter(SBI_Fitter):
                         output_folder: str = f"{code_path}/models/name/",
                         save_method='torch',
                         **extras):
+        """Save the Simformer model to a pickle file.
 
+        Parameters:
+        task : object, optional
+            Task object containing the model and data.
+            If None, uses the simformer_task attribute of the object.
+        posteriors : object, optional
+            Posteriors to save. If None, uses the posteriors attribute of the object.
+        name_append : str, optional
+            String to append to the model name in the output file.
+            Default is an empty string.
+        output_folder : str, optional
+            Directory to save the model files.
+            Default is f"{code_path}/models/name/".
+        save_method : str, optional
+            Method to use for saving the model.
+            Options are 'torch', 'joblib', 'pickle', and 'hdf5'.
+            Default is 'torch'.
+        extras : dict, optional
+            Additional parameters to save with the model.
+            These will be added to the saved dictionary.
+        """
         if task is None:
             task = self.simformer_task
         if posteriors is None:
             posteriors = self.posteriors
-        
+
         if task is None or posteriors is None:
             raise ValueError("Task and posteriors must be provided.")
 
@@ -5119,7 +5203,7 @@ class Simformer_Fitter(SBI_Fitter):
             # Save trained model using PyTorch
             save(posteriors, file_name)
         elif save_method == 'joblib':
-            from joblib import dump, load
+            from joblib import dump
             # Save trained model using joblib
             dump(posteriors, file_name, compress=3)
         elif save_method == 'pickle':
@@ -5155,9 +5239,9 @@ class Simformer_Fitter(SBI_Fitter):
         }
 
         save_dict.update(extras)
-        
+
         param_path = os.path.join(output_folder, f"{self.name}{name_append}_params.pkl"),
-            
+
         if save_method == 'torch':
             from torch import save
             save(save_dict, param_path)
@@ -5168,13 +5252,31 @@ class Simformer_Fitter(SBI_Fitter):
                 pickle.dump(save_dict, f)
         elif save_method == 'hdf5':
             raise NotImplementedError("HDF5 saving is not implemented yet.")
-    
-        
+
+
 
     def plot_diagnostics(self, X_test=None, y_test=None, num_samples=1000, num_evaluations=25, task=None, posteriors=None, rng_seed: int = 42,
         plots_dir: str = f"{code_path}/models/name/plots/",):
+        """Plot diagnostics for the Simformer model.
 
-
+        Arguments:
+        X_test : np.ndarray, optional
+            Test data to evaluate the model. If None, uses the X_test attribute of the object.
+        y_test : np.ndarray, optional
+            True values for the test data. If None, uses the y_test attribute of the object.
+        num_samples : int, optional
+            Number of samples to draw from the posterior. Default is 1000.
+        num_evaluations : int, optional
+            Number of evaluations to perform for coverage. Default is 25.
+        task : object, optional
+            Task object containing the model and data. If None, uses the simformer_task attribute of the object.
+        posteriors : object, optional
+            Posteriors to use for sampling. If None, uses the posteriors stored in the object.
+        rng_seed : int, optional
+            Random seed for reproducibility. Default is 42.
+        plots_dir : str, optional
+            Directory to save the plots. Default is f"{code_path}/models/{name}/plots/".
+        """
         if task is None:
             task = self.simformer_task
 
@@ -5214,22 +5316,44 @@ class Simformer_Fitter(SBI_Fitter):
                     rng_seed: int = 42,
                     plots_dir: str = f"{code_path}/models/name/plots/",
     ):
+        """Plot the accuracy of the sampled posterior distribution.
 
+        Arguments:
+        num_samples : int, optional
+            Number of samples to draw from the posterior. Default is 1000.
+        X_test : np.ndarray, optional
+            Test data to sample from the posterior. If None, uses the
+            X_test attribute of the object.
+        y_test : np.ndarray, optional
+            True values for the test data. If None, uses the y_test
+            attribute of the object.
+        task : object, optional
+            Task object containing the model and data. If None, uses the
+            simformer_task attribute of the object.
+        posteriors : object, optional
+            Posteriors to use for sampling. If None, uses the posteriors
+            stored in the object.
+        rng_seed : int, optional
+            Random seed for reproducibility. Default is 42.
+        plots_dir : str, optional
+            Directory to save the plots. Default is
+            f"{code_path}/models/{name}/plots/".
+        """
         if task is None:
             task = self.simformer_task
-        
+
         if posteriors is None:
             posteriors = self.posteriors
 
         master_rng_key = jax.random.PRNGKey(rng_seed)
 
         posterior_condition_mask = jnp.array([0] * task.get_theta_dim() + [1] * task.get_x_dim(), dtype=jnp.bool_)
-        
+
         y_test_recovered = self.sample_posterior(
             X_test=X_test,
             num_samples=1000,
-            posteriors=trained_score_model,
-            rng_seed=random_seed,
+            posteriors=posteriors,
+            rng_seed=master_rng_key,
             attention_mask=posterior_condition_mask,
         )
 
@@ -5243,7 +5367,7 @@ class Simformer_Fitter(SBI_Fitter):
             p16, p50, p84 = np.percentile(y_test_recovered[:, i], [16, 50, 84])
             ax[i].errorbar(
                 y_test[:, i],
-                p50, 
+                p50,
                 yerr=[p50 - p16, p84 - p50],
                 fmt="o",
             )
@@ -5259,7 +5383,7 @@ class Simformer_Fitter(SBI_Fitter):
         # TODO: Rename to match convention
         plt.savefig(os.path.join(plots_dir, f"sample_accuracy_plot_{self._timestamp}.png"))
 
-    def plot_coverage(self, 
+    def plot_coverage(self,
                     num_samples=1000,
                     num_evaluations=25,
                     task=None,
@@ -5267,6 +5391,28 @@ class Simformer_Fitter(SBI_Fitter):
                     rng_seed: int = 42,
                     plots_dir: str = f"{code_path}/models/name/plots/",
     ):
+        """Plot the coverage of the posterior distribution.
+
+        Arguments:
+        num_samples : int, optional
+            Number of samples to draw from the posterior. Default is 1000.
+        num_evaluations : int, optional
+            Number of evaluations to perform for coverage. Default is 25.
+        task : object, optional
+            Task object containing the model and data. If None, uses the
+            simformer_task attribute of the object.
+        posteriors : object, optional
+            Posteriors to use for sampling. If None, uses the posteriors
+            stored in the object.
+        rng_seed : int, optional
+            Random seed for reproducibility. Default is 42.
+        plots_dir : str, optional
+            Directory to save the plots. Default is
+            f"{code_path}/models/{name}/plots/".
+        """
+        master_rng_key = jax.random.PRNGKey(rng_seed)
+
+        from scoresbibm.evaluation.eval_coverage import eval_coverage
 
         metric_values, eval_time = eval_coverage(
             task=task,
@@ -5289,7 +5435,7 @@ class Simformer_Fitter(SBI_Fitter):
         plt.xlabel("Predicted Percentile")
         plt.ylabel("Empirical Percentile")
         plt.legend()
-        
+
         plt.title(f"Coverage Plot (num_samples={num_samples}, num_evaluations={num_evaluations})")
 
         plots_dir = plots_dir.replace("name", self.name)
@@ -5300,15 +5446,15 @@ class Simformer_Fitter(SBI_Fitter):
         plt.savefig(os.path.join(plots_dir, f"coverage_plot_{self._timestamp}.png"))
 
     def plot_posterior(self):
+        """Plot the posterior distribution."""
         pass
-            
+
     def sample_posterior(self,
                         X_test,
                         num_samples: int = 1000,
                         posteriors: object = None,
                         rng_seed: int = 42,
                         attention_mask: Union[str, np.ndarray] = 'full'):
-
         """Sample from the posterior distribution.
 
         Parameters
@@ -5331,13 +5477,16 @@ class Simformer_Fitter(SBI_Fitter):
         TODO: Make this work for multidimensional X_test.
 
         """
+        if posteriors is None:
+            posteriors = self.posteriors
+
         master_rng_key = jax.random.PRNGKey(rng_seed)
 
         num_theta = len(self.feature_names)
         num_x = len(self.fitted_parameter_names)
 
         assert X_test.shape[1] == num_x or attention_mask != 'full', \
-            f"Must provide the all features or a manual attention mask. "
+            "Must provide the all features or a manual attention mask. "
 
         mask_theta = np.zeros(num_theta, dtype=np.bool_)
 
@@ -5352,11 +5501,11 @@ class Simformer_Fitter(SBI_Fitter):
         all_samples = []
 
         for x in X_test:
-            x = x[~mask_bool]
+            x = x[~mask_x]
             x = jnp.array([x], dtype=jnp.float32)
 
             posterior_condition_mask = jnp.array(mask_theta + mask_x, dtype=jnp.bool_)
-            samples = reloaded_model.sample_batched(
+            samples = posteriors.sample_batched(
                 num_samples=num_samples,
                 x_o=x,
                 condition_mask=posterior_condition_mask,
@@ -5386,13 +5535,26 @@ class Simformer_Fitter(SBI_Fitter):
             self,
             override_prior_ranges: dict = {},
             verbose: bool = True):
+        """Create priors for the Simformer model.
+
+        Arguments:
+        override_prior_ranges : dict, optional
+            Dictionary to override the default prior ranges.
+            Default is an empty dictionary.
+        verbose : bool, optional
+            If True, prints information about the prior creation.
+            Default is True.
+
+        Returns:
+        GalaxyPrior
+            An instance of GalaxyPrior with the specified prior ranges.
+        """
         from .simformer import GalaxyPrior
-        
+
         priors_sbi = super().create_priors(
             override_prior_ranges=override_prior_ranges,
             verbose=verbose,
         ).base_dist
-        num = len(self.fitted_parameter_names)
 
         prior_ranges = {}
         for i, name in enumerate(self.fitted_parameter_names):
@@ -5408,7 +5570,8 @@ class Simformer_Fitter(SBI_Fitter):
 
 
     def optimize_sbi(self):
+        """Optimize the SBI model."""
         raise NotImplementedError(
             "Simformer_Fitter does not implement optimize_sbi method. "
         )
-    
+
