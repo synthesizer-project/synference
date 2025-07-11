@@ -25,8 +25,6 @@ from unyt import (
     Myr,
 )
 
-
-
 try:
     from omegaconf import OmegaConf  # To create DictConfig-like objects if needed
     from scoresbibm.methods.score_transformer import train_transformer_model
@@ -35,17 +33,13 @@ except Exception as e:
     print(e)
 
     class InferenceTask:
+        """Dummy InferenceTask class for compatibility."""
         pass
-
-
-
 
 
 # --- Custom Simformer Task ---
 class GalaxyPhotometryTask(InferenceTask):
-    """
-    A Simformer InferenceTask for the GalaxySimulator.
-    """
+    """A Simformer InferenceTask for the GalaxySimulator."""
 
     _theta_dim: int
     _x_dim: int
@@ -59,6 +53,16 @@ class GalaxyPhotometryTask(InferenceTask):
         run_simulator_fn: Callable = None,
         num_filters: int = None,
     ):
+        """Initializes the GalaxyPhotometryTask.
+
+        Arguments:
+            name: Name of the task.
+            backend: Backend to use, e.g., "jax", "torch", or "numpy".
+            prior_dict: Dictionary defining parameter ranges for the prior.
+            param_names_ordered: Ordered list of parameter names.
+            run_simulator_fn: Function that runs the galaxy simulator.
+            num_filters: Number of filters in the photometry simulation.
+        """
         super().__init__(name, backend)
 
 
@@ -87,9 +91,11 @@ class GalaxyPhotometryTask(InferenceTask):
         self.run_simulator_fn = run_simulator_fn
 
     def get_theta_dim(self) -> int:
+        """Returns the dimension of the theta vector."""
         return self._theta_dim
 
     def get_x_dim(self) -> int:
+        """Returns the dimension of the x vector (photometry)."""
         return self._x_dim
 
     def get_prior(self):
@@ -97,13 +103,11 @@ class GalaxyPhotometryTask(InferenceTask):
         return self.prior_dist
 
     def get_simulator(self):
-        """
-        Returns a callable that takes a batch of thetas and returns a batch of xs.
-        The provided run_simulator_fn processes one sample at a time
-        and returns a torch tensor.
-        This wrapper will handle batching.
-        """
+        """Gets a batched simulator function.
 
+        Returns:
+            A callable that takes a batch of thetas and returns a batch of xs.
+        """
         def batched_simulator(
             thetas_batch_torch: torch.Tensor,
         ) -> torch.Tensor:
@@ -122,7 +126,16 @@ class GalaxyPhotometryTask(InferenceTask):
         return batched_simulator
 
     def get_data(self, num_samples: int, **kwargs) -> Dict[str, jnp.ndarray]:
-        """Generates and returns a dictionary of {'theta': thetas, 'x': xs} as JAX arr"""
+        """Returns data for the task.
+
+        Arguments:
+            num_samples: The number of samples to generate.
+            **kwargs: Additional keyword arguments for the prior sampling.
+
+        Returns:
+            A dictionary with keys 'theta' and 'x', containing the sampled parameters
+            and simulated photometry, respectively.
+        """
         prior = self.get_prior()
         simulator = self.get_simulator()  # This is our batched_simulator
 
@@ -187,12 +200,86 @@ class GalaxyPhotometryTask(InferenceTask):
         return base_mask_fn
 
 
+class UncertainityModelTask(InferenceTask):
+    """Learn the conditional distribution of log-uncertainties given magnitudes from a data catalog."""
+    def __init__(self, magnitudes: np.ndarray, log_uncertainties: np.ndarray):
+        """Initializes the NoiseModelTask with magnitudes and log-uncertainties.
+
+        Args:
+            magnitudes: Array of shape (num_examples, num_bands) from a catalog.
+            log_uncertainties: Array of shape (num_examples, num_bands) from a catalog.
+        """
+        super().__init__(name="conditional_noise_model", backend="jax")
+
+        # Ensure data is in the correct format
+        if magnitudes.shape != log_uncertainties.shape:
+            raise ValueError("Magnitudes and log_uncertainties must have the same shape.")
+
+        # In this task, 'theta' is the magnitude, 'x' is the log_uncertainty
+        self._theta_data = jnp.array(magnitudes)
+        self._x_data = jnp.array(log_uncertainties)
+
+        self._theta_dim = self._theta_data.shape[1]
+        self._x_dim = self._x_data.shape[1]
+
+    def get_theta_dim(self) -> int:
+        return self._theta_dim
+
+    def get_x_dim(self) -> int:
+        return self._x_dim
+
+    def get_data(self, num_samples: int, rng=None) -> dict[str, jnp.ndarray]:
+        """Returns a random subset of the provided catalog data."""
+        if num_samples > self._theta_data.shape[0]:
+            raise ValueError(f"Requested {num_samples} samples, but only {self._theta_data.shape[0]} are available.")
+
+        # For simplicity, we sample with replacement.
+        # A more robust implementation might use a data loader.
+        indices = np.random.choice(self._theta_data.shape[0], size=num_samples, replace=True)
+
+        return {
+            "theta": self._theta_data[indices],
+            "x": self._x_data[indices]
+        }
+
+    def get_base_mask_fn(self):
+        """Defines that log-uncertainty 'x' depends on magnitude 'theta'."""
+        theta_dim = self.get_theta_dim()
+        x_dim = self.get_x_dim()
+
+        # Parameters ('theta', magnitudes) only attend to themselves
+        thetas_self_mask = jnp.eye(theta_dim, dtype=jnp.bool_)
+
+        # Data ('x', log-uncertainties) attend to themselves causally
+        # (or fully, depending on assumption about correlations between band uncertainties)
+        xs_self_mask = jnp.tril(jnp.ones((x_dim, x_dim), dtype=jnp.bool_))
+
+        # Data ('x') can attend to all parameters ('theta')
+        xs_attend_thetas_mask = jnp.ones((x_dim, theta_dim), dtype=jnp.bool_)
+
+        # Parameters ('theta') do not attend to data ('x')
+        thetas_attend_xs_mask = jnp.zeros((theta_dim, x_dim), dtype=jnp.bool_)
+
+        base_mask = jnp.block([
+            [thetas_self_mask, thetas_attend_xs_mask],
+            [xs_attend_thetas_mask, xs_self_mask]
+        ])
+        base_mask = base_mask.astype(jnp.bool_)
+
+        def base_mask_fn(node_ids, node_meta_data):
+            return base_mask[jnp.ix_(node_ids, node_ids)]
+
+        return base_mask_fn
+
+    # Methods like get_prior and get_simulator are not needed
+    # as get_data is implemented directly from a dataset.
 
 # --- Helper Class for Prior ---
 class GalaxyPrior:
-    """
-    A simple prior distribution handler for galaxy parameters.
-    Samples uniformly from ranges specified for each parameter.
+    """A prior distribution for galaxy parameters.
+
+    This class uses uniform distributions for each parameter defined in prior_ranges.
+    It can sample from the prior and compute log probabilities.
     """
 
     def __init__(
@@ -200,6 +287,12 @@ class GalaxyPrior:
         prior_ranges: Dict[str, Tuple[float, float]],
         param_order: List[str],
     ):
+        """Initializes the GalaxyPrior with parameter ranges and order.
+
+        Arguments:
+            prior_ranges: A dictionary mapping parameter names to their (low,high) ranges.
+            param_order: A list of parameter names in the order they should be sampled.
+        """
         self.prior_ranges = prior_ranges
         self.param_order = param_order
         self.theta_dim = len(param_order)
@@ -216,10 +309,13 @@ class GalaxyPrior:
     def sample(
         self, sample_shape: Tuple[int], sample_lhc=False, rng=None
     ) -> torch.Tensor:
-        """
-        Generates samples from the prior.
-        Args:
+        """Generates samples from the prior.
+
+        Arguments:
             sample_shape: A tuple containing the number of samples, e.g., (num_samples,).
+            sample_lhc: If True, samples using Latin Hypercube sampling.
+            rng: Optional random number generator for reproducibility.
+
         Returns:
             A PyTorch tensor of shape (num_samples, theta_dim).
         """
@@ -246,9 +342,14 @@ class GalaxyPrior:
         return torch.cat(samples_per_param, dim=1)
 
     def log_prob(self, theta: torch.Tensor) -> torch.Tensor:
-        """
-        Calculates the log probability of theta under the prior.
-        Assumes theta is a batch of shape (num_samples, theta_dim).
+        """Calculates the log probability of theta under the prior.
+
+        Arguments:
+            theta: A PyTorch tensor of shape (num_samples, theta_dim).
+
+        Returns:
+            A PyTorch tensor of shape (num_samples,) containing log probabilities.
+
         """
         if theta.ndim == 1:
             theta = theta.unsqueeze(0)  # Make it (1, theta_dim)
@@ -265,8 +366,8 @@ def load_full_model(dir_path, model_id, simulator=None):
     """Load a full model from the specified directory and model ID."""
     from joblib import load
     from scoresbibm.tasks import get_task
-    from scoresbibm.utils.edge_masks import get_edge_mask_fn
     from scoresbibm.utils.data_utils import load_model
+    from scoresbibm.utils.edge_masks import get_edge_mask_fn
 
 
     model = load_model(
@@ -406,6 +507,15 @@ if __name__ == "__main__":
     }
 
     def run_simulator_glob(params, return_type="tensor"):
+        """Runs the galaxy simulator with given parameters.
+
+        Arguments:
+            params: A numpy array or dictionary of parameters.
+            return_type: "tensor" for torch tensor output, "numpy" for numpy array.
+
+        Returns:
+            A torch tensor or numpy array of simulated photometry.
+        """
         if isinstance(params, torch.Tensor):
             params = params.cpu().numpy()
         if isinstance(params, dict):
