@@ -11,7 +11,7 @@ from typing import Dict, List, Union
 import h5py
 import numpy as np
 import scipy.stats
-import torch
+
 from unyt import Angstrom, Jy, nJy, unyt_array
 
 
@@ -506,6 +506,7 @@ def save_emission_model(model):
 
 class CPU_Unpickler(pickle.Unpickler):
     def find_class(self, module, name):
+        import torch
         if module == 'torch.storage' and name == '_load_from_bytes':
             return lambda b: torch.load(io.BytesIO(b), map_location='cpu')
         else: return super().find_class(module, name)
