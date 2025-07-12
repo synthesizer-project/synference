@@ -38,7 +38,7 @@ class Args:
     n_nets: int = 1
     model_name: str = "BPASS_Chab_DelayedExpSFH_0.01_z_12_CF00_v1"
     name_append: str = ""
-    grid_path: str = f"{file_dir}/../../grids/grid_BPASS_Chab_DenseBasis_SFH_0.0_z_12_logN_1.0_CF00_v1.hdf5" # noqa
+    grid_path: str = f"{file_dir}/../../grids/grid_BPASS_Chab_LogNormal_SFH_0.001_z_12_logN_5.0_Calzetti_v2.hdf5" # noqa
     hidden_features: int = 64
     num_transforms: int = 6
     num_components: int = 10
@@ -50,9 +50,11 @@ class Args:
     plot: bool = True
     additional_model_args: tuple = ()
     data_err_file: str = """/home/tharvey/Downloads/JADES-Deep-GS_MASTER_Sel-f277W+f356W+f444W_v9_loc_depth_masked_10pc_EAZY_matched_selection_ext_src_UV.fits"""  # noqa
+    data_err_hdu: str = 'OBJECTS'  # The HDU name in the FITS file
     background: bool = False
     model_features: tuple = ()
     norm_method: str = None
+    device: str = "cuda:0"
 
 
 parser.add_arguments(Args, dest="args")
@@ -81,18 +83,19 @@ def main_task(args: Args) -> None:
         print(f"Arguments: {args}", file=sys.stdout)
 
     if args.scatter_fluxes > 0:
-
-        table = Table.read(args.data_err_file, format="fits")
+        
+        table = Table.read(args.data_err_file, format="fits", hdu=args.data_err_hdu)
         bands = [i.split("_")[-1] for i in table.colnames if i.startswith("loc_depth")]
-        new_band_names = ["HST/ACS_WFC.F606W"] + [
-            f"JWST/NIRCam.{band.upper()}" for band in bands[1:]
-        ]
+        hst_bands = ['F435W', 'F606W','F775W', 'F814W', 'F850LP']
+        new_band_names = [f"HST/ACS_WFC.{band.upper()}" if band in hst_bands else
+            f"JWST/NIRCam.{band.upper()}" for band in bands]
 
         empirical_noise_models = create_uncertainity_models_from_EPOCHS_cat(
-            args.data_err_file, bands[1:], new_band_names[1:], plot=False
+            args.data_err_file, bands, new_band_names, plot=False, hdu=args.data_err_hdu,
         )
     else:
         empirical_noise_models = {}
+
 
     additional_model_args = {}
     if args.additional_model_args:
@@ -114,7 +117,7 @@ def main_task(args: Args) -> None:
         print("Additional model args:", additional_model_args)
 
     empirical_model_fitter = SBI_Fitter.init_from_hdf5(
-        hdf5_path=args.grid_path, model_name=args.model_name
+        model_name=args.model_name, hdf5_path=args.grid_path, device=args.device
     )
 
     unused_filters = [
@@ -122,6 +125,8 @@ def main_task(args: Args) -> None:
         for filt in empirical_model_fitter.raw_photometry_names
         if filt not in list(empirical_noise_models.keys())
     ]
+
+
 
     empirical_model_fitter.create_feature_array_from_raw_photometry(
         extra_features=list(args.model_features),
@@ -135,7 +140,18 @@ def main_task(args: Args) -> None:
         norm_mag_limit=args.norm_mag_limit,
         drop_dropouts=args.drop_dropouts,
         drop_dropout_fraction=args.drop_dropout_fraction,
+        parameters_to_add=['mwa'],
     )
+
+    #col_i = empirical_model_fitter.feature_array[:, 0]
+    #n = len(col_i)
+    #import numpy as np
+    #v25, v75 = np.percentile(col_i, [25, 75])
+    #print(v25, v75, dx, n, 'check')
+    #dx = 2 * (v75 - v25) / (n ** (1 / 3))
+    #empirical_model_fitter.plot_histogram_feature_array()
+    empirical_model_fitter.plot_histogram_parameter_array()
+
 
     empirical_model_fitter.run_single_sbi(
         n_nets=args.n_nets,
