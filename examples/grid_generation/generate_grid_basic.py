@@ -15,6 +15,7 @@ from synthesizer.parametric import SFH, ZDist
 from sbifitter import (
     GalaxyBasis,
     calculate_muv,
+    calculate_mwa,
     draw_from_hypercube,
     generate_constant_R,
     generate_sfh_basis,
@@ -35,11 +36,22 @@ except ImportError:
 # ---------------------------------------------------------------
 # all medium and wide band filters for JWST NIRCam
 filter_codes = [
+    "HST/ACS_WFC.F435W",
+    "HST/ACS_WFC.F475W",
+    "HST/ACS_WFC.F606W",
     "JWST/NIRCam.F070W",
+    "HST/ACS_WFC.F775W",
+    "HST/ACS_WFC.F814W",
+    "HST/ACS_WFC.F850LP",
     "JWST/NIRCam.F090W",
+    "HST/WFC3_IR.F105W",
+    "HST/WFC3_IR.F110W",
     "JWST/NIRCam.F115W",
+    "HST/WFC3_IR.F125W",
     "JWST/NIRCam.F140M",
+    "HST/WFC3_IR.F140W",
     "JWST/NIRCam.F150W",
+    "HST/WFC3_IR.F160W",
     "JWST/NIRCam.F162M",
     "JWST/NIRCam.F182M",
     "JWST/NIRCam.F200W",
@@ -55,22 +67,25 @@ filter_codes = [
     "JWST/NIRCam.F444W",
     "JWST/NIRCam.F460M",
     "JWST/NIRCam.F480M",
+    "JWST/MIRI.F560W",
+    "JWST/MIRI.F770W",
 ]
-instrument = "JWST"
+instrument = "HST+JWST"
 
 path = f"{os.path.dirname(__file__)}/filters/{instrument}.hdf5"
+
+if os.path.exists(path):
+    print(f'Loading filters from {path}')
+    filterset = FilterCollection(path=path)
+else:
+    filterset = FilterCollection(filter_codes=filter_codes)
+    filterset.write_filters(path)
+
 
 if "cosma" in path:
     computer = "cosma"
 else:
     computer = "linux-desktop"
-
-
-if os.path.exists(path):
-    filterset = FilterCollection(path=path)
-else:
-    filterset = FilterCollection(filter_codes=filter_codes)
-    filterset.write_filters(path)
 
 
 # Consistent wavelength grid for both SPS grids and filters
@@ -99,8 +114,8 @@ except Exception:
 # params
 
 Nmodels = 100_000 # 00
-redshift = (0.00, 12)
-masses = (5, 12)  # log10 of stellar mass in solar masses
+redshift = (0.001, 12)
+masses = (4, 12)  # log10 of stellar mass in solar masses
 max_redshift = 20  # gives maximum age of SFH at a given redshift
 cosmo = Planck18  # cosmology to use for age calculations
 fesc = 0.0  # escape fraction of ionizing photons
@@ -110,8 +125,8 @@ dust_curve = Calzetti2000()  # Dust attenuation curve to use for the grid.
 # ---------------------------------------------------------------
 # Pop II
 
-tau_v = (0.0, 2.0)
-log_zmet = (-3, -1.39)  # max of grid (e.g. 0.04)
+tau_v = (0.0, 3.0)
+log_zmet = (-4, -1.39)  # max of grid (e.g. 0.04)
 
 # SFH
 sfh_type = SFH.LogNormal
@@ -188,7 +203,7 @@ galaxy_params = {
 
 sfh_name = str(sfh_type).split(".")[-1].split("'")[0]
 
-name = f"BPASS_Chab_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_Calzetti_v1" # noqa: E501
+name = f"BPASS_Chab_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_Calzetti_v2" # noqa: E501
 
 basis = GalaxyBasis(
     model_name=f"sps_{name}",
@@ -221,11 +236,12 @@ def z_to_max_age(params, max_redshift=20):
 basis.create_mock_cat(
     out_name=f"grid_{name}",
     out_dir=out_dir,
-    overwrite=True,
+    overwrite=False,
     n_proc=n_proc,
     verbose=False,
-    batch_size=40_000,
+    batch_size=50_000,
     mUV=(calculate_muv, cosmo),  # Calculate mUV for the mock catalogue.
+    mwa=calculate_mwa,  # Calculate MWA for the mock catalogue.
     parameter_transforms_to_save={'max_age': z_to_max_age},  # Save function to calculate the maximum age of the SFH at that redshift.
 
 )

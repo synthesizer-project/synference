@@ -1070,7 +1070,6 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
             )  # No upper limit mask if not set
 
         noisy_flux_array = flux_array.copy()
-        print(sampled_sigma_prime[~umask].min())
         noisy_flux_array[~umask] = flux_array[~umask] + stats.truncnorm.rvs(
             loc=0,
             scale=sampled_sigma_prime[~umask],
@@ -1086,7 +1085,6 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
             # Re-estimate the errors based on the scattered fluxes
             sampled_sigma_prime = self.sample_uncertainty(
                 noisy_flux_array,
-                sigma_clip=1,
             )
 
         if self.upper_limits:
@@ -1333,7 +1331,13 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
 
 
 def create_uncertainity_models_from_EPOCHS_cat(
-    file, bands, new_band_names=None, plot=False, old=False, **kwargs
+    file,
+    bands,
+    new_band_names=None,
+    plot=False,
+    old=False,
+    hdu=0,
+    **kwargs
 ):
     """Create uncertainty models from an EPOCHS catalog file.
 
@@ -1361,7 +1365,7 @@ def create_uncertainity_models_from_EPOCHS_cat(
         bands = [bands]
 
     if not isinstance(file, Table):
-        table = Table.read(file)
+        table = Table.read(file, hdu=hdu)
     else:
         table = file
     unc_models = {}
@@ -1376,6 +1380,7 @@ def create_uncertainity_models_from_EPOCHS_cat(
 
     for band, band_new_name in zip(bands, new_band_names):
         if f"loc_depth_{band}" not in table.colnames:
+            print(table.colnames)
             raise ValueError(f"Column loc_depth_{band} not found in the table.")
 
         mag = table[f"MAG_APER_{band}_aper_corr"]
@@ -1408,7 +1413,7 @@ def create_uncertainity_models_from_EPOCHS_cat(
         # So this behaviour is to mask any fluxes with SNR < 1 either
         # before or after the scattering,
         # , setting the error to 1 sigma.
-        noise_model = EmpiricalUncertaintyModel(
+        noise_model = GeneralEmpiricalUncertaintyModel(
             mag,
             mag_err,
             **unc_kwargs,

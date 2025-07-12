@@ -278,6 +278,7 @@ class SBI_Fitter:
         parameters_to_remove: list = [],
         delete_rows=[],
         n_scatters: int = 1,
+        parameters_to_add: list = [],
     ) -> None:
         """Updates parameter array based on feature array creation.
 
@@ -290,6 +291,8 @@ class SBI_Fitter:
             parameters_to_remove: List of parameters to remove from the parameter array.
             delete_rows: List of rows to delete from the parameter array.
             n_scatters: Number of scatters to duplicate the parameter array for.
+            parameters_to_add: List of parameters to add to the parameter array.
+                Only parameters from self.supplementary_parameters are currently supported.
         """
         print(len(delete_rows), "rows to delete from parameter array.")
         self.fitted_parameter_array = copy.deepcopy(self.parameter_array)
@@ -308,6 +311,24 @@ class SBI_Fitter:
                 self.simple_fitted_parameter_names = [
                     i.split("/")[-1] for i in self.fitted_parameter_names
                 ]
+
+        if len(parameters_to_add) > 0:
+            # Add parameters from supplementary_parameters
+            for param in parameters_to_add:
+                if param in self.supplementary_parameter_names:
+                    index = list(self.supplementary_parameter_names).index(param)
+                    new_param = self.supplementary_parameters[index]
+                    self.fitted_parameter_array = np.column_stack(
+                        (self.fitted_parameter_array, new_param)
+                    )
+                    np.append(self.fitted_parameter_names, param)
+                    np.append(
+                        self.simple_fitted_parameter_names, param.split("/")[-1]
+                    )
+                else:
+                    raise ValueError(
+                        f"Can't add {param} to parameter array - not found in supplementary parameters."
+                    )
 
         if n_scatters > 1:
             self.fitted_parameter_array = np.repeat(
@@ -463,9 +484,6 @@ class SBI_Fitter:
             Can be "AB", "asinh" or any valid unyt flux density quantity.
         min_flux_pc_error : float, default=0.0
             Minimum percentage error to apply to the fluxes when scattering.
-        asinh_softening_parameter : List[unyt_array], optional
-            If normed_flux_units is 'asinh', this can be a list of unyt_arrays
-            with the same length as the number of filters.
 
         Returns:
         --------
@@ -593,7 +611,7 @@ class SBI_Fitter:
         for filter in empirical_noise_models.keys():
             if filter not in phot_names:
                 raise ValueError(
-                    f"""Filter {filter} in empirical_noise_models is not in phot_names.
+                    f"""Filter {filter} in empirical_noise_models is not in phot_names: {phot_names}.
                     Please provide a valid filter name."""
                 )
 
@@ -612,7 +630,7 @@ class SBI_Fitter:
                     flux,
                     true_flux_units=flux_units,
                     out_units=normed_flux_units,
-                    asinh_softening_parameters=asinh_softening_parameters,
+                    #asinh_softening_parameters=asinh_softening_parameters,
                 )
                 # print(filter_name, noisy_flux.max())
 
@@ -822,6 +840,7 @@ class SBI_Fitter:
         remove_nan_inf: bool = True,
         parameters_to_remove: list = None,
         photometry_to_remove: list = None,
+        parameters_to_add: list = None,
         drop_dropouts: bool = False,
         drop_dropout_fraction: float = 1.0,
         asinh_softening_parameters: Union[
@@ -906,6 +925,8 @@ class SBI_Fitter:
                 asinh_softening_parameters) will not include filters listed here.
                 Dictionaries matching self.raw_photometry_names to these keys are
                 also accepted for more explicit control.
+            parameters_to_add: List of parameters to add to the feature array.
+                Only parameters in supplementary_parameters are currently supported.
             drop_dropouts: boolean, default False.
                 Whether to drop the dropouts from the feature array.
             drop_dropout_fraction: float, default 1.0.
@@ -937,6 +958,8 @@ class SBI_Fitter:
             parameters_to_remove = []
         if photometry_to_remove is None:
             photometry_to_remove = []
+        if parameters_to_add is None:
+            parameters_to_add = []
         if override_phot_grid is not None:
             phot_grid = override_phot_grid
             raw_photometry_units = override_phot_grid_units
@@ -1005,6 +1028,9 @@ class SBI_Fitter:
 
                 val = float(asinh_softening_parameters.split("_")[-1])
                 asinh_softening_parameter = [val for name in raw_photometry_names]
+        else:
+            asinh_softening_parameter = None
+
 
         phot = unyt_array(phot_grid, units=raw_photometry_units)
         converted = False
@@ -1060,7 +1086,7 @@ class SBI_Fitter:
                     {scatter_fluxes} scatters per row."""
                 )
                 self.empirical_noise_models = empirical_noise_models
-
+                
                 phot, phot_errors = self._apply_empirical_noise_models(
                     phot,
                     raw_photometry_names,
@@ -1571,6 +1597,7 @@ class SBI_Fitter:
             "remove_nan_inf": remove_nan_inf,
             "parameters_to_remove": parameters_to_remove,
             "photometry_to_remove": photometry_to_remove,
+            "parameters_to_add": parameters_to_add,
             "drop_dropouts": drop_dropouts,
             "drop_dropout_fraction": drop_dropout_fraction,
             "raw_photometry_names": raw_photometry_names,
@@ -1584,6 +1611,7 @@ class SBI_Fitter:
             delete_rows=delete_rows,
             n_scatters=scatter_fluxes,
             parameters_to_remove=parameters_to_remove,
+            parameters_to_add=parameters_to_add,
         )
 
         return feature_array, feature_names
@@ -2139,12 +2167,16 @@ class SBI_Fitter:
             print("---------------------------------------------")
             print("Prior ranges:")
             print("---------------------------------------------")
-            for i, param in enumerate(self.fitted_parameter_names):
+            j = 0
+            for i, param in enumerate(self.parameter_names):
+                if param not in self.fitted_parameter_names:
+                    j += 1
+                    continue
                 if self.parameter_units is not None and len(self.parameter_units) > i:
                     unit = f" [{self.parameter_units[i]}]"
                 else:
                     unit = ""
-                print(f"{param}: {low[i]:.2f} - {high[i]:.2f}{unit}")
+                print(f"{param}: {low[i-j]:.2f} - {high[i-j]:.2f}{unit}")
             print("---------------------------------------------")
 
         low = torch.tensor(low, dtype=torch.float32, device=self.device)
@@ -3956,6 +3988,7 @@ class SBI_Fitter:
         axes = axes.flatten()  # Flatten the axes array for easier indexing
 
         for i, feature in enumerate(self.feature_names):
+            print(feature)
             axes[i].set_title(feature)
             unit = f' ({self.feature_units[i]})' if i < len(self.feature_units) else ""
             axes[i].set_xlabel(f"Value {unit}")

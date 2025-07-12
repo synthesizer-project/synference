@@ -2524,8 +2524,27 @@ class CombinedBasis:
                         # Combine supplementary properties
                         for key in supp_properties.keys():
                             if key not in outputs[base.model_name]["supp_properties"]:
+                                print(f'creating {key}')
                                 outputs[base.model_name]["supp_properties"][key] = {}
+                            if not isinstance(
+                                supp_properties[key],
+                                dict,
+                            ):
+                                val = supp_properties[key]
+                                supp_properties[key] = {
+                                    self.base_emission_model_keys[i]: val
+                                }
+                            if not isinstance(
+                                outputs[base.model_name]["supp_properties"][key],
+                                dict,
+                            ):
+                                outputs[base.model_name]["supp_properties"][key] = {
+                                    self.base_emission_model_keys[i]: outputs[base.model_name]["supp_properties"][key]
+                                }
+
+                                
                             for subkey in supp_properties[key].keys():
+                                print(key, subkey, self.base_emission_model_keys, 'here', outputs[base.model_name]["supp_properties"][key])
                                 if (
                                     subkey
                                     not in outputs[base.model_name]["supp_properties"][
