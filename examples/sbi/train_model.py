@@ -5,6 +5,7 @@ import sys
 from ast import literal_eval
 from dataclasses import dataclass
 
+import numpy as np
 import torch
 from astropy.table import Table
 from simple_parsing import ArgumentParser
@@ -30,15 +31,18 @@ class Args:
     learning_rate: float = 1e-4
     stop_after_epochs: int = 20
     training_batch_size: int = 64
+    train_test_fraction: float = 0.9
     validation_fraction: float = 0.1
     clip_max_norm: float = 5.0
     backend: str = "sbi"
     engine: str = "NPE"
     model_types: str = "maf"
     n_nets: int = 1
-    model_name: str = 'sbi_model'
+    model_name: str = "sbi_model"
     name_append: str = ""
-    grid_path: str = f"{file_dir}/../../grids/grid_BPASS_Chab_LogNormal_SFH_0.001_z_12_logN_5.0_Calzetti_v2.hdf5" # noqa
+    grid_path: str = (
+        f"{file_dir}/../../grids/grid_BPASS_Chab_LogNormal_SFH_0.001_z_12_logN_5.0_Calzetti_v2.hdf5"  # noqa
+    )
     hidden_features: int = 64
     num_transforms: int = 6
     num_components: int = 10
@@ -48,12 +52,13 @@ class Args:
     drop_dropouts: bool = True
     drop_dropout_fraction: float = 0.5
     max_rows: int = -1
-    parameter_transformations: None = None  # This can be a dict of transformations if needed
+    parameter_transformations: tuple = ()  # This can be a dict of transformations
     photometry_to_remove: tuple = ()
     plot: bool = True
     additional_model_args: tuple = ()
+    parameters_to_add: tuple = ()
     data_err_file: str = """/home/tharvey/Downloads/JADES-Deep-GS_MASTER_Sel-f277W+f356W+f444W_v9_loc_depth_masked_10pc_EAZY_matched_selection_ext_src_UV.fits"""  # noqa
-    data_err_hdu: str = 'OBJECTS'  # The HDU name in the FITS file
+    data_err_hdu: str = "OBJECTS"  # The HDU name in the FITS file
     background: bool = False
     model_features: tuple = ()
     norm_method: str = None
@@ -85,25 +90,30 @@ def main_task(args: Args) -> None:
         print(f"Training started at {datetime.datetime.now()}", file=sys.stdout)
         print(f"Arguments: {args}", file=sys.stdout)
 
-    phot_to_remove = list(args.photometry_to_remove)
+    phot_to_remove = args.photometry_to_remove[0]
+    phot_to_remove.split(",")
 
     if args.scatter_fluxes > 0:
-
         table = Table.read(args.data_err_file, format="fits", hdu=args.data_err_hdu)
         bands = [i.split("_")[-1] for i in table.colnames if i.startswith("loc_depth")]
         if len(phot_to_remove) > 0:
             bands = [band for band in bands if band not in phot_to_remove]
 
-        hst_bands = ['F435W', 'F606W','F775W', 'F814W', 'F850LP']
-        new_band_names = [f"HST/ACS_WFC.{band.upper()}" if band in hst_bands else
-            f"JWST/NIRCam.{band.upper()}" for band in bands]
+        hst_bands = ["F435W", "F606W", "F775W", "F814W", "F850LP"]
+        new_band_names = [
+            f"HST/ACS_WFC.{band.upper()}" if band in hst_bands else f"JWST/NIRCam.{band.upper()}"
+            for band in bands
+        ]
 
         empirical_noise_models = create_uncertainity_models_from_EPOCHS_cat(
-            args.data_err_file, bands, new_band_names, plot=False, hdu=args.data_err_hdu,
+            args.data_err_file,
+            bands,
+            new_band_names,
+            plot=False,
+            hdu=args.data_err_hdu,
         )
     else:
         empirical_noise_models = {}
-
 
     additional_model_args = {}
     if args.additional_model_args:
@@ -118,6 +128,32 @@ def main_task(args: Args) -> None:
         except (ValueError, SyntaxError) as e:
             print(
                 f"Warning: Could not parse additional_model_args. Error: {e}",
+                file=sys.stderr,
+            )
+    parameter_transformations = {}
+
+    if args.parameter_transformations:
+        pos_vals = {"log10": np.log10, "log": np.log, "exp": np.exp, "sqrt": np.sqrt}
+        # Assuming args.parameter_transformations is a string like 'key1=val1,key2=val2'
+        try:
+            transformations_str = args.parameter_transformations[0]
+            temp = {}
+            for arg in transformations_str.split(","):
+                key, value = arg.split("=")
+                value = value.strip()
+                if value in pos_vals:
+                    temp[key.strip()] = pos_vals[value]
+                else:
+                    try:
+                        # Attempt to evaluate as a Python literal
+                        temp[key.strip()] = literal_eval(value)
+                    except (ValueError, SyntaxError):
+                        # If it fails, treat it as a string
+                        temp[key.strip()] = value.strip()
+            parameter_transformations = temp
+        except (ValueError, SyntaxError) as e:
+            print(
+                f"Warning: Could not parse parameter_transformations. Error: {e}",
                 file=sys.stderr,
             )
 
@@ -137,7 +173,6 @@ def main_task(args: Args) -> None:
     if len(args.photometry_to_remove) > 0:
         unused_filters.extend(phot_to_remove)
 
-
     empirical_model_fitter.create_feature_array_from_raw_photometry(
         extra_features=list(args.model_features),
         normalize_method=args.norm_method,
@@ -150,22 +185,22 @@ def main_task(args: Args) -> None:
         norm_mag_limit=args.norm_mag_limit,
         drop_dropouts=args.drop_dropouts,
         drop_dropout_fraction=args.drop_dropout_fraction,
-        #parameters_to_add=['mwa'],
-        parameter_transformations=args.parameter_transformations,
+        parameters_to_add=args.parameters_to_add,
+        parameter_transformations=parameter_transformations,
         max_rows=args.max_rows,
     )
 
-    #col_i = empirical_model_fitter.feature_array[:, 0]
-    #n = len(col_i)
-    #import numpy as np
-    #v25, v75 = np.percentile(col_i, [25, 75])
-    #print(v25, v75, dx, n, 'check')
-    #dx = 2 * (v75 - v25) / (n ** (1 / 3))
-    #empirical_model_fitter.plot_histogram_feature_array()
+    # col_i = empirical_model_fitter.feature_array[:, 0]
+    # n = len(col_i)
+    # import numpy as np
+    # v25, v75 = np.percentile(col_i, [25, 75])
+    # print(v25, v75, dx, n, 'check')
+    # dx = 2 * (v75 - v25) / (n ** (1 / 3))
+    # empirical_model_fitter.plot_histogram_feature_array()
     empirical_model_fitter.plot_histogram_parameter_array()
 
-
     empirical_model_fitter.run_single_sbi(
+        train_test_fraction=args.train_test_fraction,
         n_nets=args.n_nets,
         backend=args.backend,
         engine=args.engine,
