@@ -279,6 +279,7 @@ class SBI_Fitter:
         delete_rows=[],
         n_scatters: int = 1,
         parameters_to_add: list = [],
+        parameter_transformations: Dict[str, Callable] = None,
     ) -> None:
         """Updates parameter array based on feature array creation.
 
@@ -321,8 +322,14 @@ class SBI_Fitter:
                     self.fitted_parameter_array = np.column_stack(
                         (self.fitted_parameter_array, new_param)
                     )
-                    np.append(self.fitted_parameter_names, param)
-                    np.append(
+                    self.fitted_parameter_names = np.append(self.fitted_parameter_names, param)
+                    self.parameter_names = np.append(
+                        self.parameter_names, param
+                    )
+                    self.parameter_units = np.append(
+                        self.parameter_units, self.supplementary_parameter_units[index]
+                    )
+                    self.simple_fitted_parameter_names = np.append(
                         self.simple_fitted_parameter_names, param.split("/")[-1]
                     )
                 else:
@@ -340,6 +347,19 @@ class SBI_Fitter:
             self.fitted_parameter_array = np.delete(
                 self.fitted_parameter_array, delete_rows, axis=0
             )
+
+        # Apply any parameter transformations
+        if parameter_transformations is not None:
+            for param, transform in parameter_transformations.items():
+                if param in self.fitted_parameter_names:
+                    index = list(self.fitted_parameter_names).index(param)
+                    self.fitted_parameter_array[:, index] = transform(
+                        self.fitted_parameter_array[:, index]
+                    )
+                else:
+                    raise ValueError(
+                        f"Parameter {param} not found in fitted parameter names for transformation."
+                    )
 
     @classmethod
     def init_from_hdf5(
@@ -805,6 +825,7 @@ class SBI_Fitter:
         self,
         flux_units: str = "AB",
         extra_features: list = None,
+        **kwargs,
     ):
         """Create a feature array from the raw photometry grid.
 
@@ -814,7 +835,8 @@ class SBI_Fitter:
         with no noise, and all photometry in mock catalogue used.
         """
         return self.create_feature_array_from_raw_photometry(
-            normed_flux_units=flux_units, extra_features=extra_features
+            normed_flux_units=flux_units, extra_features=extra_features,
+            **kwargs,
         )
 
     def create_feature_array_from_raw_photometry(
@@ -847,6 +869,7 @@ class SBI_Fitter:
             unyt_array, List[unyt_array], Dict[str, unyt_array], str,
         ] = None,
         max_rows: int = -1,
+        parameter_transformations: Dict[str, Callable] = None,
     ) -> np.ndarray:
         """Create a feature array from the raw photometry grid.
 
@@ -945,6 +968,12 @@ class SBI_Fitter:
                 The maximum number of rows to return in the feature array.
                 If -1, all rows are returned. If >0 and len(feature_array) > max_rows,
                 rows are randomly sampled to return only max_rows rows.
+            parameter_transformations: A dictionary of parameter transformations to apply
+                to the parameter array. The keys should be the parameter names,
+                and the values should be callable functions that take a numpy array
+                and return a transformed numpy array.
+                For example, if you want to infer log_age, rather than age - you would
+                provide a dictionary with {'age': np.log10} to transform the age
 
             TODO: How should normalization work with the scattering?
 
@@ -1612,6 +1641,7 @@ class SBI_Fitter:
             n_scatters=scatter_fluxes,
             parameters_to_remove=parameters_to_remove,
             parameters_to_add=parameters_to_add,
+            parameter_transformations=parameter_transformations,
         )
 
         return feature_array, feature_names
@@ -2515,7 +2545,7 @@ class SBI_Fitter:
         load_existing_model: bool = True,
         use_existing_indices: bool = True,
         evaluate_model: bool = True,
-        save_method: str = "torch",
+        save_method: str = "joblib",
     ) -> tuple:
         """Run a single SBI training instance.
 
@@ -2598,8 +2628,7 @@ class SBI_Fitter:
         ):
             if load_existing_model:
                 print(
-                    f"""Loading existing model from
-                    {out_dir}/{self.name}{name_append}_params.pkl"""
+                    f"Loading existing model from {out_dir}/{self.name}{name_append}_params.pkl" #noqa: E501
                 )
                 posterior, stats, params = self.load_model_from_pkl(
                     f"{out_dir}/{self.name}{name_append}_posterior.pkl",
@@ -2608,8 +2637,8 @@ class SBI_Fitter:
                 return posterior, stats
             else:
                 print(
-                    """Model with same name already exists.
-                    Please change the name of this model or delete the existing one."""
+                    "Model with same name already exists. \
+                    Please change the name of this model or delete the existing one."
                 )
                 return None
 
@@ -2955,7 +2984,7 @@ class SBI_Fitter:
                 if isinstance(value, torch.Tensor):
                     param_dict[key] = value.cpu().numpy()
 
-            save_path = f"{out_dir}/{self.name}{name_append}_params.pkl",
+            save_path = f"{out_dir}/{self.name}{name_append}_params.pkl"
             if save_method == 'torch':
                 with open(save_path, "wb") as f:
                     torch.save(
@@ -3000,6 +3029,7 @@ class SBI_Fitter:
                 X_test=X_test,
                 y_test=y_test,
             )
+            
             # dump metrics to json file
             metrics_path = f"{out_dir}/{self.name}{name_append}_metrics.json"
             with open(metrics_path, "w") as f:
@@ -3766,6 +3796,11 @@ class SBI_Fitter:
         dpit_max = np.max(np.abs(pit - np.linspace(0, 1, len(pit))))
         log_dpit_max = -0.5 * np.log(dpit_max)
 
+        #has shape (200, 1000, 6)
+        # need n_samples, n_sims, n_dims).
+        tarp_samples = np.transpose(samples, (1, 0, 2))
+
+
         # Calculate metrics
         metrics = {
             "MSE": np.mean((y_test - mean_pred) ** 2, axis=axis),
@@ -3776,12 +3811,11 @@ class SBI_Fitter:
             "RMSE_norm": rmse_normalized,
             "mean_ae_norm": mae_normalized,
             "tarp": np.array([self.calculate_TARP(
-                X_test, y_test, samples=samples, posteriors=posteriors).cpu().numpy()]),
+                X_test, y_test, samples=tarp_samples, posteriors=posteriors).cpu().numpy()]),
             "log_dpit_max": log_dpit_max,
             "mean_log_prob": np.mean(self.log_prob(X_test, y_test, posteriors))
         }
 
-        print(metrics)
 
         if verbose:
             # print a nicely formatted table of the metrics.
@@ -3807,11 +3841,11 @@ class SBI_Fitter:
                 print("\nFull Model Metrics:")
                 print("-" * 40)
                 for metric in full_metrics:
-                    metric_name = metric.replace('_', ' ').title()
+                    metric_name = metric.replace('_', ' ').upper()
                     num = metrics[metric]
                     if isinstance(num, np.ndarray):
                         num = num.item()
-                    print(f"{metric_name:.<25} {metrics[metric]:.6f}")
+                    print(f"{metric_name:.<25} {num:.6f}")
 
             # Print parameter-specific metrics
             if len(param_metrics) > 0:
@@ -3827,13 +3861,24 @@ class SBI_Fitter:
 
                 # Print each metric row
                 for metric in param_metrics:
-                    metric_name = metric.replace('_', ' ').title()
-                    row = f"{metric_name:<15}"
+                    metric_name = metric.replace('_', ' ').upper()
+                    row = f"{metric_name:<25}"
                     for i, param_name in enumerate(self.fitted_parameter_names):
                         row += f"{metrics[metric][i]:>12.6f}"
                     print(row)
 
             print("="*60)
+
+        # convert numpy arrays to lists for JSON serialization
+        for key in metrics:
+            if isinstance(metrics[key], np.ndarray):
+                metrics[key] = metrics[key].tolist()
+            if isinstance(metrics[key], torch.Tensor):
+                metrics[key] = metrics[key].cpu().numpy().tolist()
+            if isinstance(metrics[key], list):
+                metrics[key] = [float(x) for x in metrics[key]]
+            if isinstance(metrics[key], (np.float32, np.float64)):
+                metrics[key] = float(metrics[key])
 
         return metrics
 
@@ -3946,7 +3991,7 @@ class SBI_Fitter:
 
         for i, param in enumerate(self.simple_fitted_parameter_names):
             axes[i].set_title(param)
-            unit = f' ({self.feature_units[i]})' if i < len(self.feature_units) else ""
+            unit = f' ({self.parameter_units[i]})' if i < len(self.parameter_units) else ""
             axes[i].set_xlabel(f"Value{unit}")
             axes[i].set_ylabel("Count")
             if seperate_test_train:
@@ -4376,11 +4421,11 @@ class SBI_Fitter:
         try:
             with open(model_file, "rb") as f:
                 posteriors = load(f)
-        except RuntimeError:
+        except (RuntimeError, pickle.UnpicklingError):
             # probably because we ran this model on
             # with a GPU which is not available now.
             #with open(model_file, "rb") as f:
-            #    posteriors = torch.load(f, map_location=torch.device(self.device))
+            posteriors = torch.load(f, map_location=torch.device(self.device))
             from .utils import CPU_Unpickler
             with open(model_file, "rb") as f:
                 posteriors = CPU_Unpickler(f).load()
@@ -4402,14 +4447,18 @@ class SBI_Fitter:
             self.posteriors = posteriors
 
         params = model_file.replace("posterior.pkl", "params.pkl")
+        print(params)
         if os.path.exists(params):
             try:
                 with open(params, "rb") as f:
                     params = load(f)
-            except RuntimeError:
-                from .utils import CPU_Unpickler
-                with open(params, "rb") as f:
-                    params = CPU_Unpickler(f).load()
+            except (RuntimeError, pickle.UnpicklingError):
+                try:
+                    torch.load(params, map_location=torch.device(self.device))
+                except RuntimeError:
+                    from .utils import CPU_Unpickler
+                    with open(params, "rb") as f:
+                        params = CPU_Unpickler(f).load()
 
             if set_self:
                 # Set attributes of class again.
@@ -4944,7 +4993,7 @@ class Simformer_Fitter(SBI_Fitter):
             verbose: bool = True,
             load_existing_model: bool = True,
             name_append: str = "timestamp",
-            save_method: str = "torch",
+            save_method: str = "joblib",
             task_func: Callable = None,
             model_config_dict = {
                     "name": "ScoreTransformer",
@@ -5019,7 +5068,7 @@ class Simformer_Fitter(SBI_Fitter):
             String to append to the model name in the output file.
             Default is "timestamp", which appends the current timestamp.
         save_method : str, optional
-            Method to use for saving the model. Default is "torch".
+            Method to use for saving the model. Default is "joblib".
             Options are 'torch' and 'pickle'.
         task_func : Callable, optional
             Function to create the task. If None, uses the default
@@ -5036,9 +5085,7 @@ class Simformer_Fitter(SBI_Fitter):
 
         """
         from omegaconf import OmegaConf
-        from scoresbibm.methods.score_transformer import (
-            train_transformer_model,
-        )
+        from scoresbibm.methods.score_transformer import train_transformer_model
 
         if task_func is None:
             from .simformer import GalaxyPhotometryTask as task_func
@@ -5192,7 +5239,7 @@ class Simformer_Fitter(SBI_Fitter):
                         posteriors=None,
                         name_append='',
                         output_folder: str = f"{code_path}/models/name/",
-                        save_method='torch',
+                        save_method='joblib',
                         **extras):
         """Save the Simformer model to a pickle file.
 
