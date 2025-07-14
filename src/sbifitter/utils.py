@@ -11,7 +11,6 @@ from typing import Dict, List, Union
 import h5py
 import numpy as np
 import scipy.stats
-
 from unyt import Angstrom, Jy, nJy, unyt_array
 
 
@@ -465,6 +464,10 @@ def save_emission_model(model):
 
     fixed_parameter_keys = list(fixed_params.keys())
     fixed_parameter_values = list(fixed_params.values())
+    # if any strings in fixed_parameter_values, convert all to string
+    if any(isinstance(v, str) for v in fixed_parameter_values):
+        fixed_parameter_values = [str(v) for v in fixed_parameter_values]
+
 
     dust_attenuation_units = []
     for k, v in dust_attenuation_keys.items():
@@ -505,6 +508,7 @@ def save_emission_model(model):
 
 
 class CPU_Unpickler(pickle.Unpickler):
+    """Custom unpickler that handles specific Torch storage loading."""
     def find_class(self, module, name):
         import torch
         if module == 'torch.storage' and name == '_load_from_bytes':

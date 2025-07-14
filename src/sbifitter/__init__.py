@@ -18,7 +18,8 @@ from .utils import (
 
 from .noise_models import (
     EmpiricalUncertaintyModel, create_uncertainity_models_from_EPOCHS_cat,
-    DepthUncertaintyModel, UncertaintyModel, AsinhEmpiricalUncertaintyModel
+    DepthUncertaintyModel, UncertaintyModel, AsinhEmpiricalUncertaintyModel,
+    GeneralEmpiricalUncertaintyModel
 )
 
 
@@ -29,7 +30,7 @@ except ImportError as e:
     print('Dependencies for SBI not installed. Only the grid generation functions will be available.')
 
 
-from .simformer import UncertainityModelTask
+#from .simformer import UncertainityModelTask
 
 
 __all__ = [
@@ -62,5 +63,8 @@ __all__ = [
     "create_sqlite_db",
     "f_jy_err_to_asinh",
     "f_jy_to_asinh",
-    "UncertainityModelTask",
+    #"UncertainityModelTask",
+    "DepthUncertaintyModel",
+    "UncertaintyModel",
+    "GeneralEmpiricalUncertaintyModel"
 ]
