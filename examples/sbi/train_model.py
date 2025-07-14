@@ -1,9 +1,9 @@
 import datetime
 import multiprocessing as mp
+import os
 import sys
 from ast import literal_eval
 from dataclasses import dataclass
-import os
 
 import torch
 from astropy.table import Table
@@ -36,7 +36,7 @@ class Args:
     engine: str = "NPE"
     model_types: str = "maf"
     n_nets: int = 1
-    model_name: str = "BPASS_Chab_DelayedExpSFH_0.01_z_12_CF00_v1"
+    model_name: str = 'sbi_model'
     name_append: str = ""
     grid_path: str = f"{file_dir}/../../grids/grid_BPASS_Chab_LogNormal_SFH_0.001_z_12_logN_5.0_Calzetti_v2.hdf5" # noqa
     hidden_features: int = 64
@@ -47,6 +47,9 @@ class Args:
     norm_mag_limit: float = 40.0
     drop_dropouts: bool = True
     drop_dropout_fraction: float = 0.5
+    max_rows: int = -1
+    parameter_transformations: None = None  # This can be a dict of transformations if needed
+    photometry_to_remove: tuple = ()
     plot: bool = True
     additional_model_args: tuple = ()
     data_err_file: str = """/home/tharvey/Downloads/JADES-Deep-GS_MASTER_Sel-f277W+f356W+f444W_v9_loc_depth_masked_10pc_EAZY_matched_selection_ext_src_UV.fits"""  # noqa
@@ -82,10 +85,15 @@ def main_task(args: Args) -> None:
         print(f"Training started at {datetime.datetime.now()}", file=sys.stdout)
         print(f"Arguments: {args}", file=sys.stdout)
 
+    phot_to_remove = list(args.photometry_to_remove)
+
     if args.scatter_fluxes > 0:
-        
+
         table = Table.read(args.data_err_file, format="fits", hdu=args.data_err_hdu)
         bands = [i.split("_")[-1] for i in table.colnames if i.startswith("loc_depth")]
+        if len(phot_to_remove) > 0:
+            bands = [band for band in bands if band not in phot_to_remove]
+
         hst_bands = ['F435W', 'F606W','F775W', 'F814W', 'F850LP']
         new_band_names = [f"HST/ACS_WFC.{band.upper()}" if band in hst_bands else
             f"JWST/NIRCam.{band.upper()}" for band in bands]
@@ -126,6 +134,8 @@ def main_task(args: Args) -> None:
         if filt not in list(empirical_noise_models.keys())
     ]
 
+    if len(args.photometry_to_remove) > 0:
+        unused_filters.extend(phot_to_remove)
 
 
     empirical_model_fitter.create_feature_array_from_raw_photometry(
@@ -140,7 +150,9 @@ def main_task(args: Args) -> None:
         norm_mag_limit=args.norm_mag_limit,
         drop_dropouts=args.drop_dropouts,
         drop_dropout_fraction=args.drop_dropout_fraction,
-        parameters_to_add=['mwa'],
+        #parameters_to_add=['mwa'],
+        parameter_transformations=args.parameter_transformations,
+        max_rows=args.max_rows,
     )
 
     #col_i = empirical_model_fitter.feature_array[:, 0]

@@ -1274,8 +1274,14 @@ class GalaxyBasis:
             open_mode = "a"
         else:
             open_mode = "w"
-
         with h5py.File(model_path, open_mode) as f:
+            if group in f:
+                if overwrite:
+                    del f[group]
+                else:
+                    print(f"Group {group} already exists in {model_path}.")
+                    return False
+
             base = f.create_group(group)
 
             # store grid_name and grid_dir
@@ -2542,7 +2548,7 @@ class CombinedBasis:
                                     self.base_emission_model_keys[i]: outputs[base.model_name]["supp_properties"][key]
                                 }
 
-                                
+
                             for subkey in supp_properties[key].keys():
                                 print(key, subkey, self.base_emission_model_keys, 'here', outputs[base.model_name]["supp_properties"][key])
                                 if (
