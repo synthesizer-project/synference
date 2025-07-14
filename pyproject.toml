@@ -93,7 +93,7 @@ exclude = [
 ]
 
 # PEP-8 line length
-line-length = 90
+line-length = 100
 indent-width = 4
 
 

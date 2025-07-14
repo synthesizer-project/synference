@@ -46,7 +46,7 @@ from unyt import (
 from .noise_models import (
     EmpiricalUncertaintyModel,
 )
-from .utils import list_parameters, save_emission_model
+from .utils import check_scaling, list_parameters, save_emission_model
 
 file_path = os.path.dirname(os.path.realpath(__file__))
 grid_folder = os.path.join(os.path.dirname(os.path.dirname(file_path)), "grids")
@@ -260,8 +260,7 @@ def generate_sfh_grid(
 
                 # Draw values for this parameter at this redshift
                 values = param_data["prior"].rvs(
-                    size=param_size
-                    // len(redshifts),  # Distribute samples across redshifts
+                    size=param_size // len(redshifts),  # Distribute samples across redshifts
                     loc=param_min,
                     scale=adjusted_max - param_min,
                 )
@@ -289,9 +288,7 @@ def generate_sfh_grid(
         max_age = (cosmo.age(z) - cosmo.age(max_redshift)).to(u.Myr).value
 
         # Create parameter dictionary for SFH constructor
-        sfh_params = {
-            param_names[i + 1]: params[i + 1] for i in range(len(param_names) - 1)
-        }
+        sfh_params = {param_names[i + 1]: params[i + 1] for i in range(len(param_names) - 1)}
 
         # Apply units if not None
         for key, value in sfh_params.items():
@@ -419,9 +416,7 @@ def generate_emission_models(
 
     # Create parameter combinations using meshgrid
     varying_param_mesh = np.meshgrid(*varying_param_arrays, indexing="ij")
-    varying_param_combinations = np.stack(
-        [arr.flatten() for arr in varying_param_mesh], axis=1
-    )
+    varying_param_combinations = np.stack([arr.flatten() for arr in varying_param_mesh], axis=1)
     # Create emission model objects for each parameter combination
 
     emission_models = []
@@ -432,10 +427,7 @@ def generate_emission_models(
 
         # Apply units if not None
         for key, value in emission_params.items():
-            if (
-                "units" in varying_params[key]
-                and varying_params[key]["units"] is not None
-            ):
+            if "units" in varying_params[key] and varying_params[key]["units"] is not None:
                 emission_params[key] = value * varying_params[key]["units"]
             if key not in out_params:
                 out_params[key] = []
@@ -492,11 +484,9 @@ def draw_from_hypercube(
     elif "seed" in inspect.signature(model).parameters:
         key = "seed"
     else:
-        raise ValueError(
-            "The model must accept either 'rng' or 'seed' as an argument."
-        )
+        raise ValueError("The model must accept either 'rng' or 'seed' as an argument.")
 
-    rng_ = {key:rng} if rng is not None else {}
+    rng_ = {key: rng} if rng is not None else {}
 
     # Create a Latin Hypercube sampler
     sampler = model(d=len(param_ranges), **rng_)
@@ -689,14 +679,11 @@ def generate_sfh_basis(
 
                 # Create parameter dictionary for SFH constructor
                 sfh_params = {
-                    sfh_param_names[sf]: row_params[sf]
-                    for sf in range(len(sfh_param_names))
+                    sfh_param_names[sf]: row_params[sf] for sf in range(len(sfh_param_names))
                 }
 
                 if "sfh_timescale" in sfh_param_names:
-                    sfh_params["max_age"] = (
-                        sfh_params["min_age"] + sfh_params["sfh_timescale"]
-                    )
+                    sfh_params["max_age"] = sfh_params["min_age"] + sfh_params["sfh_timescale"]
                     sfh_params.pop("sfh_timescale")
 
                 # Add max_age parameter
@@ -736,15 +723,11 @@ def generate_sfh_basis(
 
             # Create parameter dictionary for SFH constructor
 
-            sfh_params = {
-                param_names_i[sf]: row_params[sf] for sf in range(len(param_names_i))
-            }
+            sfh_params = {param_names_i[sf]: row_params[sf] for sf in range(len(param_names_i))}
 
             # remove _norm from parameter names
             if "sfh_timescale" in sfh_param_names:
-                sfh_params["max_age"] = (
-                    sfh_params["min_age"] + sfh_params["sfh_timescale"]
-                )
+                sfh_params["max_age"] = sfh_params["min_age"] + sfh_params["sfh_timescale"]
                 sfh_params.pop("sfh_timescale")
 
             # Add max_age parameter
@@ -918,9 +901,7 @@ class GalaxyBasis:
             # Check all redshifts are in self.redshifts
             for sfh in self.sfhs:
                 if sfh.redshift not in self.redshifts:
-                    raise ValueError(
-                        f"SFH redshift {sfh.redshift} not in redshifts array"
-                    )
+                    raise ValueError(f"SFH redshift {sfh.redshift} not in redshifts array")
 
             # Make self.SFHs a dictionary with redshift as key
             sfh_dict = {}
@@ -1001,9 +982,9 @@ class GalaxyBasis:
             fixed_params = self.galaxy_params
 
         else:
-            varying_param_combinations = np.array(
-                np.meshgrid(*varying_param_values)
-            ).T.reshape(-1, len(varying_param_values))
+            varying_param_combinations = np.array(np.meshgrid(*varying_param_values)).T.reshape(
+                -1, len(varying_param_values)
+            )
             column_names = [
                 i
                 for i, j in zip(self.galaxy_params.keys(), varying_param_values)
@@ -1099,7 +1080,7 @@ class GalaxyBasis:
             if len(np.unique(value)) == 1:
                 fixed_param_names.append(key)
                 fixed_param_units.append(
-                    str(value[0].units) if isinstance(value[0], unyt_quantity) else ''
+                    str(value[0].units) if isinstance(value[0], unyt_quantity) else ""
                 )
                 fixed_param_values.append(value[0])
             else:
@@ -1114,9 +1095,7 @@ class GalaxyBasis:
         hashes = []
         for gal in self.galaxies:
             relevant_params = {
-                key: gal.all_params[key]
-                for key in varying_param_names
-                if key in gal.all_params
+                key: gal.all_params[key] for key in varying_param_names if key in gal.all_params
             }
             # Calculate hash for each parameter and sum them
             hash_i = sum(
@@ -1165,17 +1144,14 @@ class GalaxyBasis:
         sfh_classes = set(type(sfh) for sfh in self.sfhs)
         if len(sfh_classes) > 1:
             if verbose:
-                print(
-                    f"SFH classes are not all the same: {sfh_classes}. "
-                    "Cannot store model."
-                )
+                print(f"SFH classes are not all the same: {sfh_classes}. Cannot store model.")
             accept = False
 
         if type(self.sfhs[0]).__name__ not in SFH.parametrisations:
             if verbose:
                 print(SFH.parametrisations)
                 print(
-                    f"SFH class {type(self.sfhs[0]).__name__} is not in SFH.parametrisations. "
+                    f"SFH class {type(self.sfhs[0]).__name__} is not in SFH.parametrisations. "  # noqa: E501
                     "Cannot store model."
                 )
             accept = False
@@ -1184,7 +1160,7 @@ class GalaxyBasis:
         if len(metal_dist_classes) > 1:
             if verbose:
                 print(
-                    f"Metallicity distribution classes are not all the same: {metal_dist_classes}. "
+                    f"Metallicity distribution classes are not all the same: {metal_dist_classes}. "  # noqa: E501
                     "Cannot store model."
                 )
             accept = False
@@ -1192,7 +1168,7 @@ class GalaxyBasis:
         if type(self.metal_dists[0]).__name__ not in ZDist.parametrisations:
             if verbose:
                 print(
-                    f"Metallicity distribution class {type(self.metal_dists[0]).__name__} "
+                    f"Metallicity distribution class {type(self.metal_dists[0]).__name__} "  # noqa: E501
                     "is not in ZDist.parametrisations. Cannot store model."
                 )
             accept = False
@@ -1200,7 +1176,7 @@ class GalaxyBasis:
         if not isinstance(self.emission_model, EmissionModel):
             if verbose:
                 print(
-                    f"Emission model is not an instance of EmissionModel: {self.emission_model}. "
+                    f"Emission model is not an instance of EmissionModel: {self.emission_model}. "  # noqa: E501
                     "Cannot store model."
                 )
             accept = False
@@ -1212,28 +1188,35 @@ class GalaxyBasis:
         if type(self.emission_model).__name__ not in PREMADE_MODELS:
             if verbose:
                 print(
-                    f"Emission model {type(self.emission_model).__name__} is not in PREMADE_MODELS. "
+                    f"Emission model {type(self.emission_model).__name__} is not in PREMADE_MODELS. "  # noqa: E501
                     "Cannot store model."
                 )
             accept = False
 
         em_args = inspect.signature(type(self.emission_model)).parameters
-        forbidden_args = ['nlr_grid', 'blr_grid', 'covering_fraction',
-                          'covering_fraction_nlr', 'covering_fraction_blr',
-                          'torus_emission_model', 'dust_curve_ism',
-                          'dust_curve_birth',
-                          'dust_emission_ism', 'dust_emission_birth']
+        forbidden_args = [
+            "nlr_grid",
+            "blr_grid",
+            "covering_fraction",
+            "covering_fraction_nlr",
+            "covering_fraction_blr",
+            "torus_emission_model",
+            "dust_curve_ism",
+            "dust_curve_birth",
+            "dust_emission_ism",
+            "dust_emission_birth",
+        ]
 
         for arg in forbidden_args:
             if arg in em_args:
                 if verbose:
                     print(
-                        f"Emission model {type(self.emission_model).__name__} has forbidden argument '{arg}'. "
+                        f"Emission model {type(self.emission_model).__name__} has forbidden argument '{arg}'. "  # noqa: E501
                         "Cannot store model."
                     )
                 accept = False
         # can we we convert functions in alt_parametrizations to strings?
-        # and load with ast.literal_eval?
+        # and load with ast.literal_eval?
 
         if parameter_transforms_to_save is not None:
             for key, value in parameter_transforms_to_save.items():
@@ -1251,7 +1234,7 @@ class GalaxyBasis:
                         except Exception:
                             if verbose:
                                 print(
-                                    f"Cannot serialize function for alt_parametrization '{key}': {value[1]}"
+                                    f"Cannot serialize function for alt_parametrization '{key}': {value[1]}"  # noqa: E501
                                 )
                             accept = False
                 else:
@@ -1259,12 +1242,14 @@ class GalaxyBasis:
 
         return accept
 
-
-
-
-    def _store_model(self, model_path: str, overwrite=False, group: str = "Model",
-                    other_info: dict = None, parameter_transforms_to_save= None) -> bool:
-
+    def _store_model(
+        self,
+        model_path: str,
+        overwrite=False,
+        group: str = "Model",
+        other_info: dict = None,
+        parameter_transforms_to_save=None,
+    ) -> bool:
         if not self._check_model_simplicity(parameter_transforms_to_save):
             print("Model is too complex to be stored in a file.")
             return False
@@ -1300,13 +1285,15 @@ class GalaxyBasis:
             em_group.attrs["parameter_values"] = em_model_params["fixed_parameter_values"]
             em_group.attrs["parameter_units"] = em_model_params["fixed_parameter_units"]
 
-            if em_model_params['dust_law'] is not None:
+            if em_model_params["dust_law"] is not None:
                 em_group.attrs["dust_law"] = em_model_params["dust_law"]
                 em_group.attrs["dust_attenuation_keys"] = em_model_params["dust_attenuation_keys"]
-                em_group.attrs["dust_attenuation_values"] = em_model_params["dust_attenuation_values"]
+                em_group.attrs["dust_attenuation_values"] = em_model_params[
+                    "dust_attenuation_values"
+                ]
                 em_group.attrs["dust_attenuation_units"] = em_model_params["dust_attenuation_units"]
 
-            if em_model_params['dust_emission'] is not None:
+            if em_model_params["dust_emission"] is not None:
                 em_group.attrs["dust_emission"] = em_model_params["dust_emission"]
                 em_group.attrs["dust_emission_keys"] = em_model_params["dust_emission_keys"]
                 em_group.attrs["dust_emission_values"] = em_model_params["dust_emission_values"]
@@ -1361,15 +1348,11 @@ class GalaxyBasis:
                         )
                         transforms_group[key].attrs["new_parameter_name"] = value[0]
 
-
             # Store param_order
             base.attrs["varying_param_names"] = self.varying_param_names
             base.attrs["fixed_param_names"] = self.fixed_param_names
             base.attrs["fixed_param_values"] = self.fixed_param_values
             base.attrs["fixed_param_units"] = self.fixed_param_units
-
-
-
 
     def create_galaxy(
         self,
@@ -1387,9 +1370,7 @@ class GalaxyBasis:
         )
 
         single_mass = (
-            log_stellar_masses[0]
-            if isinstance(log_stellar_masses, (list))
-            else log_stellar_masses
+            log_stellar_masses[0] if isinstance(log_stellar_masses, (list)) else log_stellar_masses
         )
 
         single_mass = 10**single_mass * Msun
@@ -1589,7 +1570,7 @@ class GalaxyBasis:
             if key in param_units:
                 self.fixed_param_units.append(param_units[key])
             else:
-                self.fixed_param_units.append('')
+                self.fixed_param_units.append("")
 
         for key in to_remove:
             self.all_parameters.pop(key)
@@ -1662,9 +1643,7 @@ class GalaxyBasis:
 
         if n_batches > 1:
             print(f"Splitting galaxies into {n_batches} batches of size {batch_size}.")
-            galaxies = [
-                galaxies[i * batch_size : (i + 1) * batch_size] for i in range(n_batches)
-            ]
+            galaxies = [galaxies[i * batch_size : (i + 1) * batch_size] for i in range(n_batches)]
         else:
             print("Processing all galaxies in a single batch.")
             galaxies = [galaxies]
@@ -1709,9 +1688,7 @@ class GalaxyBasis:
                         result_key=key,
                     )
 
-                pipeline.add_analysis_func(
-                    lambda gal: gal.stars.initial_mass, result_key="mass"
-                )
+                pipeline.add_analysis_func(lambda gal: gal.stars.initial_mass, result_key="mass")
 
                 print("Added analysis functions to pipeline.")
 
@@ -1738,9 +1715,7 @@ class GalaxyBasis:
                 ngal = len(batch_gals)
                 print(f"Running pipeline at {datetime.now()} for {ngal} galaxies")
                 pipeline.run()
-                print(
-                    f"Finished running pipeline at {datetime.now()} for {ngal} galaxies"
-                )
+                print(f"Finished running pipeline at {datetime.now()} for {ngal} galaxies")
                 if save:
                     # Save the pipeline to a file
                     pipeline.write(fullpath, verbose=0)
@@ -1933,9 +1908,7 @@ class GalaxyBasis:
 
         # add galaxy params
 
-        textstr += "\n" + "\n".join(
-            [f"{key}: {value:.2f}" for key, value in galaxy_params.items()]
-        )
+        textstr += "\n" + "\n".join([f"{key}: {value:.2f}" for key, value in galaxy_params.items()])
 
         # these are matplotlib.patch.Patch properties
         props = dict(boxstyle="round", facecolor="wheat", alpha=0.5)
@@ -2193,11 +2166,14 @@ class GalaxyBasis:
         if not out_path.endswith(".hdf5"):
             out_path += ".hdf5"
 
-        self._store_model(out_path,
-                        other_info = {'emission_model_key': emission_model_key,
-                                      'timestamp': datetime.now().isoformat()},
-                        parameter_transforms_to_save=parameter_transforms_to_save)
-
+        self._store_model(
+            out_path,
+            other_info={
+                "emission_model_key": emission_model_key,
+                "timestamp": datetime.now().isoformat(),
+            },
+            parameter_transforms_to_save=parameter_transforms_to_save,
+        )
 
         print("Processed the bases and saved the output.")
 
@@ -2327,9 +2303,7 @@ class CombinedBasis:
             if (
                 os.path.exists(full_out_path)
                 and not overwrite[i]
-                or os.path.exists(
-                    f"{self.out_dir}/{base.model_name}_{total_batches}.hdf5"
-                )
+                or os.path.exists(f"{self.out_dir}/{base.model_name}_{total_batches}.hdf5")
             ):
                 print(f"File {full_out_path} already exists. Skipping.")
                 continue
@@ -2342,9 +2316,7 @@ class CombinedBasis:
             if self.draw_parameter_combinations:
                 galaxies = base._create_galaxies(log_base_masses=self.log_base_masses)
             else:
-                galaxies = base._create_matched_galaxies(
-                    log_base_masses=self.log_base_masses
-                )
+                galaxies = base._create_matched_galaxies(log_base_masses=self.log_base_masses)
 
             print(f"Created {len(galaxies)} galaxies for base {base.model_name}")
             # Process the galaxies
@@ -2389,9 +2361,7 @@ class CombinedBasis:
 
                     # Check if there are multiple files for this base
                     full_out_paths = glob.glob(f"{self.out_dir}/{base.model_name}_*.hdf5")
-                    print(
-                        f"Found {len(full_out_paths)} files for base {base.model_name}."
-                    )
+                    print(f"Found {len(full_out_paths)} files for base {base.model_name}.")
 
                     full_out_paths = sorted(
                         full_out_paths,
@@ -2495,14 +2465,10 @@ class CombinedBasis:
                         for key in phot.keys():
                             if key not in outputs[base.model_name]["observed_photometry"]:
                                 outputs[base.model_name]["observed_photometry"][key] = []
-                            outputs[base.model_name]["observed_photometry"][key] = (
-                                np.concatenate(
-                                    (
-                                        outputs[base.model_name]["observed_photometry"][
-                                            key
-                                        ],
-                                        phot[key],
-                                    )
+                            outputs[base.model_name]["observed_photometry"][key] = np.concatenate(
+                                (
+                                    outputs[base.model_name]["observed_photometry"][key],
+                                    phot[key],
                                 )
                             )
                         if load_spectra:
@@ -2530,44 +2496,42 @@ class CombinedBasis:
                         # Combine supplementary properties
                         for key in supp_properties.keys():
                             if key not in outputs[base.model_name]["supp_properties"]:
-                                print(f'creating {key}')
+                                print(f"creating {key}")
                                 outputs[base.model_name]["supp_properties"][key] = {}
                             if not isinstance(
                                 supp_properties[key],
                                 dict,
                             ):
                                 val = supp_properties[key]
-                                supp_properties[key] = {
-                                    self.base_emission_model_keys[i]: val
-                                }
+                                supp_properties[key] = {self.base_emission_model_keys[i]: val}
                             if not isinstance(
                                 outputs[base.model_name]["supp_properties"][key],
                                 dict,
                             ):
                                 outputs[base.model_name]["supp_properties"][key] = {
-                                    self.base_emission_model_keys[i]: outputs[base.model_name]["supp_properties"][key]
+                                    self.base_emission_model_keys[i]: outputs[base.model_name][
+                                        "supp_properties"
+                                    ][key]
                                 }
 
-
                             for subkey in supp_properties[key].keys():
-                                print(key, subkey, self.base_emission_model_keys, 'here', outputs[base.model_name]["supp_properties"][key])
-                                if (
-                                    subkey
-                                    not in outputs[base.model_name]["supp_properties"][
-                                        key
-                                    ]
-                                ):
-                                    outputs[base.model_name]["supp_properties"][key][
-                                        subkey
-                                    ] = []
-                                outputs[base.model_name]["supp_properties"][key][
-                                    subkey
-                                ] = np.concatenate(
-                                    (
-                                        outputs[base.model_name]["supp_properties"][key][
-                                            subkey
-                                        ],
-                                        supp_properties[key][subkey],
+                                print(
+                                    key,
+                                    subkey,
+                                    self.base_emission_model_keys,
+                                    "here",
+                                    outputs[base.model_name]["supp_properties"][key],
+                                )
+                                if subkey not in outputs[base.model_name]["supp_properties"][key]:
+                                    outputs[base.model_name]["supp_properties"][key][subkey] = []
+                                outputs[base.model_name]["supp_properties"][key][subkey] = (
+                                    np.concatenate(
+                                        (
+                                            outputs[base.model_name]["supp_properties"][key][
+                                                subkey
+                                            ],
+                                            supp_properties[key][subkey],
+                                        )
                                     )
                                 )
 
@@ -2669,9 +2633,7 @@ class CombinedBasis:
                     # rename the key to be the base name + parameter name
                     params[f"{base.model_name}/{key}"] = params[key]
 
-        supp_param_keys = list(
-            pipeline_outputs[self.bases[0].model_name]["supp_properties"].keys()
-        )
+        supp_param_keys = list(pipeline_outputs[self.bases[0].model_name]["supp_properties"].keys())
         assert all(
             [
                 i in pipeline_outputs[self.bases[0].model_name]["supp_properties"]
@@ -2692,9 +2654,7 @@ class CombinedBasis:
                     pipeline_outputs[base.model_name]["supp_properties"][key],
                     dict,
                 ):
-                    subkeys = list(
-                        pipeline_outputs[base.model_name]["supp_properties"][key].keys()
-                    )
+                    subkeys = list(pipeline_outputs[base.model_name]["supp_properties"][key].keys())
                     # Check if the emission model key is in the subkeys
                     if self.base_emission_model_keys[i] not in subkeys:
                         raise ValueError(
@@ -2775,9 +2735,7 @@ class CombinedBasis:
                                     f"{base.model_name}/{orig_param}"
                                 ][mask]
                             elif orig_param in outputs["properties"]:
-                                base_params[param_name] = outputs["properties"][
-                                    orig_param
-                                ][mask]
+                                base_params[param_name] = outputs["properties"][orig_param][mask]
 
                             # add units
                             if isinstance(base_params[param_name], unyt_array):
@@ -2785,9 +2743,7 @@ class CombinedBasis:
                                 if short_param_name in UNIT_DICT:
                                     param_units[param_name] = UNIT_DICT[short_param_name]
                                 else:
-                                    param_units[param_name] = str(
-                                        base_params[param_name].units
-                                    )
+                                    param_units[param_name] = str(base_params[param_name].units)
                             else:
                                 # If it's not a unyt_array, assume it's dimensionless
                                 param_units[param_name] = str(dimensionless)
@@ -2809,9 +2765,7 @@ class CombinedBasis:
                                         scaled_supp_params[key][subkey] = subvalue[mask]
                             else:
                                 if isinstance(value, unyt_array):
-                                    scaled_supp_params[key] = (
-                                        value[mask] * scaling_factors
-                                    )
+                                    scaled_supp_params[key] = value[mask] * scaling_factors
                                 else:
                                     scaled_supp_params[key] = value[mask]
 
@@ -2829,17 +2783,13 @@ class CombinedBasis:
                         *[np.arange(i.shape[-1]) for i in scaled_photometries],
                         indexing="ij",
                     )
-                    combinations = np.array(combinations).T.reshape(
-                        -1, len(scaled_photometries)
-                    )
+                    combinations = np.array(combinations).T.reshape(-1, len(scaled_photometries))
 
                     # Fill the output and parameter array.out_name
                     for i, combo_indices in enumerate(combinations):
                         # Add the scaled photometries for each base
                         for j, base in enumerate(self.bases):
-                            output_array[:, i] += scaled_photometries[j][
-                                :, combo_indices[j]
-                            ]
+                            output_array[:, i] += scaled_photometries[j][:, combo_indices[j]]
 
                         # Fill parameter values
                         param_idx = 0
@@ -2861,9 +2811,9 @@ class CombinedBasis:
                         for j, base in enumerate(self.bases):
                             for param_name in total_property_names[base.model_name]:
                                 if param_name in base_param_values[j]:
-                                    params_array[param_idx, i] = base_param_values[j][
-                                        param_name
-                                    ][combo_indices[j]]
+                                    params_array[param_idx, i] = base_param_values[j][param_name][
+                                        combo_indices[j]
+                                    ]
                                 param_idx += 1
 
                         # Add supplementary parameters. Sum parameters from all bases
@@ -3029,12 +2979,8 @@ class CombinedBasis:
             f.attrs["ParameterNames"] = grid_dict["parameter_names"]
             f.attrs["FilterCodes"] = grid_dict["filter_codes"]
             if "supplementary_parameters" in grid_dict:
-                f.attrs["SupplementaryParameterNames"] = grid_dict[
-                    "supplementary_parameter_names"
-                ]
-                f.attrs["SupplementaryParameterUnits"] = grid_dict[
-                    "supplementary_parameter_units"
-                ]
+                f.attrs["SupplementaryParameterNames"] = grid_dict["supplementary_parameter_names"]
+                f.attrs["SupplementaryParameterUnits"] = grid_dict["supplementary_parameter_units"]
             f.attrs["PhotometryUnits"] = "nJy"
 
             if "parameter_units" in grid_dict:
@@ -3064,9 +3010,7 @@ class CombinedBasis:
                     "supplementary_parameter_units",
                     "parameter_units",
                 ]:
-                    if isinstance(value, (np.ndarray, list)) and isinstance(
-                        value[0], str
-                    ):
+                    if isinstance(value, (np.ndarray, list)) and isinstance(value[0], str):
                         f.attrs[key] = value
                     else:
                         grid_group.create_dataset(key, data=value, compression="gzip")
@@ -3123,14 +3067,10 @@ class CombinedBasis:
                 if basis == base.model_name:
                     base_params[orig_param] = params[i]
 
-            basis_params = list(
-                self.pipeline_outputs[base.model_name]["properties"].keys()
-            )
+            basis_params = list(self.pipeline_outputs[base.model_name]["properties"].keys())
 
             total_mask = np.ones(
-                len(
-                    self.pipeline_outputs[base.model_name]["properties"][basis_params[0]]
-                ),
+                len(self.pipeline_outputs[base.model_name]["properties"][basis_params[0]]),
                 dtype=bool,
             )
             for key in base_params.keys():
@@ -3245,10 +3185,7 @@ class CombinedBasis:
         # Text box with parameters and values
 
         textstr = "\n".join(
-            [
-                f"{key}: {value:.2f}"
-                for key, value in zip(self.grid_parameter_names, params)
-            ]
+            [f"{key}: {value:.2f}" for key, value in zip(self.grid_parameter_names, params)]
         )
         props = dict(boxstyle="round", facecolor="wheat", alpha=0.5)
         ax.text(
@@ -3412,9 +3349,7 @@ class CombinedBasis:
                 ]
             else:
                 varying_params = [
-                    param
-                    for param in base.varying_param_names
-                    if param not in ignore_keys
+                    param for param in base.varying_param_names if param not in ignore_keys
                 ]
             total_property_names[model_name] = varying_params
             param_columns.extend(varying_params)
@@ -3427,9 +3362,7 @@ class CombinedBasis:
 
         # ===== SUPPLEMENTARY PARAMETER SETUP =====
         # Get the list of supplementary parameters from the first base
-        supp_param_keys = list(
-            pipeline_outputs[self.bases[0].model_name]["supp_properties"].keys()
-        )
+        supp_param_keys = list(pipeline_outputs[self.bases[0].model_name]["supp_properties"].keys())
 
         # Validate all bases have the same supplementary parameters
         for key in supp_param_keys:
@@ -3502,10 +3435,7 @@ class CombinedBasis:
 
                 # Get photometry for all filters and scale it
                 photometry = np.array(
-                    [
-                        model_output["observed_photometry"][code][pos]
-                        for code in filter_codes
-                    ],
+                    [model_output["observed_photometry"][code][pos] for code in filter_codes],
                     dtype=np.float32,
                 )
                 scaled_phot = photometry * scaling_factors
@@ -3520,23 +3450,21 @@ class CombinedBasis:
                             f"{model_name}/{original_param}"
                         ][pos]
                     elif original_param in model_output["properties"]:
-                        params_dict[param_name] = model_output["properties"][
-                            original_param
-                        ][pos]
+                        params_dict[param_name] = model_output["properties"][original_param][pos]
                 # Process supplementary parameters
                 supp_dict = {}
                 for key, value in supp_params[model_name].items():
                     if isinstance(value, dict):
                         supp_dict[key] = {}
                         for subkey, subvalue in value.items():
-                            if isinstance(subvalue, unyt_array):
+                            if check_scaling(subvalue):
                                 supp_dict[key][subkey] = subvalue[pos] * scaling_factors
                                 supp_param_units[key] = str(subvalue.units)
                             else:
                                 supp_dict[key][subkey] = subvalue[pos]
                                 supp_param_units[key] = str(dimensionless)
                     else:
-                        if isinstance(value, unyt_array):
+                        if check_scaling(value):
                             supp_dict[key] = value[pos] * scaling_factors
                             supp_param_units[key] = str(value.units)
                         else:
@@ -3583,9 +3511,7 @@ class CombinedBasis:
                     if param_name in base["params"]:
                         params_array[param_idx, :] = base["params"][param_name]
                         if param_name.split("/")[-1].lower() in UNIT_DICT.keys():
-                            param_units.append(
-                                UNIT_DICT[param_name.split("/")[-1].lower()]
-                            )
+                            param_units.append(UNIT_DICT[param_name.split("/")[-1].lower()])
                         else:
                             param_units.append(
                                 str(base["params"][param_name].units)
@@ -3610,9 +3536,7 @@ class CombinedBasis:
                 items_per_base = [base["num_items"] for base in base_data]
 
                 # Create meshgrid of indices for combination
-                mesh_indices = np.meshgrid(
-                    *[np.arange(n) for n in items_per_base], indexing="ij"
-                )
+                mesh_indices = np.meshgrid(*[np.arange(n) for n in items_per_base], indexing="ij")
 
                 # Reshape to get all combinations:
                 # array of shape (total_combinations, num_bases)
@@ -3654,13 +3578,9 @@ class CombinedBasis:
                         model_name = base.model_name
                         for param_name in total_property_names.get(model_name, []):
                             if param_name in base_data[j]["params"]:
-                                params_array[param_idx, i] = base_data[j]["params"][
-                                    param_name
-                                ]
+                                params_array[param_idx, i] = base_data[j]["params"][param_name]
                                 if param_name.split("/")[-1].lower() in UNIT_DICT.keys():
-                                    param_units.append(
-                                        UNIT_DICT[param_name.split("/")[-1].lower()]
-                                    )
+                                    param_units.append(UNIT_DICT[param_name.split("/")[-1].lower()])
                                 else:
                                     param_units.append(
                                         str(base_data[j]["params"][param_name].units)
@@ -3802,7 +3722,7 @@ class GalaxySimulator(object):
         depth_sigma: int = 5,
         noise_models: Union[None, Dict[str, EmpiricalUncertaintyModel]] = None,
         fixed_params: dict = None,
-        photometry_to_remove = None,
+        photometry_to_remove=None,
     ) -> None:
         """Parameters
 
@@ -3893,19 +3813,12 @@ class GalaxySimulator(object):
         if photometry_to_remove is None:
             photometry_to_remove = []
         if not isinstance(required_keys, list):
-            raise TypeError(
-                f"required_keys must be a list. Got {type(required_keys)} instead."
-            )
+            raise TypeError(f"required_keys must be a list. Got {type(required_keys)} instead.")
 
-
-        assert isinstance(grid, Grid), (
-            f"Grid must be a subclass of Grid. Got {type(grid)} instead."
-        )
+        assert isinstance(grid, Grid), f"Grid must be a subclass of Grid. Got {type(grid)} instead."
         self.grid = grid
 
-        assert isinstance(
-            instrument, Instrument
-        ), f"""Instrument must be a subclass of Instrument.
+        assert isinstance(instrument, Instrument), f"""Instrument must be a subclass of Instrument.
             Got {type(instrument)} instead."""
         assert isinstance(
             emission_model, EmissionModel
@@ -4000,9 +3913,7 @@ class GalaxySimulator(object):
                 self.zdist_params.append(key)
 
         self.emitter_params = emitter_params
-        self.num_emitter_params = np.sum(
-            [len(emitter_params[key]) for key in emitter_params]
-        )
+        self.num_emitter_params = np.sum([len(emitter_params[key]) for key in emitter_params])
         self.emission_model.save_spectra(emission_model_key)
 
         self.total_possible_keys = (
@@ -4057,24 +3968,22 @@ class GalaxySimulator(object):
             model_group = f["Model"]
 
             # Step 1. Make grid
-            lam = unyt_array(model_group["Instrument/Filters/Header/Wavelengths"][:], units=Angstrom)
+            lam = unyt_array(
+                model_group["Instrument/Filters/Header/Wavelengths"][:], units=Angstrom
+            )
 
-            grid_name = model_group.attrs['grid_name']
-            grid_dir = model_group.attrs.get('grid_dir', None)
+            grid_name = model_group.attrs["grid_name"]
+            grid_dir = model_group.attrs.get("grid_dir", None)
 
-            grid = Grid(
-                grid_name,
-                grid_dir,
-                new_lam=lam)
+            grid = Grid(grid_name, grid_dir, new_lam=lam)
 
             # Step 2. Make instrument
-            instrument = Instrument._from_hdf5(model_group['Instrument'])
-
+            instrument = Instrument._from_hdf5(model_group["Instrument"])
 
             # Step 3 - recreate cosmology
-            cosmo_mapping = model_group.attrs.get('cosmology', None)
+            cosmo_mapping = model_group.attrs.get("cosmology", None)
 
-            cosmo = Cosmology.from_format(cosmo_mapping, format='yaml')
+            cosmo = Cosmology.from_format(cosmo_mapping, format="yaml")
 
             # Step 4 - Collect sfh_model
 
@@ -4097,15 +4006,14 @@ class GalaxySimulator(object):
                 )
 
             # recreate emission model
-            em_group = model_group['EmissionModel']
+            em_group = model_group["EmissionModel"]
             emission_model_key = model_group.attrs.get("emission_model_key", "total")
 
             if override_emission_model is not None:
                 emission_model = override_emission_model
 
             else:
-
-                emission_model_name = em_group.attrs['name']
+                emission_model_name = em_group.attrs["name"]
                 import synthesizer.emission_models as em
                 import synthesizer.emission_models.attenuation as dm
                 import synthesizer.emission_models.dust as dem
@@ -4114,31 +4022,28 @@ class GalaxySimulator(object):
 
                 if emission_model is None:
                     raise ValueError(
-                        f"""Emission model {emission_model_name} not found in synthesizer.emission_models.
-                        Cannot create GalaxySimulator."""
+                        f"Emission model {emission_model_name} not found in synthesizer.emission_models. Cannot create GalaxySimulator."  # noqa: E501
                     )
 
-
-                if 'dust_law' in em_group.attrs:
-                    dust_model_name = em_group.attrs['dust_law']
+                if "dust_law" in em_group.attrs:
+                    dust_model_name = em_group.attrs["dust_law"]
                     dust_model = getattr(dm, dust_model_name, None)
 
                     if dust_model is None:
                         raise ValueError(
-                            f"""Dust model {dust_model_name} not found in synthesizer.emission_models.
-                            Cannot create GalaxySimulator."""
+                            f"Dust model {dust_model_name} not found in synthesizer.emission_models. Cannot create GalaxySimulator."  # noqa: E501
                         )
 
                     dust_model_params = {}
-                    dust_param_keys = em_group.attrs['dust_attenuation_keys']
-                    dust_param_values = em_group.attrs['dust_attenuation_values']
-                    dust_param_units = em_group.attrs['dust_attenuation_units']
+                    dust_param_keys = em_group.attrs["dust_attenuation_keys"]
+                    dust_param_values = em_group.attrs["dust_attenuation_values"]
+                    dust_param_units = em_group.attrs["dust_attenuation_units"]
 
                     for key, value, unit in zip(
                         dust_param_keys, dust_param_values, dust_param_units
                     ):
                         if unit != "":
-                           dust_model_params[key] = unyt_array(value, unit)
+                            dust_model_params[key] = unyt_array(value, unit)
                         else:
                             dust_model_params[key] = value
 
@@ -4146,20 +4051,19 @@ class GalaxySimulator(object):
                 else:
                     dust_model = None
 
-                if 'dust_emission' in em_group.attrs:
-                    dust_emission_model_name = em_group.attrs['dust_emission']
+                if "dust_emission" in em_group.attrs:
+                    dust_emission_model_name = em_group.attrs["dust_emission"]
                     dust_emission_model = getattr(dem, dust_emission_model_name, None)
 
                     if dust_emission_model is None:
                         raise ValueError(
-                            f"""Dust emission model {dust_emission_model_name} not found in synthesizer.emission_models.
-                            Cannot create from_grid."""
+                            f"Dust emission model {dust_emission_model_name} not found in synthesizer.emission_models. Cannot create from_grid."  # noqa: E501
                         )
 
                     dust_emission_model_params = {}
-                    dust_emission_param_keys = em_group.attrs['dust_emission_keys']
-                    dust_emission_param_values = em_group.attrs['dust_emission_values']
-                    dust_emission_param_units = em_group.attrs['dust_emission_units']
+                    dust_emission_param_keys = em_group.attrs["dust_emission_keys"]
+                    dust_emission_param_values = em_group.attrs["dust_emission_values"]
+                    dust_emission_param_units = em_group.attrs["dust_emission_units"]
                     for key, value, unit in zip(
                         dust_emission_param_keys,
                         dust_emission_param_values,
@@ -4170,15 +4074,13 @@ class GalaxySimulator(object):
                         else:
                             dust_emission_model_params[key] = value
 
-                    dust_emission_model = dust_emission_model(
-                        **dust_emission_model_params
-                    )
+                    dust_emission_model = dust_emission_model(**dust_emission_model_params)
                 else:
                     dust_emission_model = None
 
-                em_keys = em_group.attrs['parameter_keys']
-                em_values = em_group.attrs['parameter_values']
-                em_units = em_group.attrs['parameter_units']
+                em_keys = em_group.attrs["parameter_keys"]
+                em_values = em_group.attrs["parameter_values"]
+                em_units = em_group.attrs["parameter_units"]
 
                 emission_model_params = {}
                 for key, value, unit in zip(em_keys, em_values, em_units):
@@ -4188,7 +4090,7 @@ class GalaxySimulator(object):
                         emission_model_params[key] = value
 
                 if dust_model is not None:
-                    emission_model_params['dust_curve'] = dust_model
+                    emission_model_params["dust_curve"] = dust_model
 
                 if dust_emission_model is not None:
                     emission_model_params["dust_emission_model"] = dust_emission_model
@@ -4208,14 +4110,12 @@ class GalaxySimulator(object):
             }
 
             # Step 7 - work out order and units
-            param_order = f.attrs['ParameterNames']
-            units = f.attrs.get('ParameterUnits')
-            ignore = ['dimensionless', 'log', 'mag']
+            param_order = f.attrs["ParameterNames"]
+            units = f.attrs.get("ParameterUnits")
+            ignore = ["dimensionless", "log", "mag"]
 
             param_units = {}
-            for p, u in zip(
-                param_order, units
-            ):
+            for p, u in zip(param_order, units):
                 skip = False
                 for i in ignore:
                     if i in u:
@@ -4230,33 +4130,29 @@ class GalaxySimulator(object):
             fixed_param_values = model_group.attrs.get("fixed_param_values", [])
             fixed_param_units = model_group.attrs.get("fixed_param_units", [])
             fixed_params = {}
-            for name, value, unit in zip(
-                fixed_param_names, fixed_param_values, fixed_param_units
-            ):
+            for name, value, unit in zip(fixed_param_names, fixed_param_values, fixed_param_units):
                 if unit != "":
                     fixed_params[name] = unyt_array(value, unit)
                 else:
                     fixed_params[name] = value
 
-
             # Step 9 - Collect param transforms.
             # TEMP
             param_transforms = {}
 
-            if 'Transforms' in model_group:
-                transform_group = model_group['Transforms']
+            if "Transforms" in model_group:
+                transform_group = model_group["Transforms"]
                 for key in transform_group.keys():
                     # need to evaluate the function
-                    code = transform_group[key][()].decode('utf-8')
-                    code = f'\n{code}\n'
+                    code = transform_group[key][()].decode("utf-8")
+                    code = f"\n{code}\n"
                     func = exec(code, globals(), locals())
-                    func_name = code.split('def ')[-1].split('(')[0]
+                    func_name = code.split("def ")[-1].split("(")[0]
                     func = locals()[func_name]
                     param_transforms[key] = func
-                    if 'new_parameter_name' in transform_group[key].attrs:
-                        new_key = transform_group[key].attrs['new_parameter_name']
+                    if "new_parameter_name" in transform_group[key].attrs:
+                        new_key = transform_group[key].attrs["new_parameter_name"]
                         param_transforms[key] = (new_key, func)
-
 
             return cls(
                 sfh_model=sfh_model,
@@ -4273,8 +4169,6 @@ class GalaxySimulator(object):
                 fixed_params=fixed_params,
                 **kwargs,
             )
-
-
 
     def simulate(self, params):
         """Simulate photometry from the given parameters.
@@ -4310,9 +4204,7 @@ class GalaxySimulator(object):
 
         for key in self.required_keys:
             if key not in params:
-                raise ValueError(
-                    f"Missing required parameter {key}. Cannot create photometry."
-                )
+                raise ValueError(f"Missing required parameter {key}. Cannot create photometry.")
 
         mass = 10 ** params["log_mass"] * Msun
 
@@ -4342,7 +4234,6 @@ class GalaxySimulator(object):
                     f"""Missing required parameter {key} for SFH or ZDist.
                     Cannot create photometry."""
                 )
-
 
         sfh = self.sfh_model(
             **{i: params[i] for i in self.sfh_params},
@@ -4376,10 +4267,10 @@ class GalaxySimulator(object):
 
         # Check we understand all the parameters
 
-
-        assert len(found_params) == self.num_emitter_params, (
-         f"""Found {len(found_params)} parameters but expected
-            {self.num_emitter_params}. Cannot create photometry.""")
+        assert (
+            len(found_params) == self.num_emitter_params
+        ), f"""Found {len(found_params)} parameters but expected
+            {self.num_emitter_params}. Cannot create photometry."""
 
         stellar_keys = {}
         if "stellar" in self.emitter_params:
@@ -4424,9 +4315,7 @@ class GalaxySimulator(object):
             outputs["sfh_time"] = time
             outputs["redshift"] = galaxy.redshift
             # Put an absolute SFH time here as well given self.cosmo and redshift
-            outputs["sfh_time_abs"] = (
-                self.cosmo.age(galaxy.redshift).to("Myr").value * Myr
-            )
+            outputs["sfh_time_abs"] = self.cosmo.age(galaxy.redshift).to("Myr").value * Myr
             outputs["sfh_time_abs"] = outputs["sfh_time_abs"] - time
 
         if "lnu" in self.output_type:
