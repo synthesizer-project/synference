@@ -11,6 +11,7 @@ wheels/
 
 sbi-logs/
 plots/
+priv/
 Yggdrasil/
 models/*
 grids/*
