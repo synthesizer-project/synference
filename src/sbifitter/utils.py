@@ -11,7 +11,7 @@ from typing import Dict, List, Union
 import h5py
 import numpy as np
 import scipy.stats
-from unyt import Angstrom, Jy, nJy, unyt_array
+from unyt import Angstrom, Jy, nJy, unyt_array, unyt_quantity
 
 
 def load_grid_from_hdf5(
@@ -368,19 +368,13 @@ def f_jy_to_asinh(
     if f_b.ndim == 0:
         f_b = np.full_like(f_jy, f_b.value, dtype=f_jy.dtype)
     elif f_b.ndim == 1 and f_jy.ndim == 2:
-        assert f_b.shape[0] == f_jy.shape[0], (
-            "Flux softening must match the number of filters."
-        )
+        assert f_b.shape[0] == f_jy.shape[0], "Flux softening must match the number of filters."
         f_b = np.tile(f_b, (f_jy.shape[1], 1)).T
 
     else:
-        assert f_b.shape == f_jy.shape, (
-            "Flux and flux softening must have the same shape."
-        )
+        assert f_b.shape == f_jy.shape, "Flux and flux softening must have the same shape."
 
-    asinh = (
-        -2.5 * np.log10(np.e) * (np.arcsinh(f_jy / (2 * f_b)) + np.log(f_b / (3631 * Jy)))
-    )
+    asinh = -2.5 * np.log10(np.e) * (np.arcsinh(f_jy / (2 * f_b)) + np.log(f_b / (3631 * Jy)))
     return asinh
 
 
@@ -406,9 +400,7 @@ def f_jy_err_to_asinh(
     if f_b.ndim == 0:
         f_b = unyt_array(np.full_like(f_jy, f_b.value, dtype=f_jy.dtype), units=f_b.units)
     elif f_b.ndim == 1 and f_jy.ndim == 2:
-        assert f_b.shape[0] == f_jy.shape[0], (
-            "Flux softening must match the number of filters."
-        )
+        assert f_b.shape[0] == f_jy.shape[0], "Flux softening must match the number of filters."
         f_b = np.tile(f_b, (f_jy.shape[1], 1)).T
     else:
         assert f_b.shape == f_jy.shape, "Flux and flux error must have the same shape."
@@ -417,10 +409,16 @@ def f_jy_err_to_asinh(
     return 2.5 * np.log10(np.e) * f_jy_err / np.sqrt(f_jy**2 + (2 * f_b) ** 2)
 
 
-
 def save_emission_model(model):
+    """Save the fixed parameters of the emission model.
 
-    # store fixed parameters of the emission model
+    Parameters:
+        model: The emission model object.
+
+    Returns:
+        A dictionary containing fixed parameters, dust attenuation,
+        and dust emission model information.
+    """
     fixed_params = model.fixed_parameters
 
     if fixed_params is None:
@@ -435,11 +433,11 @@ def save_emission_model(model):
                     fixed_params[i] = j
 
     dust_attenuation_keys = {}
-    if 'attenuated' in model._transformation.keys():
-        dust_law = model._transformation['attenuated'][1]
+    if "attenuated" in model._transformation.keys():
+        dust_law = model._transformation["attenuated"][1]
         dust_attenuation_keys.update(dust_law.__dict__)
-        dust_attenuation_keys.pop('description')
-        dust_attenuation_keys.pop('_required_params')
+        dust_attenuation_keys.pop("description")
+        dust_attenuation_keys.pop("_required_params")
         dust_law = type(dust_law).__name__
 
     else:
@@ -447,8 +445,8 @@ def save_emission_model(model):
 
     dust_emission_keys = {}
 
-    if 'dust_emission' in model._models:
-        dust_em = model._models['dust_emission'].generator
+    if "dust_emission" in model._models:
+        dust_em = model._models["dust_emission"].generator
         dust_emission_keys.update(dust_em.__dict__)
         dust_emission_model = type(dust_em).__name__
     else:
@@ -456,11 +454,11 @@ def save_emission_model(model):
 
     fixed_param_units = []
     for k, v in fixed_params.items():
-        if hasattr(v, 'units'):
+        if hasattr(v, "units"):
             fixed_param_units.append(str(v.units))
             fixed_params[k] = v.value
         else:
-            fixed_param_units.append('')
+            fixed_param_units.append("")
 
     fixed_parameter_keys = list(fixed_params.keys())
     fixed_parameter_values = list(fixed_params.values())
@@ -468,29 +466,27 @@ def save_emission_model(model):
     if any(isinstance(v, str) for v in fixed_parameter_values):
         fixed_parameter_values = [str(v) for v in fixed_parameter_values]
 
-
     dust_attenuation_units = []
     for k, v in dust_attenuation_keys.items():
-        if hasattr(v, 'units'):
+        if hasattr(v, "units"):
             dust_attenuation_units.append(str(v.units))
             dust_attenuation_keys[k] = v.value
         else:
-            dust_attenuation_units.append('')
+            dust_attenuation_units.append("")
 
     dust_attenuation_values = list(dust_attenuation_keys.values())
     dust_attenuation_keys = list(dust_attenuation_keys.keys())
 
     dust_emission_units = []
     for k, v in dust_emission_keys.items():
-        if hasattr(v, 'units'):
+        if hasattr(v, "units"):
             dust_emission_units.append(str(v.units))
             dust_emission_keys[k] = v.value
         else:
-            dust_emission_units.append('')
+            dust_emission_units.append("")
 
     dust_emission_values = list(dust_emission_keys.values())
     dust_emission_keys = list(dust_emission_keys.keys())
-
 
     return {
         "fixed_parameter_keys": fixed_parameter_keys,
@@ -509,8 +505,55 @@ def save_emission_model(model):
 
 class CPU_Unpickler(pickle.Unpickler):
     """Custom unpickler that handles specific Torch storage loading."""
+
     def find_class(self, module, name):
+        """Find class in the specified module."""
         import torch
-        if module == 'torch.storage' and name == '_load_from_bytes':
-            return lambda b: torch.load(io.BytesIO(b), map_location='cpu')
-        else: return super().find_class(module, name)
+
+        if module == "torch.storage" and name == "_load_from_bytes":
+            return lambda b: torch.load(io.BytesIO(b), map_location="cpu")
+        else:
+            return super().find_class(module, name)
+
+
+def check_scaling(arr: Union[unyt_array, unyt_quantity]):
+    """Check if the input array has dimensions that scale with normalization."""
+    assert isinstance(arr, unyt_array) or isinstance(arr, unyt_quantity), (
+        "Input must be a unyt_array or unyt_quantity, got {}".format(type(arr))
+    )
+
+    from unyt.dimensions import (
+        energy,
+        flux,
+        luminance,
+        luminous_flux,
+        mass,
+        power,
+        specific_flux,
+    )
+
+    if isinstance(arr, unyt_quantity):
+        arr = 1.0 * arr  # Ensure it is a unyt_array
+
+    if not isinstance(arr, unyt_array):
+        return False
+
+    # We want to check how the unit scales.
+    # If it is a flux, flux density, luminosity, mass etc or other parameters
+    # which scale with normalization, we want to return True
+    # if it is a distance, time, dimensionless parameter, we want to return False
+    if arr.units.is_dimensionless:
+        return False
+
+    if arr.units.dimensions in (
+        energy,
+        power,
+        flux,
+        specific_flux,
+        luminance,
+        mass,
+        luminous_flux,
+    ):
+        return True
+
+    return False
