@@ -76,10 +76,11 @@ instrument = "HST+JWST"
 path = f"{os.path.dirname(__file__)}/filters/{instrument}.hdf5"
 
 if os.path.exists(path):
-    print(f'Loading filters from {path}')
+    print(f"Loading filters from {path}")
     filterset = FilterCollection(path=path)
 else:
     filterset = FilterCollection(filter_codes=filter_codes)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     filterset.write_filters(path)
 
 
@@ -90,9 +91,7 @@ else:
 
 
 # Consistent wavelength grid for both SPS grids and filters
-new_wav = generate_constant_R(
-    R=300, auto_start_stop=True, filterset=filterset, max_redshift=15
-)
+new_wav = generate_constant_R(R=300, auto_start_stop=True, filterset=filterset, max_redshift=15)
 
 filterset.resample_filters(new_lam=new_wav)
 
@@ -114,7 +113,8 @@ except Exception:
 
 # params
 
-Nmodels = 100_000 # 00
+overwrite = True
+Nmodels = 100  # 00
 redshift = (0.001, 12)
 masses = (4, 12)  # log10 of stellar mass in solar masses
 max_redshift = 20  # gives maximum age of SFH at a given redshift
@@ -169,9 +169,7 @@ grid = Grid(
 )
 
 # Metallicity
-Z_dists = [
-    ZDist.DeltaConstant(log10metallicity=log_z) for log_z in all_param_dict["log_zmet"]
-]
+Z_dists = [ZDist.DeltaConstant(log10metallicity=log_z) for log_z in all_param_dict["log_zmet"]]
 
 # Create LogNormal SFH from parameters.
 # These
@@ -203,7 +201,7 @@ galaxy_params = {
 
 sfh_name = str(sfh_type).split(".")[-1].split("'")[0]
 
-name = f"BPASS_Chab_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_Calzetti_v2" # noqa: E501
+name = f"BPASS_Chab_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_Calzetti_v2"  # noqa: E501
 
 basis = GalaxyBasis(
     model_name=f"sps_{name}",
@@ -221,6 +219,7 @@ basis = GalaxyBasis(
     ],  # This is dependent on the redshift and should not be included in the basis
 )
 
+
 def z_to_max_age(params, max_redshift=20):
     """Convert redshift to maximum age of the SFH at that redshift."""
     z = params["redshift"]
@@ -230,20 +229,22 @@ def z_to_max_age(params, max_redshift=20):
     age = age.to_value("Myr") * Myr
     return age
 
+
 # This is the simple way-
 # it runs the following three steps for you.
 
 basis.create_mock_cat(
     out_name=f"grid_{name}",
     out_dir=out_dir,
-    overwrite=False,
+    overwrite=overwrite,
     n_proc=n_proc,
     verbose=False,
     batch_size=50_000,
     mUV=(calculate_muv, cosmo),  # Calculate mUV for the mock catalogue.
     mwa=calculate_mwa,  # Calculate MWA for the mock catalogue.
-    parameter_transforms_to_save={'max_age': z_to_max_age},  # Save function to calculate the maximum age of the SFH at that redshift.
-
+    parameter_transforms_to_save={
+        "max_age": z_to_max_age
+    },  # Save function to calculate the maximum age of the SFH at that redshift.
 )
 
 """

@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 import os
-
+import warnings
 
 from .grid import (
     generate_sfh_grid, generate_metallicity_distribution, generate_emission_models, 
-    generate_sfh_basis, GalaxyBasis, CombinedBasis,
+    generate_sfh_basis, GalaxyBasis, CombinedBasis,  calculate_sfr,
     calculate_muv, calculate_mwa, draw_from_hypercube, GalaxySimulator, generate_random_DB_sfh,
     test_out_of_distribution
 )
@@ -13,7 +13,8 @@ from .utils import (
     load_grid_from_hdf5, calculate_min_max_wav_grid, generate_constant_R,
     list_parameters, rename_overlapping_parameters, FilterArithmeticParser,
     timeout_handler, TimeoutException, create_sqlite_db, f_jy_err_to_asinh,
-    f_jy_to_asinh, check_scaling
+    f_jy_to_asinh, check_scaling, detect_outliers, compare_methods_feature_importance,
+    analyze_feature_contributions
 )
 
 from .noise_models import (
@@ -31,7 +32,7 @@ except ImportError as e:
 
 
 #from .simformer import UncertainityModelTask
-
+warnings.filterwarnings('ignore')
 
 __all__ = [
     "generate_sfh_grid",
@@ -64,6 +65,10 @@ __all__ = [
     "f_jy_err_to_asinh",
     "f_jy_to_asinh",
     "check_scaling",
+    "detect_outliers",
+    "compare_methods_feature_importance",
+    "calculate_sfr",
+    "analyze_feature_contributions",
     #"UncertainityModelTask",
     "DepthUncertaintyModel",
     "UncertaintyModel",
