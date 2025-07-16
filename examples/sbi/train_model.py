@@ -10,7 +10,7 @@ import torch
 from astropy.table import Table
 from simple_parsing import ArgumentParser
 
-from sbifitter import SBI_Fitter, create_uncertainity_models_from_EPOCHS_cat
+from sbifitter import SBI_Fitter, Simformer_Fitter, create_uncertainity_models_from_EPOCHS_cat
 
 try:
     mp.set_start_method("spawn", force=True)
@@ -63,6 +63,7 @@ class Args:
     model_features: tuple = ()
     norm_method: str = None
     device: str = "cuda:0"
+    simformer: bool = False  # If True, use SimFormer for training
 
 
 parser.add_arguments(Args, dest="args")
@@ -91,7 +92,8 @@ def main_task(args: Args) -> None:
         print(f"Arguments: {args}", file=sys.stdout)
 
     phot_to_remove = args.photometry_to_remove[0]
-    phot_to_remove.split(",")
+    phot_to_remove = phot_to_remove.split(",")
+    hst_bands = ["F435W", "F606W", "F775W", "F814W", "F850LP"]
 
     if args.scatter_fluxes > 0:
         table = Table.read(args.data_err_file, format="fits", hdu=args.data_err_hdu)
@@ -99,19 +101,26 @@ def main_task(args: Args) -> None:
         if len(phot_to_remove) > 0:
             bands = [band for band in bands if band not in phot_to_remove]
 
-        hst_bands = ["F435W", "F606W", "F775W", "F814W", "F850LP"]
         new_band_names = [
             f"HST/ACS_WFC.{band.upper()}" if band in hst_bands else f"JWST/NIRCam.{band.upper()}"
             for band in bands
         ]
 
+        root_out_dir = os.path.dirname(os.path.dirname(file_dir))
+        out_dir = f"{root_out_dir}/models/{args.model_name}/plots/"
+        if not os.path.exists(out_dir):
+            os.makedirs(out_dir, exist_ok=True)
+
         empirical_noise_models = create_uncertainity_models_from_EPOCHS_cat(
             args.data_err_file,
             bands,
             new_band_names,
-            plot=False,
+            plot=True,
             hdu=args.data_err_hdu,
+            save_path=out_dir,
+            save=True,
         )
+
     else:
         empirical_noise_models = {}
 
@@ -160,19 +169,33 @@ def main_task(args: Args) -> None:
     if len(additional_model_args) > 0:
         print("Additional model args:", additional_model_args)
 
-    empirical_model_fitter = SBI_Fitter.init_from_hdf5(
+    if args.simformer:
+        fitter_class = Simformer_Fitter
+    else:
+        fitter_class = SBI_Fitter
+
+    empirical_model_fitter = fitter_class.init_from_hdf5(
         model_name=args.model_name, hdf5_path=args.grid_path, device=args.device
     )
 
-    unused_filters = [
-        filt
-        for filt in empirical_model_fitter.raw_photometry_names
-        if filt not in list(empirical_noise_models.keys())
-    ]
+    if not args.include_errors_in_feature_array:
+        unused_filters = [
+            filt
+            for filt in empirical_model_fitter.raw_photometry_names
+            if filt not in list(empirical_noise_models.keys())
+        ]
+    else:
+        unused_filters = [
+            f"JWST/NIRCam.{filt.upper()}"
+            if filt not in hst_bands
+            else f"HST/ACS_WFC.{filt.upper()}"
+            for filt in phot_to_remove
+        ]
+        unused_filters = [
+            filt for filt in unused_filters if filt in empirical_model_fitter.raw_photometry_names
+        ]
 
-    if len(args.photometry_to_remove) > 0:
-        unused_filters.extend(phot_to_remove)
-
+    print(f"Unused filters: {unused_filters}", file=sys.stdout)
     empirical_model_fitter.create_feature_array_from_raw_photometry(
         extra_features=list(args.model_features),
         normalize_method=args.norm_method,
@@ -181,7 +204,7 @@ def main_task(args: Args) -> None:
         empirical_noise_models=empirical_noise_models
         if args.include_errors_in_feature_array
         else None,
-        photometry_to_remove=unused_filters if args.include_errors_in_feature_array else None,
+        photometry_to_remove=unused_filters,
         norm_mag_limit=args.norm_mag_limit,
         drop_dropouts=args.drop_dropouts,
         drop_dropout_fraction=args.drop_dropout_fraction,
@@ -196,27 +219,81 @@ def main_task(args: Args) -> None:
     # v25, v75 = np.percentile(col_i, [25, 75])
     # print(v25, v75, dx, n, 'check')
     # dx = 2 * (v75 - v25) / (n ** (1 / 3))
-    # empirical_model_fitter.plot_histogram_feature_array()
-    empirical_model_fitter.plot_histogram_parameter_array()
+    empirical_model_fitter.plot_histogram_feature_array(bins="scott")
+    empirical_model_fitter.plot_histogram_parameter_array(bins="scott")
 
-    empirical_model_fitter.run_single_sbi(
-        train_test_fraction=args.train_test_fraction,
-        n_nets=args.n_nets,
-        backend=args.backend,
-        engine=args.engine,
-        stop_after_epochs=args.stop_after_epochs,
-        learning_rate=args.learning_rate,
-        hidden_features=args.hidden_features,
-        num_transforms=args.num_transforms,
-        num_components=args.num_components,
-        model_type=args.model_types,
-        training_batch_size=args.training_batch_size,
-        validation_fraction=args.validation_fraction,
-        clip_max_norm=args.clip_max_norm,
-        name_append=args.name_append,
-        plot=args.plot,
-        additional_model_args=additional_model_args,
-    )
+    if not args.simformer:
+        args = dict(
+            train_test_fraction=args.train_test_fraction,
+            n_nets=args.n_nets,
+            backend=args.backend,
+            engine=args.engine,
+            stop_after_epochs=args.stop_after_epochs,
+            learning_rate=args.learning_rate,
+            hidden_features=args.hidden_features,
+            num_transforms=args.num_transforms,
+            num_components=args.num_components,
+            model_type=args.model_types,
+            training_batch_size=args.training_batch_size,
+            validation_fraction=args.validation_fraction,
+            clip_max_norm=args.clip_max_norm,
+            name_append=args.name_append,
+            plot=args.plot,
+            additional_model_args=additional_model_args,
+        )
+    else:
+        args = dict(
+            backend="jax",
+            num_training_simulations=10_000,
+            train_test_fraction=args.train_test_fraction,
+            random_seed=42,
+            set_self=True,
+            verbose=True,
+            load_existing_model=True,
+            name_append=args.name_append,
+            save_method="joblib",
+            task_func=None,
+            model_config_dict={
+                "name": "ScoreTransformer",
+                "d_model": 128,
+                "n_heads": 4,
+                "n_layers": 4,
+                "d_feedforward": 256,
+                "dropout": 0.1,
+                "max_len": 5000,  # Adjust based on theta_dim + x_dim
+                "tokenizer": {"name": "LinearTokenizer", "encoding_dim": 64},
+                "use_output_scale_fn": True,
+            },
+            sde_config_dict={
+                "name": "VPSDE",  # or "VESDE"
+                "beta_min": 0.1,
+                "beta_max": 20.0,
+                "num_steps": 1000,
+                "T_min": 1e-05,
+                "T_max": 1.0,
+            },
+            train_config_dict={
+                "learning_rate": 1e-4,  # Initial learning rate for training # used
+                "min_learning_rate": 1e-6,  # Minimum learning rate for training # used
+                "z_score_data": True,  # Whether to z-score the data # used
+                "total_number_steps_scaling": 5,  # Scaling factor for total number of steps
+                "max_number_steps": 1e9,  # Maximum number of steps for training # used
+                "min_number_steps": 1e5,  # Minimum number of steps for training # used
+                "training_batch_size": 64,  # Batch size for training # used
+                "val_every": 100,  # Validate every 100 steps # used
+                "clip_max_norm": 10.0,  # Gradient clipping max norm # used
+                "condition_mask_fn": {
+                    "name": "joint"
+                },  # Use the base mask function defined in the task
+                "edge_mask_fn": {"name": "none"},
+                "validation_fraction": 0.1,  # Fraction of data to use for validation # used
+                "val_repeat": 5,  # Number of times to repeat validation # used
+                "stop_early_count": 5,  # Number of steps to wait before stopping early # used
+                "rebalance_loss": False,  # Whether to rebalance the loss # used
+            },
+        )
+
+    empirical_model_fitter.run_single_sbi(**args)
 
     print(f"Training finished at {datetime.datetime.now()}", file=sys.stdout)
 

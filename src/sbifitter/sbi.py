@@ -50,7 +50,10 @@ from .noise_models import EmpiricalUncertaintyModel
 from .utils import (
     FilterArithmeticParser,
     TimeoutException,
+    analyze_feature_contributions,
+    compare_methods_feature_importance,
     create_sqlite_db,
+    detect_outliers,
     f_jy_err_to_asinh,
     f_jy_to_asinh,
     load_grid_from_hdf5,
@@ -363,7 +366,6 @@ class SBI_Fitter:
                         self.fitted_parameter_units[index] = (
                             f"{name}({self.fitted_parameter_units[index]})"
                         )
-                    print(self.fitted_parameter_units)
                 else:
                     raise ValueError(
                         f"Parameter {param} not found in fitted parameter names for transformation."
@@ -447,7 +449,7 @@ class SBI_Fitter:
         pass
 
     @classmethod
-    def load_saved_model(cls, model_file, grid_path: Optional[str] = None):
+    def load_saved_model(cls, model_file, grid_path: Optional[str] = None, model_name: str = None):
         """Load a prefit SBI model from a file.
 
         Argument:
@@ -459,7 +461,13 @@ class SBI_Fitter:
             Instance of SBI_Fitter initialized with the loaded model.
         """
         # grid_path is saved in the model file
-        posterior, stats, params = cls.load_model_from_pkl(model_file, set_self=True)
+        posterior, stats, params = cls.load_model_from_pkl(cls, model_file, set_self=False)
+
+        if model_name is None:
+            name = params.get("name", "default_name")
+
+        if name == "default_name":
+            print("Warning: Model name not found in model file. Using default name 'default_name'.")
 
         if grid_path is None:
             grid_path = params.get("grid_path", None)
@@ -469,9 +477,14 @@ class SBI_Fitter:
 
         # Initialize the SBI_Fitter with the loaded parameters
         fitter = cls.init_from_hdf5(
-            model_name=params["name"],
+            model_name=name,
             hdf5_path=grid_path,
             return_output=False,
+        )
+
+        fitter.load_model_from_pkl(
+            model_file,
+            set_self=True,
         )
 
         return fitter
@@ -671,7 +684,9 @@ class SBI_Fitter:
         scattered_photometry = np.stack([result[0] for result in results], axis=0)
         errors = np.stack([result[1] for result in results], axis=0)
 
-        assert np.shape(errors) == np.shape(errors_s)
+        assert np.shape(errors) == np.shape(errors_s), (
+            f"Shape mismatch: errors {np.shape(errors)} vs errors_s {np.shape(errors_s)}"
+        )
 
         if return_errors:
             return scattered_photometry, errors
@@ -1010,14 +1025,13 @@ class SBI_Fitter:
             ]
             if len(remove_indices) > 0:
                 print(
-                    f"""Removing {len(remove_indices)}
-                    photometry filters: {photometry_to_remove}"""
+                    f"""Removing {len(remove_indices)} photometry filters: {photometry_to_remove}."""  # noqa: E501
                 )
                 phot_grid = np.delete(phot_grid, remove_indices, axis=0)
                 raw_photometry_names = np.delete(self.raw_photometry_names, remove_indices)
             else:
                 raise ValueError(
-                    f"""No matching photometry filters found in the
+                    f"""No matching photometry filters found in the \
                     raw photometry names: {photometry_to_remove}"""
                 )
 
@@ -1046,7 +1060,7 @@ class SBI_Fitter:
                 )
                 assert (scatter_fluxes) and (
                     depths is not None or empirical_noise_models is not None
-                ), """If setting asinh_softening_parameters from noise models,
+                ), """If setting asinh_softening_parameters from noise models, \
                     depths or empirical_noise_models must be provided."""
 
                 val = float(asinh_softening_parameters.split("_")[-1])
@@ -1101,10 +1115,7 @@ class SBI_Fitter:
 
                 converted = False
             elif empirical_noise_models is not None:
-                print(
-                    f"""Using empirical noise models with
-                    {scatter_fluxes} scatters per row."""
-                )
+                print(f"""Using empirical noise models with {scatter_fluxes} scatters per row.""")
                 self.empirical_noise_models = empirical_noise_models
 
                 phot, phot_errors = self._apply_empirical_noise_models(
@@ -1574,7 +1585,7 @@ class SBI_Fitter:
             "normed_flux_units": normed_flux_units,
             "normalization_unit": normalization_unit,
             "scatter_fluxes": scatter_fluxes,
-            # "empirical_noise_models": empirical_noise_models,
+            "empirical_noise_models": empirical_noise_models,
             "depths": depths,
             "include_errors_in_feature_array": include_errors_in_feature_array,
             "min_flux_pc_error": min_flux_pc_error,
@@ -1655,8 +1666,7 @@ class SBI_Fitter:
 
         if not getattr(self, "has_features", False):
             raise RuntimeError(
-                "The feature creation pipeline has not been initialized. "
-                "Please run `create_feature_array_from_raw_photometry` first."
+                "The feature creation pipeline has not been initialized. Please run `create_feature_array_from_raw_photometry` first."  # noqa: E501
             )
 
         feature_array_flags = copy.deepcopy(self.feature_array_flags)
@@ -1688,8 +1698,7 @@ class SBI_Fitter:
             for name in feature_array_flags["raw_photometry_names"]:
                 if name not in feature_names_to_columns:
                     raise ValueError(
-                        f"""Column '{name}' not found in observations.
-                        Please provide a mapping for all photometry filters."""
+                        f"""Column '{name}' not found in observations. Please provide a mapping for all photometry filters."""  # noqa: E501
                     )
 
             if feature_array_flags["include_errors_in_feature_array"]:
@@ -1697,14 +1706,17 @@ class SBI_Fitter:
                 for name in feature_array_flags["error_names"]:
                     if name not in feature_names_to_columns:
                         raise ValueError(
-                            f"""Column '{name}' not found in observations.
-                            Please provide a mapping for all errors."""
+                            f"""Column '{name}' not found in observations. Please provide a mapping for all errors."""  # noqa: E501
                         )
 
         if feature_array_flags["include_flags_in_feature_array"]:
             # Check all flags are keys in columns_to_feature_names
             for name in feature_array_flags["flag_names"]:
                 if name not in feature_names_to_columns:
+                    if name in observations.colnames:
+                        # If the column is in the observations, but not in the mapping,
+                        # we can assume it is a flag.
+                        columns_to_feature_names[name] = name
                     raise ValueError(
                         f"""Column '{name}' not found in observations.
                         Please provide a mapping for all flags."""
@@ -1797,7 +1809,7 @@ class SBI_Fitter:
             observation_col = feature_names_to_columns[col]
             if observation_col not in observations.columns:
                 raise ValueError(
-                    f"""Column '{col}' not found in observations.
+                    f"""Column '{observation_col}' not found in observations.
                     Please provide a mapping for all errors."""
                 )
             index = self.feature_names.index(col)
@@ -1893,7 +1905,9 @@ class SBI_Fitter:
         if feature_array_flags["remove_nan_inf"]:
             # Replace NaN and Inf values with the missing_flux_value
             mask = ~np.isfinite(feature_array)
-            print(f"Removing {np.sum(mask)} NaN or Inf values from the feature array.")
+            num = np.sum(mask)
+            if num > 0:
+                print(f"Replacing {num} NaN or Inf values with {missing_data_flag}.")
             feature_array = feature_array[
                 :, ~mask.any(axis=0)
             ]  # Remove columns with NaN or Inf values
@@ -1901,8 +1915,9 @@ class SBI_Fitter:
 
         missing_mask = feature_array == missing_data_flag
         if feature_array_flags["simulate_missing_fluxes"]:
+            num = np.sum(missing_mask)
             print(
-                f"""Replacing {np.sum(missing_mask)} NaN or Inf values with
+                f"""Replacing {num} NaN or Inf values with
                 {feature_array_flags["missing_flux_value"]}."""
             )
             feature_array[missing_mask] = feature_array_flags["missing_flux_value"]
@@ -1915,6 +1930,9 @@ class SBI_Fitter:
 
         mask = feature_array > feature_array_flags["norm_mag_limit"]
         feature_array[mask] = feature_array_flags["norm_mag_limit"]
+
+        # TODO: need someway to interface with features which are in noise model,
+        # e.g. handling upper limits appropriately.
 
         return feature_array.T, removed_data
 
@@ -1931,6 +1949,9 @@ class SBI_Fitter:
         timeout_seconds_per_row: int = 5,
         override_transformations: dict = {},
         append_to_input: bool = True,
+        return_feature_array: bool = False,
+        recover_SEDs: bool = False,
+        plot_SEDs: bool = False,
     ):
         """Infer posteriors for observational data.
 
@@ -1967,6 +1988,15 @@ class SBI_Fitter:
             extra features, etc.
         append_to_input : bool
             If True, append the quantiles to the input observations DataFrame/Table.
+        return_feature_array : bool
+            If True, return the feature array and the mask instead of the observations.
+        recover_seds : bool
+            If True, recover the SEDs from the posterior samples. This will run
+            self.recover_SED, which will use a simulator to recreate the Synthesizer
+            model and recover the SEDs from the posterior samples.
+        plot_SEDs : bool
+            If True, plot the recovered SEDs. This will only work if recover_seds is True.
+
 
         Returns:
         -------
@@ -1983,6 +2013,14 @@ class SBI_Fitter:
             override_transformations=override_transformations,
         )
 
+        self.test_in_distributon(
+            feature_array, direction="in", method="robust_mahalanobis", confidence=0.99
+        )
+
+        if return_feature_array:
+            # If return_feature_array is True, return the feature array and the mask
+            return feature_array, obs_mask
+
         samples = self.sample_posterior(
             X_test=feature_array,
             sample_method=sample_method,
@@ -1993,6 +2031,9 @@ class SBI_Fitter:
 
         print("Obtained posterior samples.")
 
+        # Rearrange into correct shape for quantiles
+        samples = samples.transpose(2, 0, 1)
+
         if append_to_input:
             # Append the quantiles to the input DataFrame
             table = observations.copy()
@@ -2000,12 +2041,22 @@ class SBI_Fitter:
             table = Table()
         # Do quantiles, get column names from self.simple_fitted_parameter_names
         for i, param in enumerate(self.simple_fitted_parameter_names):
-            samples_i = samples[:, i]
+            samples_i = samples[i, :, :]
             samples_q = np.quantile(samples_i, quantiles, axis=1)
             for j, quant in enumerate(samples_q):
-                print(param, quant)
                 table[f"{param}_{int(quantiles[j] * 100)}"] = np.nan
                 table[f"{param}_{int(quantiles[j] * 100)}"][~obs_mask] = quant
+
+        if recover_SEDs:
+            for x_test in observations:
+                fnu_quantiles, wav, phot_fnu_draws, phot_wav = self.recover_SED(
+                    X_test=x_test,
+                    samples=samples,
+                    n_samples=num_samples,
+                    sample_method=sample_method,
+                    sample_kwargs=sample_kwargs,
+                    plot=plot_SEDs,
+                )
 
         return table
 
@@ -2334,6 +2385,119 @@ class SBI_Fitter:
         study_path = os.path.join(out_dir, f"{study_name}_optuna_study_{self._timestamp}.pkl")
         dump(study, study_path, compress=3)
 
+    def test_in_distributon(
+        self,
+        X_test: np.ndarray,
+        method="robust_mahalanobis",
+        direction="in",
+        contamination=0.1,
+        n_neighbors=20,
+        threshold=None,
+        confidence=0.95,
+        n_components=None,
+        plot=True,
+        feature_breakdown=False,
+        **kwargs,
+    ):
+        """Test if X_test is in distribution of self.feature_array.
+
+        If direction is "in", then we check if X_test is within the
+        distribution of self.feature_array. If 'out' we check if self.feature_array is
+        within the distribution of X_test.
+
+        uses utils.detect_outliers
+
+        Methods available:
+            - 'robust_mahalanobis': Uses robust Mahalanobis distance to detect outliers.
+            - 'mahalanobis': Uses standard Mahalanobis distance to detect outliers.
+            - 'lof': Uses Local Outlier Factor to detect outliers.
+            - 'isolation_forest': Uses Isolation Forest to detect outliers.
+            - 'one_class_svm': Uses One-Class SVM to detect outliers.
+            - 'pca': Uses PCA to detect outliers.
+            - hotelling_t2: Uses Hotelling's T-squared test to detect outliers.
+            - 'kde': Uses Kernel Density Estimation to detect outliers.
+
+        Parameters:
+        ----------
+        X_test : np.ndarray
+            The test data to check for in-distribution or out-of-distribution.
+        method : str, default='robust_mahalanobis'
+            The method to use for outlier detection. Options are listed above.
+        direction : str, default='in'
+            Direction of the test, either 'in' or 'out'.
+        contamination : float, default=0.1
+            Expected proportion of outliers (for applicable methods)
+        n_neighbors : int, default=20
+            Number of neighbors for LOF
+        threshold : float, optional
+            Manual threshold for outlier detection
+        confidence : float, default=0.95
+            Confidence level for statistical tests
+        n_components : int, optional
+            Number of components for PCA (if None, uses all)
+        plot : bool, default=True
+            Whether to plot the results of the outlier detection.
+        feature_breakdown : bool, default=False
+            If True, will analyze feature contributions to outlier scores.
+            Only works for certain methods
+            ('robust_mahalanobis', 'mahalanobis', 'euclidean').
+        **kwargs : dict
+            Additional parameters for specific methods
+
+        Returns:
+        --------
+        dict : Dictionary containing:
+            - 'outlier_mask': Boolean array indicating outliers
+            - 'scores': Outlier scores
+            - 'threshold_used': Threshold value used
+            - 'method_info': Additional method-specific information
+
+        """
+        assert self.has_features, (
+            "Feature array not created. Please create the feature array first."
+        )
+
+        if not isinstance(X_test, np.ndarray):
+            raise TypeError("X_test must be a numpy array.")
+
+        assert direction in ["in", "out"], "Direction must be either 'in' or 'out'."
+
+        if direction == "in":
+            dist1 = self.feature_array
+            dist2 = X_test
+        else:
+            dist1 = X_test
+            dist2 = self.feature_array
+
+        if not feature_breakdown:
+            results = detect_outliers(
+                dist1,
+                dist2,
+                method=method,
+                contamination=contamination,
+                n_neighbors=n_neighbors,
+                threshold=threshold,
+                confidence=confidence,
+                n_components=n_components,
+                plot=plot,
+                **kwargs,
+            )
+        else:
+            if method not in ["robust_mahalanobis", "mahalanobis", "euclidean", "all"]:
+                raise ValueError(
+                    "Feature breakdown only works with 'robust_mahalanobis', 'mahalanobis', or 'euclidean' methods."  # noqa E501
+                )
+            if method == "all":
+                results = compare_methods_feature_importance(
+                    dist1, dist2, feature_names=self.feature_names
+                )
+            else:
+                results = analyze_feature_contributions(
+                    dist1, dist2, feature_names=self.feature_names, method=method
+                )
+
+        return results
+
     def run_evaluate_sbi(
         self,
         trial: optuna.Trial,
@@ -2550,6 +2714,7 @@ class SBI_Fitter:
             name_append = f"_{self._timestamp}"
 
         print(f"{out_dir}/{self.name}{name_append}_params.pkl")
+        run = False
         if os.path.exists(f"{out_dir}/{self.name}{name_append}_params.pkl") and save_model:
             if load_existing_model:
                 print(
@@ -2559,7 +2724,8 @@ class SBI_Fitter:
                     f"{out_dir}/{self.name}{name_append}_posterior.pkl",
                     set_self=set_self,
                 )
-                return posterior, stats
+                # return posterior, stats
+                run = True
             else:
                 print(
                     "Model with same name already exists. \
@@ -2572,386 +2738,405 @@ class SBI_Fitter:
 
         start_time = datetime.now()
 
-        if learning_type == "offline" or initial_training_from_grid:
-            if not self.has_features:
-                raise ValueError(
-                    "Feature array not created. Please create the feature array first."
-                )
-
-            if self.fitted_parameter_array is None:
-                raise ValueError(
-                    "Parameter grid not created. Please create the parameter grid first."
-                )
-
-            if self.fitted_parameter_names is None:
-                raise ValueError(
-                    """Parameter names not created.
-                    Please create the parameter names first."""
-                )
-
-            if train_indices is None:
-                if (
-                    not hasattr(self, "_train_indices")
-                    or not hasattr(self, "_test_indices")
-                    or self._train_indices is None
-                    or self._test_indices is None
-                    or (
-                        len(self._train_indices) + len(self._test_indices)
-                        != self.feature_array.shape[0]
+        if not run:
+            if learning_type == "offline" or initial_training_from_grid:
+                if not self.has_features:
+                    raise ValueError(
+                        "Feature array not created. Please create the feature array first."
                     )
-                    or not use_existing_indices
-                ):
-                    train_indices, test_indices = self.split_dataset(
-                        train_fraction=train_test_fraction,
-                        random_seed=random_seed,
+
+                if self.fitted_parameter_array is None:
+                    raise ValueError(
+                        "Parameter grid not created. Please create the parameter grid first."
+                    )
+
+                if self.fitted_parameter_names is None:
+                    raise ValueError(
+                        """Parameter names not created.
+                        Please create the parameter names first."""
+                    )
+
+                if train_indices is None:
+                    if (
+                        not hasattr(self, "_train_indices")
+                        or not hasattr(self, "_test_indices")
+                        or self._train_indices is None
+                        or self._test_indices is None
+                        or (
+                            len(self._train_indices) + len(self._test_indices)
+                            != self.feature_array.shape[0]
+                        )
+                        or not use_existing_indices
+                    ):
+                        train_indices, test_indices = self.split_dataset(
+                            train_fraction=train_test_fraction,
+                            random_seed=random_seed,
+                            verbose=verbose,
+                        )
+                    else:
+                        print("Using existing train and test indices.")
+                        train_indices = self._train_indices
+                        test_indices = self._test_indices
+                # Prepare data
+
+                assert len(train_indices) > 0, "Training indices should not be empty."
+                assert len(test_indices) > 0, "Test indices should not be empty."
+
+                assert (
+                    self.feature_array.shape[0] == self.fitted_parameter_array.shape[0]
+                ), f"""Feature array and parameter array should have the same number of
+                    samples, got {self.feature_array.shape[0]} and
+                    {self.fitted_parameter_array.shape[0]}."""
+
+                X_train = self.feature_array[train_indices]
+                y_train = self.fitted_parameter_array[train_indices]
+
+                X_test = self.feature_array[test_indices]
+                y_test = self.fitted_parameter_array[test_indices]
+
+                if set_self:
+                    self._X_train = X_train
+                    self._y_train = y_train
+                    self._train_indices = train_indices
+                    self._test_indices = test_indices
+                    self._train_fraction = train_test_fraction
+                    self._X_test = X_test
+                    self._y_test = y_test
+
+                if prior_method == "manual":
+                    # Scale features and targets
+                    self._feature_scalar = feature_scalar()
+                    self._target_scalar = target_scalar()
+                    X_scaler = self._create_feature_scaler(X_train)
+                    y_scaler = self._create_target_scaler(y_train)
+
+                    X_scaled = X_scaler.transform(X_train)
+                    y_scaled = y_scaler.transform(y_train)
+
+                    # Setup prior based on scaled targets
+                    y_std = np.std(y_scaled, axis=0)
+                    y_min = np.min(y_scaled, axis=0)
+                    y_max = np.max(y_scaled, axis=0)
+
+                    prior_low = torch.tensor(
+                        y_min - 3 * y_std, dtype=torch.float32, device=self.device
+                    )
+                    prior_high = torch.tensor(
+                        y_max + 3 * y_std, dtype=torch.float32, device=self.device
+                    )
+                    prior = ili.utils.Uniform(low=prior_low, high=prior_high)
+                elif prior_method == "ili":
+                    # Create the prior using the parameter array
+                    prior = self.create_priors(
                         verbose=verbose,
+                        override_prior_ranges=override_prior_ranges,
                     )
+
+                    X_scaled = X_train
+                    y_scaled = y_train
                 else:
-                    print("Using existing train and test indices.")
-                    train_indices = self._train_indices
-                    test_indices = self._test_indices
-            # Prepare data
+                    raise ValueError("Invalid prior method. Use 'manual' or 'ili'.")
 
-            assert len(train_indices) > 0, "Training indices should not be empty."
-            assert len(test_indices) > 0, "Test indices should not be empty."
-
-            assert (
-                self.feature_array.shape[0] == self.fitted_parameter_array.shape[0]
-            ), f"""Feature array and parameter array should have the same number of
-                samples, got {self.feature_array.shape[0]} and
-                {self.fitted_parameter_array.shape[0]}."""
-
-            X_train = self.feature_array[train_indices]
-            y_train = self.fitted_parameter_array[train_indices]
-
-            X_test = self.feature_array[test_indices]
-            y_test = self.fitted_parameter_array[test_indices]
-
-            if set_self:
-                self._X_train = X_train
-                self._y_train = y_train
-                self._train_indices = train_indices
-                self._test_indices = test_indices
-                self._train_fraction = train_test_fraction
-                self._X_test = X_test
-                self._y_test = y_test
-
-            if prior_method == "manual":
-                # Scale features and targets
-                self._feature_scalar = feature_scalar()
-                self._target_scalar = target_scalar()
-                X_scaler = self._create_feature_scaler(X_train)
-                y_scaler = self._create_target_scaler(y_train)
-
-                X_scaled = X_scaler.transform(X_train)
-                y_scaled = y_scaler.transform(y_train)
-
-                # Setup prior based on scaled targets
-                y_std = np.std(y_scaled, axis=0)
-                y_min = np.min(y_scaled, axis=0)
-                y_max = np.max(y_scaled, axis=0)
-
-                prior_low = torch.tensor(y_min - 3 * y_std, dtype=torch.float32, device=self.device)
-                prior_high = torch.tensor(
-                    y_max + 3 * y_std, dtype=torch.float32, device=self.device
-                )
-                prior = ili.utils.Uniform(low=prior_low, high=prior_high)
-            elif prior_method == "ili":
-                # Create the prior using the parameter array
+                # Create data loader
+                loader = NumpyLoader(X_scaled, y_scaled)
+            else:
                 prior = self.create_priors(
-                    verbose=verbose,
-                    override_prior_ranges=override_prior_ranges,
+                    verbose=verbose, override_prior_ranges=override_prior_ranges
                 )
 
-                X_scaled = X_train
-                y_scaled = y_train
-            else:
-                raise ValueError("Invalid prior method. Use 'manual' or 'ili'.")
-
-            # Create data loader
-            loader = NumpyLoader(X_scaled, y_scaled)
-        else:
-            prior = self.create_priors(verbose=verbose, override_prior_ranges=override_prior_ranges)
-
-        if learning_type == "online":
-            assert engine in ["SNPE", "SNLE", "SNRE"], (
-                "Engine should be either 'SNPE', 'SNLE' or 'SNRE'. for online learning."
-            )
-
-            # Do online learning
-            if simulator is None:
-                simulator = self.simulator
-
-            assert callable(simulator), "Simulator function must be provided for online learning."
-            assert num_simulations > 0, "Number of simulations must be greater than 0."
-
-            if not os.path.exists(f"{out_dir}/online/"):
-                os.makedirs(f"{out_dir}/online/")
-
-            if initial_training_from_grid:
-                # Save already created data to .npy files
-                np.save(
-                    f"{out_dir}/online/xobs.npy",
-                    self.feature_array[train_indices],
+            if learning_type == "online":
+                assert engine in ["SNPE", "SNLE", "SNRE"], (
+                    "Engine should be either 'SNPE', 'SNLE' or 'SNRE'. for online learning."
                 )
-                np.save(
-                    f"{out_dir}/online/theta.npy",
-                    self.fitted_parameter_array[test_indices],
-                )
-            else:
-                if online_training_xobs is not None:
-                    xobs = np.squeeze(online_training_xobs)
-                    print(f"Using provided xobs for online training: {xobs.shape}")
-                    np.save(f"{out_dir}/online/xobs.npy", xobs)
 
-                else:
-                    print(
-                        """Drawing random photometry from prior to conditon on.
-                        Results probably won't generalize well."""
+                # Do online learning
+                if simulator is None:
+                    simulator = self.simulator
+
+                assert callable(simulator), (
+                    "Simulator function must be provided for online learning."
+                )
+                assert num_simulations > 0, "Number of simulations must be greater than 0."
+
+                if not os.path.exists(f"{out_dir}/online/"):
+                    os.makedirs(f"{out_dir}/online/")
+
+                if initial_training_from_grid:
+                    # Save already created data to .npy files
+                    np.save(
+                        f"{out_dir}/online/xobs.npy",
+                        self.feature_array[train_indices],
                     )
-                    samples = prior.sample_n(1)
-                    phot = []
-                    for i in range(len(samples)):
-                        p = simulator(samples[i]).cpu().numpy()
-                        phot.append(p)
+                    np.save(
+                        f"{out_dir}/online/theta.npy",
+                        self.fitted_parameter_array[test_indices],
+                    )
+                else:
+                    if online_training_xobs is not None:
+                        xobs = np.squeeze(online_training_xobs)
+                        print(f"Using provided xobs for online training: {xobs.shape}")
+                        np.save(f"{out_dir}/online/xobs.npy", xobs)
 
-                    phot = np.array(phot)
-                    phot = np.squeeze(phot)
-                    # shape phot to be (num_simulations, num_features)
-                    # phot = phot.reshape(num_simulations, -1)#[np.newaxis, :]
+                    else:
+                        print(
+                            """Drawing random photometry from prior to conditon on.
+                            Results probably won't generalize well."""
+                        )
+                        samples = prior.sample_n(1)
+                        phot = []
+                        for i in range(len(samples)):
+                            p = simulator(samples[i]).cpu().numpy()
+                            phot.append(p)
 
-                    theta = samples.cpu().numpy()  # [np.newaxis, :]
+                        phot = np.array(phot)
+                        phot = np.squeeze(phot)
+                        # shape phot to be (num_simulations, num_features)
+                        # phot = phot.reshape(num_simulations, -1)#[np.newaxis, :]
 
-                    np.save(f"{out_dir}/online/xobs.npy", phot)
-                    np.save(f"{out_dir}/online/thetafid.npy", theta)
+                        theta = samples.cpu().numpy()  # [np.newaxis, :]
 
-            # Need to have option for intial training using saved data.
+                        np.save(f"{out_dir}/online/xobs.npy", phot)
+                        np.save(f"{out_dir}/online/thetafid.npy", theta)
 
-            loader = SBISimulator(
-                in_dir=f"{out_dir}/online/",
-                xobs_file="xobs.npy",
-                thetafid_file="thetafid.npy",
-                num_simulations=num_simulations,
-                save_simulated=True,
-                x_file="x.npy",  # if initial_training_from_grid else None,
-                theta_file="theta.npy",  # , if initial_training_from_grid else None,
-                simulator=simulator,
-            )
+                # Need to have option for intial training using saved data.
 
-        nets = []
-        ensemble_model_types = []
-        ensemble_model_args = []
-        for i in range(n_nets):
-            # Configure model
-            model_args = {}
-            model_type = model_type if isinstance(model_type, str) else model_type[i]
-            eng = engine if isinstance(engine, str) else engine[i]
-
-            if model_type == "mdn":
-                model_args = {
-                    "hidden_features": hidden_features[i]
-                    if isinstance(hidden_features, list)
-                    else hidden_features,
-                    "num_components": num_components[i]
-                    if isinstance(num_components, list)
-                    else num_components,
-                }
-            elif model_type in [
-                "maf",
-                "nsf",
-                "made",
-                "ncsf",
-                "cnf",
-                "gf",
-                "sospf",
-                "naf",
-                "unaf",
-            ]:
-                model_args = {
-                    "hidden_features": hidden_features[i]
-                    if isinstance(hidden_features, list)
-                    else hidden_features,
-                    "num_transforms": num_transforms[i]
-                    if isinstance(num_transforms, list)
-                    else num_transforms,
-                }
-                # if model_type == "nsf":
-                #    model_args["num_bins"] = num_bins
-
-            elif model_type in ["linear"]:
-                model_args = {}
-            elif model_type in ["mlp", "resnet"]:
-                model_args = {
-                    "hidden_features": hidden_features[i]
-                    if isinstance(hidden_features, list)
-                    else hidden_features,
-                }
-            else:
-                raise ValueError(
-                    f"""Unknown model type: {model_type}.
-                    Options include: sbi = mdn, maf, nsf, made, linear, mlp, resnet.
-                    lampe = mdn, maf, nsf, ncsf, cnf, nice, sospf, gf, naf.
-                    pydelfi: mdn, maf."""
+                loader = SBISimulator(
+                    in_dir=f"{out_dir}/online/",
+                    xobs_file="xobs.npy",
+                    thetafid_file="thetafid.npy",
+                    num_simulations=num_simulations,
+                    save_simulated=True,
+                    x_file="x.npy",  # if initial_training_from_grid else None,
+                    theta_file="theta.npy",  # , if initial_training_from_grid else None,
+                    simulator=simulator,
                 )
 
-            model_args.update(additional_model_args)
+            nets = []
+            ensemble_model_types = []
+            ensemble_model_args = []
+            for i in range(n_nets):
+                # Configure model
+                model_args = {}
+                model_type = model_type if isinstance(model_type, str) else model_type[i]
+                eng = engine if isinstance(engine, str) else engine[i]
 
-            # Create neural network
-            net = self._create_network(
-                model_type,
-                model_args,
-                engine=eng,
-                backend=backend,
-                verbose=verbose,
-                device=self.device,
-            )
-            nets.append(net)
-            ensemble_model_types.append(model_type)
-            ensemble_model_args.append(model_args)
+                if model_type == "mdn":
+                    model_args = {
+                        "hidden_features": hidden_features[i]
+                        if isinstance(hidden_features, list)
+                        else hidden_features,
+                        "num_components": num_components[i]
+                        if isinstance(num_components, list)
+                        else num_components,
+                    }
+                elif model_type in [
+                    "maf",
+                    "nsf",
+                    "made",
+                    "ncsf",
+                    "cnf",
+                    "gf",
+                    "sospf",
+                    "naf",
+                    "unaf",
+                ]:
+                    model_args = {
+                        "hidden_features": hidden_features[i]
+                        if isinstance(hidden_features, list)
+                        else hidden_features,
+                        "num_transforms": num_transforms[i]
+                        if isinstance(num_transforms, list)
+                        else num_transforms,
+                    }
+                    # if model_type == "nsf":
+                    #    model_args["num_bins"] = num_bins
 
-        # Setup trainer arguments
-        train_args = {
-            "training_batch_size": training_batch_size,
-            "learning_rate": learning_rate,
-            "validation_fraction": validation_fraction,
-            "stop_after_epochs": stop_after_epochs,
-            "clip_max_norm": clip_max_norm,
-        }
+                elif model_type in ["linear"]:
+                    model_args = {}
+                elif model_type in ["mlp", "resnet"]:
+                    model_args = {
+                        "hidden_features": hidden_features[i]
+                        if isinstance(hidden_features, list)
+                        else hidden_features,
+                    }
+                else:
+                    raise ValueError(
+                        f"""Unknown model type: {model_type}.
+                        Options include: sbi = mdn, maf, nsf, made, linear, mlp, resnet.
+                        lampe = mdn, maf, nsf, ncsf, cnf, nice, sospf, gf, naf.
+                        pydelfi: mdn, maf."""
+                    )
 
-        if learning_type == "online":
-            train_args["num_round"] = num_online_rounds
+                model_args.update(additional_model_args)
 
-        # Set up trainer
-        trainer = InferenceRunner.load(
-            backend=backend,
-            engine=engine,
-            prior=prior,
-            nets=nets,
-            train_args=train_args,
-            out_dir=out_dir if save_model else None,
-            name=f"{self.name}{name_append}_",
-            device=self.device,
-        )
+                # Create neural network
+                net = self._create_network(
+                    model_type,
+                    model_args,
+                    engine=eng,
+                    backend=backend,
+                    verbose=verbose,
+                    device=self.device,
+                )
+                nets.append(net)
+                ensemble_model_types.append(model_type)
+                ensemble_model_args.append(model_args)
 
-        print(f"Training on {self.device}.")
-        # Train the model
-        try:
-            if not verbose:
-                # Suppress output if not verbose
-                buffer = StringIO()
-                with redirect_stdout(buffer):
-                    posteriors, stats = trainer(loader)
-            else:
-                # Train with normal output
-                posteriors, stats = trainer(loader)
-        except Exception as e:
-            raise RuntimeError(f"Error during SBI training: {str(e)}")
-
-        if set_self:
-            self._prior = prior
-            self._loader = loader
-            self.posteriors = posteriors
-            self.stats = stats
-            self._train_args = train_args
-            self._ensemble_model_types = ensemble_model_types
-            self._ensemble_model_args = ensemble_model_args
-            if learning_type == "online" or initial_training_from_grid:
-                self.simulator = simulator
-                self._num_simulations = num_simulations
-                self._num_online_rounds = num_online_rounds
-                self._initial_training_from_grid = initial_training_from_grid
-            else:
-                self._train_indices = train_indices
-                self._test_indices = test_indices
-                self._train_fraction = train_test_fraction
-
-        # Save the params with the model if needed
-        if save_model:
-            param_dict = {
-                "engine": engine,
-                "learning_type": learning_type,
-                "ensemble_model_types": ensemble_model_types,
-                "ensemble_model_args": ensemble_model_args,
-                "n_nets": n_nets,
-                "feature_names": self.feature_names,
-                "fitted_parameter_names": self.fitted_parameter_names,
-                "train_args": train_args,
-                "stats": stats,
-                "timestamp": self._timestamp,
-                "prior": self._prior,
-                "grid_path": self.grid_path,
-                "name": self.name,
+            # Setup trainer arguments
+            train_args = {
+                "training_batch_size": training_batch_size,
+                "learning_rate": learning_rate,
+                "validation_fraction": validation_fraction,
+                "stop_after_epochs": stop_after_epochs,
+                "clip_max_norm": clip_max_norm,
             }
 
-            if learning_type == "online" or initial_training_from_grid:
-                param_dict["simulator"] = simulator
-                param_dict["num_simulations"] = num_simulations
-                param_dict["num_online_rounds"] = num_online_rounds
-                param_dict["initial_training_from_grid"] = initial_training_from_grid
-                param_dict["online_training_xobs"] = online_training_xobs
+            if learning_type == "online":
+                train_args["num_round"] = num_online_rounds
 
-            if learning_type == "offline":
-                param_dict["train_fraction"] = train_test_fraction
-                param_dict["test_indices"] = test_indices
-                param_dict["train_indices"] = train_indices
-                param_dict["feature_array"] = self.feature_array
-                param_dict["parameter_array"] = self.fitted_parameter_array
-                param_dict["feature_array_flags"] = self.feature_array_flags
-
-            # convery any torch tensors to numpy arrays on the cpu for compatibility
-            for key, value in param_dict.items():
-                if isinstance(value, torch.Tensor):
-                    param_dict[key] = value.cpu().numpy()
-
-            save_path = f"{out_dir}/{self.name}{name_append}_params.pkl"
-            if save_method == "torch":
-                with open(save_path, "wb") as f:
-                    torch.save(
-                        param_dict,
-                        save_path,
-                    )
-            elif save_method == "pickle":
-                with open(save_path, "wb") as f:
-                    pickle.dump(
-                        param_dict,
-                        f,
-                        protocol=pickle.HIGHEST_PROTOCOL,
-                    )
-            elif save_method == "joblib":
-                from joblib import dump
-
-                dump(param_dict, save_path, compress=3)
-            elif save_method == "hdf5":
-                import h5py
-
-                with h5py.File(save_path, "w") as f:
-                    for key, value in param_dict.items():
-                        if isinstance(value, np.ndarray):
-                            f.create_dataset(key, data=value)
-                        elif isinstance(value, torch.Tensor):
-                            f.create_dataset(key, data=value.cpu().numpy())
-                        else:
-                            f.attrs[key] = value
-            else:
-                raise ValueError("Invalid save method. Use 'torch', 'pickle' or 'joblib'.")
-
-        end_time = datetime.now()
-
-        elapsed_time = end_time - start_time
-        print(f"Time to train model(s): {elapsed_time}")
-
-        if evaluate_model:
-            print("Evaluating model...")
-            metrics = self.evaluate_model(
-                posteriors=posteriors,
-                X_test=X_test,
-                y_test=y_test,
+            # Set up trainer
+            trainer = InferenceRunner.load(
+                backend=backend,
+                engine=engine,
+                prior=prior,
+                nets=nets,
+                train_args=train_args,
+                out_dir=out_dir if save_model else None,
+                name=f"{self.name}{name_append}_",
+                device=self.device,
             )
 
-            # dump metrics to json file
+            print(f"Training on {self.device}.")
+            # Train the model
+            try:
+                if not verbose:
+                    # Suppress output if not verbose
+                    buffer = StringIO()
+                    with redirect_stdout(buffer):
+                        posteriors, stats = trainer(loader)
+                else:
+                    # Train with normal output
+                    posteriors, stats = trainer(loader)
+            except Exception as e:
+                raise RuntimeError(f"Error during SBI training: {str(e)}")
+
+            if set_self:
+                self._prior = prior
+                self._loader = loader
+                self.posteriors = posteriors
+                self.stats = stats
+                self._train_args = train_args
+                self._ensemble_model_types = ensemble_model_types
+                self._ensemble_model_args = ensemble_model_args
+                if learning_type == "online" or initial_training_from_grid:
+                    self.simulator = simulator
+                    self._num_simulations = num_simulations
+                    self._num_online_rounds = num_online_rounds
+                    self._initial_training_from_grid = initial_training_from_grid
+                else:
+                    self._train_indices = train_indices
+                    self._test_indices = test_indices
+                    self._train_fraction = train_test_fraction
+
+            # Save the params with the model if needed
+            if save_model:
+                param_dict = {
+                    "engine": engine,
+                    "learning_type": learning_type,
+                    "ensemble_model_types": ensemble_model_types,
+                    "ensemble_model_args": ensemble_model_args,
+                    "n_nets": n_nets,
+                    "feature_names": self.feature_names,
+                    "feature_units": self.feature_units,
+                    "fitted_parameter_units": self.fitted_parameter_units,
+                    "fitted_parameter_names": self.fitted_parameter_names,
+                    "train_args": train_args,
+                    "stats": stats,
+                    "timestamp": self._timestamp,
+                    "prior": self._prior,
+                    "grid_path": self.grid_path,
+                    "name": self.name,
+                }
+
+                if learning_type == "online" or initial_training_from_grid:
+                    param_dict["simulator"] = simulator
+                    param_dict["num_simulations"] = num_simulations
+                    param_dict["num_online_rounds"] = num_online_rounds
+                    param_dict["initial_training_from_grid"] = initial_training_from_grid
+                    param_dict["online_training_xobs"] = online_training_xobs
+
+                if learning_type == "offline":
+                    param_dict["train_fraction"] = train_test_fraction
+                    param_dict["test_indices"] = test_indices
+                    param_dict["train_indices"] = train_indices
+                    param_dict["feature_array"] = self.feature_array
+                    param_dict["parameter_array"] = self.fitted_parameter_array
+                    param_dict["feature_array_flags"] = self.feature_array_flags
+
+                # convery any torch tensors to numpy arrays on the cpu for compatibility
+                for key, value in param_dict.items():
+                    if isinstance(value, torch.Tensor):
+                        param_dict[key] = value.cpu().numpy()
+
+                save_path = f"{out_dir}/{self.name}{name_append}_params.pkl"
+                if save_method == "torch":
+                    with open(save_path, "wb") as f:
+                        torch.save(
+                            param_dict,
+                            save_path,
+                        )
+                elif save_method == "pickle":
+                    with open(save_path, "wb") as f:
+                        pickle.dump(
+                            param_dict,
+                            f,
+                            protocol=pickle.HIGHEST_PROTOCOL,
+                        )
+                elif save_method == "joblib":
+                    from joblib import dump
+
+                    dump(param_dict, save_path, compress=3)
+                elif save_method == "hdf5":
+                    import h5py
+
+                    with h5py.File(save_path, "w") as f:
+                        for key, value in param_dict.items():
+                            if isinstance(value, np.ndarray):
+                                f.create_dataset(key, data=value)
+                            elif isinstance(value, torch.Tensor):
+                                f.create_dataset(key, data=value.cpu().numpy())
+                            else:
+                                f.attrs[key] = value
+                else:
+                    raise ValueError("Invalid save method. Use 'torch', 'pickle' or 'joblib'.")
+
+            end_time = datetime.now()
+
+            elapsed_time = end_time - start_time
+            print(f"Time to train model(s): {elapsed_time}")
+
+        else:
+            posteriors = self.posteriors
+            stats = self.stats
+            X_test = self._X_test
+            y_test = self._y_test
+            X_scaled = self._X_train
+            y_scaled = self._y_train
+
+        if evaluate_model:
             metrics_path = f"{out_dir}/{self.name}{name_append}_metrics.json"
-            with open(metrics_path, "w") as f:
-                json.dump(metrics, f, indent=4)
+            if not os.path.exists(metrics_path):
+                print("Evaluating model...")
+                metrics = self.evaluate_model(
+                    posteriors=posteriors,
+                    X_test=X_test,
+                    y_test=y_test,
+                )
+
+                # dump metrics to json file
+                metrics_path = f"{out_dir}/{self.name}{name_append}_metrics.json"
+                with open(metrics_path, "w") as f:
+                    json.dump(metrics, f, indent=4)
 
         if plot:
             if learning_type == "offline":
@@ -3098,15 +3283,18 @@ class SBI_Fitter:
 
             flag_params = {
                 "normalize_method": flags["normalize_method"],
-                "include_phot_errors": flags["include_errors_in_feature_array"],
+                # Make default behaviour not rescattering photometry.
+                "include_phot_errors": False,  # flags["include_errors_in_feature_array"],
                 "depths": flags["depths"],
                 "depth_sigma": 5,
-                "noise_models": flags["empirical_noise_models"],
+                "noise_models": flags.get("empirical_noise_models", None),
                 "photometry_to_remove": flags["photometry_to_remove"],
                 "out_flux_unit": flags["normed_flux_units"],
             }
 
             default_kwargs.update(flag_params)
+        else:
+            flags = {}
 
         default_kwargs.update(kwargs)
 
@@ -3118,6 +3306,15 @@ class SBI_Fitter:
                     be provided manually to recover the SED.""")
             return None
 
+        removed_params = flags.get("parameters_to_remove", [])
+        if removed_params:
+            for param in removed_params:
+                param_index = self.parameter_names.index(param)
+                data = self.parameter_array[:, param_index]
+                # check if all values are the same
+                if np.all(data == data[0]):
+                    simulator.fixed_params[param] = data[0]
+
         if set_self:
             self.simulator = simulator
             self.has_simulator = True
@@ -3128,6 +3325,7 @@ class SBI_Fitter:
     def recover_SED(
         self,
         X_test: np.ndarray,
+        samples: np.ndarray = None,
         n_samples=1000,
         sample_method: str = "direct",
         sample_kwargs: dict = {},
@@ -3148,8 +3346,10 @@ class SBI_Fitter:
 
         Parameters:
             X_test: The input observation to recover the SED for.
+            samples: Samples from the posterior distribution.
+                if None, samples will be drawn from the posterior.
             n_samples: Number of samples to draw from the posterior.
-            sample_method: Method to sample from the posterior.
+            sample_method: Method to sample from the posterior if samples is None.
                 Either 'direct' or 'emcee'.
             sample_kwargs: Additional keyword arguments for sampling.
             posteriors: The posterior distribution to use. If None, uses self.posteriors.
@@ -3170,6 +3370,9 @@ class SBI_Fitter:
         if posteriors is None:
             posteriors = self.posteriors
 
+        if marginalized_parameters is None:
+            marginalized_parameters = {}
+
         if simulator is None:
             self.recreate_simulator_from_grid(set_self=True)
 
@@ -3185,14 +3388,14 @@ class SBI_Fitter:
         plots_dir = plots_dir.replace("name", self.name)
 
         # Draw samples, run through simulator,
-
-        samples = self.sample_posterior(
-            X_test=[X_test],
-            sample_method=sample_method,
-            num_samples=n_samples,
-            posteriors=posteriors,
-            sample_kwargs=sample_kwargs,
-        )
+        if samples is None:
+            samples = self.sample_posterior(
+                X_test=[X_test],
+                sample_method=sample_method,
+                num_samples=n_samples,
+                posteriors=posteriors,
+                sample_kwargs=sample_kwargs,
+            )
 
         # Run through simulator
         # Check if simulator is callable
@@ -3545,6 +3748,7 @@ class SBI_Fitter:
 
         Returns:
             A numpy array of samples drawn from the posterior distribution.
+            Shape (num_objects, num_samples, num_parameters).
         """
         if posteriors is None:
             posteriors = self.posteriors
@@ -3617,29 +3821,30 @@ class SBI_Fitter:
         """Evaluate the trained model on test data.
 
         Metrics:
-        - mse - Mean Squared Error
+        - mse - Mean Squared Error - Lower values indicate better fit.
             Average of the squared differences between predicted and actual values.
-            Lower values indicate better fit.
-        - rmse - Root Mean Squared Error
+        - rmse - Root Mean Squared Error - Lower values indicate better fit.
             Square root of the mean squared error.
             Provides error in the same units as the target variable.
-        - mae - Mean Absolute Error
+        - mae - Mean Absolute Error - Lower values indicate better fit.
             Average of the absolute differences between predicted and actual values.
             Less sensitive to outliers than MSE.
-        - median_ae - Median Absolute Error
+        - median_ae - Median Absolute Error - Lower values indicate better fit.
             Median of the absolute differences between predicted and actual values.
             Robust to outliers, providing a better measure of central tendency
             in the presence of noise.
-        - r_squared - Coefficient of Determination
+        - r_squared - Coefficient of Determination - Value of 1 indicates perfect fit.
             Proportion of variance in the target variable that can be explained by the model.
-        - rmse_norm - Normalized RMSE
+        - rmse_norm - Normalized RMSE - Lower values indicate better fit.
             RMSE divided by the range of the target variable.
-        - mae_norm - Normalized MAE
+        - mae_norm - Normalized MAE - Lower values indicate better fit.
             MAE divided by the range of the target variable.
-        - tarp - Tests of Accuracy with Random Points (TARP)
+        - tarp - Tests of Accuracy with Random Points (TARP) - Lower values indicate better fit.
             Probability that the model's predictions fall within a certain range of the true values.
-        - log_dpit_max - Logarithm of the maximum distance between the predicted and true values
-        - mean_log_prob - Mean log probability of the predictions given the true values.
+        - log_dpit_max - Lower values indicate better fit.
+             Logarithm of the maximum distance between the predicted and true values
+        - mean_log_prob -
+         Mean log probability of the predictions given the true values.
 
         TODO: Split per model for ensemble models.
 
@@ -3762,23 +3967,39 @@ class SBI_Fitter:
                 print("\nParameter-Specific Metrics:")
                 print("-" * 40)
 
-                # Create header
-                header = f"{'Metric':<15}"
+                # Calculate column widths
+                metric_col_width = max(
+                    len(metric.replace("_", " ").upper()) for metric in param_metrics
+                )
+                metric_col_width = max(metric_col_width, len("Metric"))  # Ensure header fits
+
+                param_col_widths = []
                 for param_name in self.fitted_parameter_names:
-                    header += f"{param_name:>12}"
+                    # Calculate width needed for parameter name and values
+                    max_value_width = 0
+                    for metric in param_metrics:
+                        value_str = f"{metrics[metric][list(self.fitted_parameter_names).index(param_name)]:.6f}"  # noqa E501
+                        max_value_width = max(max_value_width, len(value_str))
+
+                    col_width = max(len(param_name), max_value_width) + 2  # Add padding
+                    param_col_widths.append(col_width)
+
+                # Create header
+                header = f"{'Metric':<{metric_col_width}}"
+                for i, param_name in enumerate(self.fitted_parameter_names):
+                    header += f"{param_name:>{param_col_widths[i]}}"
                 print(header)
                 print("-" * len(header))
 
                 # Print each metric row
                 for metric in param_metrics:
                     metric_name = metric.replace("_", " ").upper()
-                    row = f"{metric_name:<25}"
+                    row = f"{metric_name:<{metric_col_width}}"
                     for i, param_name in enumerate(self.fitted_parameter_names):
-                        row += f"{metrics[metric][i]:>12.6f}"
+                        row += f"{metrics[metric][i]:>{param_col_widths[i]}.6f}"
                     print(row)
 
             print("=" * 60)
-
         # convert numpy arrays to lists for JSON serialization
         for key in metrics:
             if isinstance(metrics[key], np.ndarray):
@@ -3854,6 +4075,7 @@ class SBI_Fitter:
         self,
         summaries: list = "self",
         plots_dir: str = f"{code_path}/models/name/plots/",
+        overwrite: bool = False,
     ) -> None:
         """Plot the loss of the SBI model."""
         if summaries == "self":
@@ -3863,6 +4085,9 @@ class SBI_Fitter:
                 raise ValueError("No summaries found. Please provide the summaries.")
 
         plots_dir = plots_dir.replace("name", self.name)
+
+        if os.path.exists(f"{plots_dir}/loss.png") and not overwrite:
+            return
 
         if not os.path.exists(plots_dir):
             os.makedirs(plots_dir)
@@ -3931,6 +4156,9 @@ class SBI_Fitter:
         plots_dir: str = f"{code_path}/models/name/plots/",
         seperate_test_train=False,
         max_bins_row=6,
+        comparison_array: np.ndarray = None,
+        density: bool = False,
+        log: bool = False,
     ):
         """Plot histogram of each feature using astropy.visualization.hist."""
         nrow = int(np.ceil(len(self.feature_names) / max_bins_row))
@@ -3939,17 +4167,30 @@ class SBI_Fitter:
         axes = axes.flatten()  # Flatten the axes array for easier indexing
 
         for i, feature in enumerate(self.feature_names):
-            print(feature)
             axes[i].set_title(feature)
-            unit = f" ({self.feature_units[i]})" if i < len(self.feature_units) else ""
+            if self.feature_units is None:
+                unit = ""
+            else:
+                unit = f" ({self.feature_units[i]})" if i < len(self.feature_units) else ""
             axes[i].set_xlabel(f"Value {unit}")
 
             if seperate_test_train:
-                hist(self._X_train[:, i], ax=axes[i], bins=bins, label="Train")
-                hist(self._X_test[:, i], ax=axes[i], bins=bins, label="Test")
+                hist(self._X_train[:, i], ax=axes[i], bins=bins, label="Train", density=density)
+                hist(self._X_test[:, i], ax=axes[i], bins=bins, label="Test", density=density)
                 axes[i].legend()
             else:
                 hist(self.feature_array[:, i], ax=axes[i], bins=bins)
+            if comparison_array is not None:
+                hist(
+                    comparison_array[:, i],
+                    ax=axes[i],
+                    bins=bins,
+                    alpha=0.5,
+                    density=density,
+                )
+
+            if log:
+                axes[i].set_yscale("log")
 
         # Hide unused axes
         for j in range(i + 1, len(axes)):
@@ -4015,6 +4256,29 @@ class SBI_Fitter:
             signature=f"{self.name}_{ind}_",
             **kwargs,
         )
+
+        text = "\n".join(
+            [
+                f"{self.feature_names[i]}: {X[ind][i]:.3f} {self.feature_units[i]}"
+                for i in range(len(X[ind]))
+            ]
+        )
+
+        fig.fig.text(
+            0.95,
+            0.95,
+            text,
+            fontsize=23,
+            ha="right",
+            va="top",
+            bbox=dict(facecolor="white", alpha=0.8, edgecolor="black"),
+        )
+
+        fig.fig.savefig(
+            os.path.join(plots_dir, f"{self.name}_{ind}_plot_single_posterior.jpg"),
+            dpi=200,
+        )
+
         return fig
 
     def plot_posterior_samples(self):
@@ -4151,6 +4415,7 @@ class SBI_Fitter:
         plots_dir: str = f"{code_path}/models/name/plots/",
         n_test_draws: int = 1000,
         posteriors: object = None,
+        overwrite: bool = False,
     ) -> None:
         """Plot the coverage of the SBI model.
 
@@ -4202,6 +4467,25 @@ class SBI_Fitter:
 
         if not os.path.exists(plots_dir):
             os.makedirs(plots_dir)
+
+        remove = []
+        for metric in plot_list:
+            m_name = {
+                "tarp": "plot_TARP",
+                "histogram": "ranks_histogram",
+                "logprob": "plot_true_logprobs",
+                "coverage": "plot_coverage",
+                "predictions": "plot_predictions",
+            }
+            m = m_name.get(metric, metric)
+            if os.path.exists(f"{plots_dir}/{m}.jpg") and not overwrite:
+                remove.append(metric)
+
+        for metric in remove:
+            plot_list.remove(metric)
+
+        if len(plot_list) == 0:
+            return
 
         metric = PosteriorCoverage(
             num_samples=num_samples,
@@ -4331,11 +4615,13 @@ class SBI_Fitter:
             # probably because we ran this model on
             # with a GPU which is not available now.
             # with open(model_file, "rb") as f:
-            posteriors = torch.load(f, map_location=torch.device(self.device))
-            from .utils import CPU_Unpickler
+            try:
+                posteriors = torch.load(f, map_location=torch.device(self.device))
+            except (RuntimeError, pickle.UnpicklingError):
+                from .utils import CPU_Unpickler
 
-            with open(model_file, "rb") as f:
-                posteriors = CPU_Unpickler(f).load()
+                with open(model_file, "rb") as f:
+                    posteriors = CPU_Unpickler(f).load()
 
         stats = model_file.replace("posterior.pkl", "summary.json")
 
@@ -4354,14 +4640,14 @@ class SBI_Fitter:
             self.posteriors = posteriors
 
         params = model_file.replace("posterior.pkl", "params.pkl")
-        print(params)
+
         if os.path.exists(params):
             try:
                 with open(params, "rb") as f:
                     params = load(f)
             except (RuntimeError, pickle.UnpicklingError):
                 try:
-                    torch.load(params, map_location=torch.device(self.device))
+                    params = torch.load(params, map_location=torch.device(self.device))
                 except RuntimeError:
                     from .utils import CPU_Unpickler
 
@@ -4386,6 +4672,8 @@ class SBI_Fitter:
                         self.feature_array_flags = params["feature_array_flags"]
                     if self.feature_array is not None:
                         self.has_features = True
+                    self.feature_names = params["feature_names"]
+                    self.feature_units = params.get("feature_units", None)
                     self.parameter_array = params["parameter_array"]
                     self._train_indices = params["train_indices"]
                     self._test_indices = params["test_indices"]
@@ -5004,12 +5292,14 @@ class Simformer_Fitter(SBI_Fitter):
         out_path = f"{code_path}/models/{self.name}/{self.name}{name_append}_posterior.pkl"
         if load_existing_model and os.path.exists(out_path):
             print(f"Loading existing model from {out_path}")
-            self.load_model_from_pkl(
+            trained_score_model, meta = self.load_model_from_pkl(
                 model_dir=f"{code_path}/models/{self.name}/",
-                model_name=f"{self.name}{name_append}_posterior.pkl",
+                model_name=f"{self.name}{name_append}_posterior",
                 set_self=set_self,
             )
-            return
+            run = True
+        else:
+            run = False
 
         priors = self.create_priors()
 
@@ -5028,7 +5318,7 @@ class Simformer_Fitter(SBI_Fitter):
                 return None
 
         task = task_func(
-            name=self.name,
+            name="galaxy_photometry",
             backend=backend,
             prior_dict=priors,
             param_names_ordered=self.fitted_parameter_names,
@@ -5075,21 +5365,22 @@ class Simformer_Fitter(SBI_Fitter):
                 "x": x[test_indices],
             }
 
-        if verbose:
-            print(f"Starting training at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        if not run:
+            if verbose:
+                print(f"Starting training at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
-        trained_score_model = train_transformer_model(
-            task=task,
-            data=training_data,
-            method_cfg=method_cfg,
-            rng=master_rng_key,
-        )
-        if verbose:
-            print(f"Finished training at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            trained_score_model = train_transformer_model(
+                task=task,
+                data=training_data,
+                method_cfg=method_cfg,
+                rng=master_rng_key,
+            )
+            if verbose:
+                print(f"Finished training at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
-        if set_self:
-            self.simformer_task = task
-            self.posteriors = trained_score_model
+            if set_self:
+                self.simformer_task = task
+                self.posteriors = trained_score_model
 
         if verbose:
             print(f"Saving model at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -5137,10 +5428,14 @@ class Simformer_Fitter(SBI_Fitter):
         """
         from .simformer import load_full_model
 
-        load_full_model(
+        model, meta = load_full_model(
             model_dir,
             model_name,
         )
+
+        # TODO: set self
+
+        return model, meta
 
     def save_model_to_pkl(
         self,
@@ -5232,7 +5527,7 @@ class Simformer_Fitter(SBI_Fitter):
 
         save_dict.update(extras)
 
-        param_path = (os.path.join(output_folder, f"{self.name}{name_append}_params.pkl"),)
+        param_path = os.path.join(output_folder, f"{self.name}{name_append}_params.pkl")
 
         if save_method == "torch":
             from torch import save
@@ -5284,11 +5579,7 @@ class Simformer_Fitter(SBI_Fitter):
         if posteriors is None:
             posteriors = self.posteriors
 
-        master_rng_key = jax.random.PRNGKey(rng_seed)
-
-        from scoresbibm.evaluation.eval_metrics import c2st
-        from scoresbibm.evaluation.eval_task import eval_inference_task
-
+        """
         eval_inference_task(
             task=task,
             model=posteriors,
@@ -5297,6 +5588,16 @@ class Simformer_Fitter(SBI_Fitter):
             rng=master_rng_key,
             num_samples=num_samples,
             num_evaluations=num_evaluations,
+        )
+        """
+        self.plot_sample_accuracy(
+            num_samples=num_samples,
+            X_test=X_test,
+            y_test=y_test,
+            task=task,
+            posteriors=posteriors,
+            rng_seed=rng_seed,
+            plots_dir=plots_dir,
         )
 
         self.plot_coverage(
@@ -5347,8 +5648,6 @@ class Simformer_Fitter(SBI_Fitter):
         if posteriors is None:
             posteriors = self.posteriors
 
-        master_rng_key = jax.random.PRNGKey(rng_seed)
-
         posterior_condition_mask = jnp.array(
             [0] * task.get_theta_dim() + [1] * task.get_x_dim(), dtype=jnp.bool_
         )
@@ -5357,7 +5656,7 @@ class Simformer_Fitter(SBI_Fitter):
             X_test=X_test,
             num_samples=1000,
             posteriors=posteriors,
-            rng_seed=master_rng_key,
+            rng_seed=rng_seed,
             attention_mask=posterior_condition_mask,
         )
 
@@ -5416,7 +5715,7 @@ class Simformer_Fitter(SBI_Fitter):
         """
         master_rng_key = jax.random.PRNGKey(rng_seed)
 
-        from scoresbibm.evaluation.eval_coverage import eval_coverage
+        from scoresbibm.evaluation.eval_task import eval_coverage
 
         metric_values, eval_time = eval_coverage(
             task=task,
@@ -5460,6 +5759,7 @@ class Simformer_Fitter(SBI_Fitter):
         posteriors: object = None,
         rng_seed: int = 42,
         attention_mask: Union[str, np.ndarray] = "full",
+        batch_size: int = 100,
     ):
         """Sample from the posterior distribution.
 
@@ -5492,34 +5792,53 @@ class Simformer_Fitter(SBI_Fitter):
         num_x = len(self.fitted_parameter_names)
 
         assert X_test.shape[1] == num_x or attention_mask != "full", (
-            "Must provide the all features or a manual attention mask. "
+            "Must provide all features or a manual attention mask. "
         )
 
-        mask_theta = np.zeros(num_theta, dtype=np.bool_)
-
         if attention_mask == "full":
+            mask_theta = np.zeros(num_theta, dtype=np.bool_)
             mask_x = np.ones(num_x, dtype=np.bool_)
+
+            mask = np.concatenate(
+                [mask_theta, mask_x],
+                axis=0,
+            )
         else:
-            mask_x = attention_mask.astype(np.bool_)
+            mask = attention_mask.astype(np.bool_)
 
         X_test = np.atleast_2d(X_test)
 
         all_samples = []
-
-        for x in X_test:
-            x = x[~mask_x]
+        """
+        for x in tqdm(X_test, desc="Sampling from posterior"):
             x = jnp.array([x], dtype=jnp.float32)
-
-            posterior_condition_mask = jnp.array(mask_theta + mask_x, dtype=jnp.bool_)
             samples = posteriors.sample_batched(
                 num_samples=num_samples,
                 x_o=x,
-                condition_mask=posterior_condition_mask,
+                condition_mask=mask,
                 rng=master_rng_key,
             )
 
             samples = np.array(samples[0], dtype=np.float32)
             all_samples.append(samples)
+        """
+
+        nbatches = int(np.ceil(X_test.shape[0] / batch_size))
+        for batch_idx in tqdm(range(nbatches), desc="Sampling from posterior"):
+            start_idx = batch_idx * batch_size
+            end_idx = min((batch_idx + 1) * batch_size, X_test.shape[0])
+            x_batch = jnp.array(X_test[start_idx:end_idx], dtype=jnp.float32)
+
+            # Sample from the posterior for the batch
+            samples_batch = posteriors.sample_batched(
+                num_samples=num_samples,
+                x_o=x_batch,
+                condition_mask=mask,
+                rng=master_rng_key,
+            )
+
+            # Convert to numpy and append to the list
+            all_samples.extend(np.array(samples_batch, dtype=np.float32))
 
         all_samples = np.array(all_samples, dtype=np.float32)
 
