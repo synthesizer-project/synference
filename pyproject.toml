@@ -22,7 +22,8 @@ dependencies = [
     "astropy",
     "numpy",
     "scipy",
-    "unyt"
+    "unyt",
+    "jax"
 ]
 
 [project.optional-dependencies]
