@@ -299,8 +299,8 @@ class SBI_Fitter:
         """
         print(len(delete_rows), "rows to delete from parameter array.")
         self.fitted_parameter_array = copy.deepcopy(self.parameter_array)
-        self.fitted_parameter_names = self.parameter_names
-        self.fitted_parameter_units = self.parameter_units
+        self.fitted_parameter_names = copy.deepcopy(self.parameter_names)
+        self.fitted_parameter_units = copy.deepcopy(self.parameter_units)
 
         params = np.unique(self.provided_feature_parameters + parameters_to_remove)
         for param in params:
@@ -311,7 +311,8 @@ class SBI_Fitter:
                 self.simple_fitted_parameter_names = [
                     i.split("/")[-1] for i in self.fitted_parameter_names
                 ]
-                self.fitted_parameter_units = np.delete(self.fitted_parameter_units, index)
+                if self.fitted_parameter_units is not None:
+                    self.fitted_parameter_units = np.delete(self.fitted_parameter_units, index)
 
         if len(parameters_to_add) > 0:
             # Add parameters from supplementary_parameters
@@ -324,10 +325,14 @@ class SBI_Fitter:
                     )
                     self.fitted_parameter_names = np.append(self.fitted_parameter_names, param)
                     self.parameter_names = np.append(self.parameter_names, param)
-                    self.fitted_parameter_units = np.append(
-                        self.fitted_parameter_units,
-                        self.supplementary_parameter_units[index],
-                    )
+                    if (
+                        self.fitted_parameter_units is not None
+                        and self.supplementary_parameter_units is not None
+                    ):
+                        self.fitted_parameter_units = np.append(
+                            self.fitted_parameter_units,
+                            self.supplementary_parameter_units[index],
+                        )
                     self.simple_fitted_parameter_names = np.append(
                         self.simple_fitted_parameter_names, param.split("/")[-1]
                     )
