@@ -1,9 +1,11 @@
+"""Noise models for photometric fluxes."""
+
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import matplotlib.pyplot as plt
 import numpy as np
 from astropy import units as u
-from astropy.table import Table, Column
+from astropy.table import Column, Table
 from scipy import stats
 from scipy.interpolate import interp1d
 from unyt import Jy, Unit, unyt_array
@@ -27,21 +29,19 @@ class UncertaintyModel:
     per_filter: bool = True
     return_noise: bool = False
 
-    def __init__(self,
-                per_filter: bool = True,
-                return_noise: bool = False,
-                **kwargs):
+    def __init__(self, per_filter: bool = True, return_noise: bool = False, **kwargs):
         """Initialize the uncertainty model.
 
         Args:
             per_filter: If True, the model applies noise per filter.
                         If False, it applies noise to the entire flux vector.
+            return_noise: If True, the model returns the noise applied to the flux.
+            **kwargs: Additional keyword arguments to pass to the model.
         """
         self.per_filter = per_filter
         self.return_noise = return_noise
 
         self.parameters = kwargs
-
 
     def apply_noise_to_flux(self):
         """Apply noise to the flux based on the model."""
@@ -64,11 +64,15 @@ class UncertaintyModel:
         """Convert Jy flux error to AB magnitude error."""
         return 2.5 / np.log(10) * (error / flux.to(Jy).value)
 
-    def _phot_jy_to_asinh(self, flux: unyt_array, asinh_softening_parameter: unyt_array) -> unyt_array:
+    def _phot_jy_to_asinh(
+        self, flux: unyt_array, asinh_softening_parameter: unyt_array
+    ) -> unyt_array:
         """Convert Jy flux to asinh magnitude."""
         return f_jy_to_asinh(flux, asinh_softening_parameter)
 
-    def _phot_err_jy_to_asinh(self, flux: unyt_array, error: unyt_array, asinh_softening_parameter: unyt_array) -> unyt_array:
+    def _phot_err_jy_to_asinh(
+        self, flux: unyt_array, error: unyt_array, asinh_softening_parameter: unyt_array
+    ) -> unyt_array:
         """Convert Jy flux error to asinh magnitude error."""
         return f_jy_err_to_asinh(flux, error, asinh_softening_parameter)
 
@@ -76,17 +80,17 @@ class UncertaintyModel:
         self,
         model_flux: np.ndarray,
         model_flux_units: Union[str, Unit] = "AB",
-        out_units: Optional[str] = 'Jy',
+        out_units: Optional[str] = "Jy",
     ):
         """Handle conversion of fluxes based on the model's requirements.
 
         Args:
             model_flux: The flux values to convert.
-            model_flux_units: The units of the flux values. 
+            model_flux_units: The units of the flux values.
                 Default is "AB". Can be a string or a unyt Unit.
             out_units: The units to convert the fluxes to.
                 If None, defaults to Jy.
-            
+
         Returns:
             model_flux: The converted flux values.
             model_flux_units: The units of the converted flux values.
@@ -105,9 +109,7 @@ class UncertaintyModel:
         elif isinstance(model_flux_units, Unit):
             model_flux = unyt_array(model_flux, units=model_flux_units)
         else:
-            raise ValueError(
-                "model_flux_units must be 'AB', 'Jy', or a valid unyt Unit."
-            )
+            raise ValueError("model_flux_units must be 'AB', 'Jy', or a valid unyt Unit.")
 
         if out_units == "AB":
             model_flux = self._phot_jy_to_ab(model_flux)
@@ -126,18 +128,18 @@ class UncertaintyModel:
         model_flux: np.ndarray,
         model_flux_units: Union[str, Unit] = "AB",
         model_flux_error: np.ndarray = None,
-        out_units: Optional[str] = 'Jy',
+        out_units: Optional[str] = "Jy",
     ):
         """Handle conversion of flux errors based on the model's requirements.
-        
+
         Args:
             model_flux: The flux values to convert.
-            model_flux_units: The units of the flux values. 
+            model_flux_units: The units of the flux values.
                 Default is "AB". Can be a string or a unyt Unit.
             model_flux_error: The flux error values to convert.
             out_units: The units to convert the flux errors to.
                 If None, defaults to Jy.
-            
+
         Returns:
             model_flux_error: The converted flux error values.
         """
@@ -158,9 +160,7 @@ class UncertaintyModel:
         elif isinstance(model_flux_units, Unit):
             model_flux_error = unyt_array(model_flux_error, units=model_flux_units)
         else:
-            raise ValueError(
-                "model_flux_units must be 'AB', 'Jy', or a valid unyt Unit."
-            )
+            raise ValueError("model_flux_units must be 'AB', 'Jy', or a valid unyt Unit.")
 
         if out_units == "AB":
             model_flux_error = self._phot_err_jy_to_ab(model_flux, model_flux_error)
@@ -173,7 +173,6 @@ class UncertaintyModel:
             raise ValueError("out_units must be 'AB', 'Jy', or a valid unyt Unit.")
 
         return model_flux_error
-
 
     def serialize_to_hdf5(self, hdf5_file: str, group_name: str):
         """Serialize the model to an HDF5 file."""
@@ -203,23 +202,29 @@ class UncertaintyModel:
         return state
 
     def __setstate__(self, state: Dict[str, Any]) -> None:
-        """Restore the object's state from a pickled state dictionary.
-        """
-        self.__init__(**state)
+        """Restore the object's state from a pickled state dictionary."""
+        # get args with inspect
+        import inspect
 
+        args = inspect.getfullargspec(self.__init__).args
+        # Filter out 'self' from the args
+        args = [arg for arg in args if arg != "self"]
+        # Create a dictionary with the state values for the init args
+        args = {arg: state.get(arg, None) for arg in args}
+
+        self.__init__(**args)
 
 
 class DepthUncertaintyModel(UncertaintyModel):
     """An uncertainty model that applies noise based on a depth value."""
 
-    def __init__(self,
-                depth: unyt_array,
-                depth_sigma=5,
-                **kwargs):
+    def __init__(self, depth: unyt_array, depth_sigma=5, **kwargs):
         """Initialize the model with a depth value.
 
         Args:
             depth: The depth value to use for noise application.
+            depth_sigma: The standard deviation of the noise to apply.
+            **kwargs: Additional keyword arguments to pass to the parent class.
         """
         self.depth = depth
         self.depth_sigma = depth_sigma
@@ -236,14 +241,15 @@ class DepthUncertaintyModel(UncertaintyModel):
 
         super().__init__(**kwargs)
 
-    def apply_noise_to_flux(self,
-                            model_flux: np.ndarray,
-                            model_flux_units: Union[str, Unit] = "AB",
-                            ):
+    def apply_noise_to_flux(
+        self,
+        model_flux: np.ndarray,
+        model_flux_units: Union[str, Unit] = "AB",
+    ):
         """Apply noise to the flux based on the depth value."""
-        flux = self.handle_flux_conversion(model_flux=model_flux,
-                                    model_flux_units=model_flux_units,
-                                    out_units="Jy")
+        flux = self.handle_flux_conversion(
+            model_flux=model_flux, model_flux_units=model_flux_units, out_units="Jy"
+        )
 
         noise = np.random.normal(loc=0, scale=self.sigma, size=flux.shape)
 
@@ -264,12 +270,14 @@ class DepthUncertaintyModel(UncertaintyModel):
             sigma = self.handle_flux_error_conversion(
                 model_flux=output_arr,
                 model_flux_units="Jy",
-                model_flux_error= sigma,
-                out_units=model_flux_units)
+                model_flux_error=sigma,
+                out_units=model_flux_units,
+            )
 
             return output_flux, sigma
 
         return output_flux
+
 
 class DiffusionUncertaintyModel(UncertaintyModel):
     """A class to model and sample photometric uncertainties based on observations.
@@ -285,27 +293,37 @@ class DiffusionUncertaintyModel(UncertaintyModel):
     """
 
     def __init__(self, **kwargs):
+        """Initialize the diffusion uncertainty model."""
         super().__init__(**kwargs)
-        raise NotImplementedError(
-            "DiffusionUncertaintyModel is not implemented yet. "
-        )
+        raise NotImplementedError("DiffusionUncertaintyModel is not implemented yet. ")
+
 
 class EmpiricalUncertaintyModel(UncertaintyModel):
+    """A class to model and sample photometric uncertainties based on observations."""
 
-    def __init__(self,
-                error_type: str = "empirical",
-                extrapolate_uncertanties: bool = False,
-                **kwargs):
+    def __init__(
+        self, error_type: str = "empirical", extrapolate_uncertanties: bool = False, **kwargs
+    ):
+        """Initialize the empirical uncertainty model.
 
+        Parameters
+        ----------
+        error_type : str
+            Type of error model to use, e.g., 'empirical', 'observed'.
+            Default is 'empirical'.
+        extrapolate_uncertanties : bool
+            If True, allows extrapolation of uncertainties beyond the range of the flux bins.
+            If False, uses the nearest bin value for extrapolation.
+            Default is False.
+        **kwargs : dict
+            Additional keyword arguments passed to the parent class.
+        """
         self.error_type = error_type
         self.extrapolate_uncertanties = extrapolate_uncertanties
 
         return super().__init__(**kwargs)
 
-
-
     def _setup_bins(self, num_bins: int = 20, log_bins: bool = True):
-
         # Calculate bins
 
         if log_bins:
@@ -316,9 +334,7 @@ class EmpiricalUncertaintyModel(UncertaintyModel):
             )
 
         else:
-            bins = np.linspace(
-                np.nanmin(self.mag), np.nanmax(self.mag), num_bins + 1
-            )
+            bins = np.linspace(np.nanmin(self.mag), np.nanmax(self.mag), num_bins + 1)
 
         self.flux_bins_centers: List[float] = []
         bin_median_errors: List[float] = []
@@ -337,9 +353,7 @@ class EmpiricalUncertaintyModel(UncertaintyModel):
             errors_in_bin = self.mag_err[mask]
 
             if len(errors_in_bin) > 0:
-                self.flux_bins_centers.append(
-                    low + (high - low) / 2.0
-                )
+                self.flux_bins_centers.append(low + (high - low) / 2.0)
 
                 bin_median_errors.append(np.median(errors_in_bin))
                 bin_std_errors.append(np.std(errors_in_bin))
@@ -352,7 +366,7 @@ class EmpiricalUncertaintyModel(UncertaintyModel):
         self.flux_bins_centers = np.array(self.flux_bins_centers)
         # Store the flux range for which the model is considered valid
 
-       # Ignore bounds issues for now
+        # Ignore bounds issues for now
 
         self._min_interp_flux = self.flux_bins_centers[0]
         self._max_interp_flux = self.flux_bins_centers[-1]
@@ -469,6 +483,7 @@ class EmpiricalUncertaintyModel(UncertaintyModel):
         return sampled_sigmas[0] if is_scalar else sampled_sigmas
 
     def apply_noise_to_flux(self):
+        """Apply noise to a flux based on the uncertainty model."""
         raise NotImplementedError(
             "apply_noise_to_flux is not implemented for EmpiricalUncertaintyModel. "
             "Use a subclass that implements this method."
@@ -481,6 +496,7 @@ class EmpiricalUncertaintyModel(UncertaintyModel):
         """
         return self.apply_noise_to_flux(true_flux)
 
+
 class AsinhEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
     """A class to model and sample photometric uncertainties based on observations.
 
@@ -491,15 +507,40 @@ class AsinhEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
     observed (sigma_X, f_X) pairs.
     """
 
-    def __init__(self,
-                observed_phot: unyt_array,
-                observed_phot_errors: unyt_array,
-                asinh_softening_parameter: Optional[unyt_array] = None,
-                asinh_sigma_level: float = 5.0,
-                min_flux_error: Optional[float] = 0.0,
-                sample_log_err: bool = False,
-                **kwargs):
+    def __init__(
+        self,
+        observed_phot: unyt_array,
+        observed_phot_errors: unyt_array,
+        asinh_softening_parameter: Optional[unyt_array] = None,
+        asinh_sigma_level: float = 5.0,
+        min_flux_error: Optional[float] = 0.0,
+        sample_log_err: bool = False,
+        **kwargs,
+    ):
+        """Initialize the AsinhEmpiricalUncertaintyModel.
 
+        Parameters
+        ----------
+        observed_phot : unyt_array
+            The observed photometric flux values.
+        observed_phot_errors : unyt_array
+            The observed photometric flux errors.
+        asinh_softening_parameter : unyt_array, optional
+            The softening parameter for the asinh transformation.
+            If None, it will be set to 5 times the median flux error.
+        asinh_sigma_level : float, optional
+            The sigma level for the asinh transformation.
+            Default is 5.0.
+        min_flux_error : float, optional
+            The minimum flux error to apply.
+            If None, defaults to 0.0.
+        sample_log_err : bool, optional
+            If True, the uncertainties will be sampled in log space.
+            If False, they will be sampled in linear space.
+            Default is False.
+        **kwargs : dict
+            Additional keyword arguments passed to the parent class.
+        """
         self.observed_phot = observed_phot
         self.observed_phot_errors = observed_phot_errors
         self.asinh_sigma_level = asinh_sigma_level
@@ -525,22 +566,18 @@ class AsinhEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
         # 3. Interpolate the asinh magnitude and errors to create a model.
 
         if not isinstance(self.observed_phot, unyt_array):
-            raise TypeError(
-                "observed_phot must be a unyt_array."
-            )
+            raise TypeError("observed_phot must be a unyt_array.")
 
         if not isinstance(self.observed_phot_errors, unyt_array):
-            raise TypeError(
-                "observed_phot_errors must be a unyt_array."
-            )
+            raise TypeError("observed_phot_errors must be a unyt_array.")
 
         if self.observed_phot.shape != self.observed_phot_errors.shape:
-            raise ValueError(
-                "observed_phot and observed_phot_errors must have the same shape."
-            )
+            raise ValueError("observed_phot and observed_phot_errors must have the same shape.")
 
         if self.extrapolate_uncertanties and not self.sample_log_err:
-            print('Warning! Extrapolating uncertainties with sample_log_err=False may lead to negative uncertainties.')
+            print(
+                "Warning! Extrapolating uncertainties with sample_log_err=False may lead to negative uncertainties."  # noqa: E501
+            )
 
         # Filter out non-finite values and errors
 
@@ -556,21 +593,18 @@ class AsinhEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
         if asinh_softening_parameter is None:
             median_unc = np.median(self.observed_phot_errors)
 
-            self.asinh_softening_parameter = (
-                self.asinh_sigma_level * median_unc
-            )
+            self.asinh_softening_parameter = self.asinh_sigma_level * median_unc
         else:
             self.asinh_softening_parameter = asinh_softening_parameter
 
         self.mag = self._phot_jy_to_asinh(
-            self.observed_phot.to('Jy'),
-            self.asinh_softening_parameter.to('Jy')
+            self.observed_phot.to("Jy"), self.asinh_softening_parameter.to("Jy")
         )
 
         self.mag_err = self._phot_err_jy_to_asinh(
-            self.observed_phot.to('Jy'),
-            self.observed_phot_errors.to('Jy'),
-            self.asinh_softening_parameter.to('Jy')
+            self.observed_phot.to("Jy"),
+            self.observed_phot_errors.to("Jy"),
+            self.asinh_softening_parameter.to("Jy"),
         )
 
         if self.sample_log_err:
@@ -599,8 +633,7 @@ class AsinhEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
             self.asinh_softening_parameter.to(flux_array.units),
         )
         # Calculate the log of the uncertainty kernel
-        log_sigma = self.sample_uncertainty(true_mag,
-                                            filter_negative=not self.sample_log_err)
+        log_sigma = self.sample_uncertainty(true_mag, filter_negative=not self.sample_log_err)
 
         if self.sample_log_err:
             sigma = 10**log_sigma
@@ -610,8 +643,7 @@ class AsinhEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
         # Apply minimum flux error
         sigma[sigma < self.min_flux_error] = self.min_flux_error
 
-
-       # Scatter the fluxes based on the sampled uncertainties
+        # Scatter the fluxes based on the sampled uncertainties
         noise = np.random.normal(loc=0, scale=sigma)
 
         noisy_mag = true_mag + noise
@@ -620,8 +652,7 @@ class AsinhEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
 
         if self.error_type == "observed":
             # Re-estimate the errors based on the scattered fluxes
-            log_sigma = self.sample_uncertainty(noisy_mag,
-                                                filter_negative=not self.sample_log_err)
+            log_sigma = self.sample_uncertainty(noisy_mag, filter_negative=not self.sample_log_err)
             if self.sample_log_err:
                 sigma = 10**log_sigma
             else:
@@ -630,7 +661,6 @@ class AsinhEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
         if is_scalar:
             return noisy_mag[0], sigma[0]
         return noisy_mag, sigma
-
 
 
 class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
@@ -709,9 +739,7 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
 
         """
         if len(observed_fluxes) != len(observed_errors):
-            raise ValueError(
-                "observed_fluxes and observed_errors must have the same length."
-            )
+            raise ValueError("observed_fluxes and observed_errors must have the same length.")
         self.sigma_clip = sigma_clip
 
         self.observed_fluxes = observed_fluxes
@@ -727,56 +755,46 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
 
         if interpolation_flux_unit is None:
             self.interpolation_flux_unit = flux_unit
-        else:   # Use provided interpolation flux unit
+        else:  # Use provided interpolation flux unit
             self.interpolation_flux_unit = interpolation_flux_unit
 
         # convert self.observed_fluxes and self.observed_errors to interpolation_flux_unit
 
         if self.interpolation_flux_unit != self.flux_unit:
-            if isinstance(self.interpolation_flux_unit, Unit) and isinstance(
-                self.flux_unit, Unit
-            ):
+            if isinstance(self.interpolation_flux_unit, Unit) and isinstance(self.flux_unit, Unit):
                 # If both are unyt units, convert them
                 observed_fluxes = (
-                    self.observed_fluxes * self.interpolation_flux_unit
-                ).to(self.flux_unit).value
+                    (self.observed_fluxes * self.interpolation_flux_unit).to(self.flux_unit).value
+                )
                 observed_errors = (
-                    self.observed_errors * self.interpolation_flux_unit
-                ).to(self.flux_unit).value
+                    (self.observed_errors * self.interpolation_flux_unit).to(self.flux_unit).value
+                )
 
             elif isinstance(self.interpolation_flux_unit, Unit) and self.flux_unit == "AB":
                 # Convert from AB magnitudes to to unyt fluxes
 
-                observed_fluxes = (
-                    10 ** (-0.4 * (self.observed_fluxes + 8.9))
-                ) * Jy
+                observed_fluxes = (10 ** (-0.4 * (self.observed_fluxes + 8.9))) * Jy
                 observed_fluxes = observed_fluxes.to(self.interpolation_flux_unit)
-                observed_errors = (self.observed_errors * np.log(10) * observed_fluxes) / 2.5  # Convert errors to Jy
+                observed_errors = (
+                    self.observed_errors * np.log(10) * observed_fluxes
+                ) / 2.5  # Convert errors to Jy
                 observed_errors = observed_errors.to(self.interpolation_flux_unit).value
                 observed_fluxes = observed_fluxes.value
-            elif self.interpolation_flux_unit == "AB" and isinstance(
-                self.flux_unit, Unit
-            ):
+            elif self.interpolation_flux_unit == "AB" and isinstance(self.flux_unit, Unit):
                 # Convert from unyt fluxes to AB magnitudes
-                observed_errors = 2.5/ np.log(10) * (
-                    self.observed_errors / self.observed_fluxes
-                )
+                observed_errors = 2.5 / np.log(10) * (self.observed_errors / self.observed_fluxes)
                 observed_fluxes = (
-                    -2.5 * np.log10((self.observed_fluxes * self.flux_unit).to('Jy').value) + 8.9
+                    -2.5 * np.log10((self.observed_fluxes * self.flux_unit).to("Jy").value) + 8.9
                 )
             else:
-                raise ValueError(
-                    "interpolation_flux_unit must be a valid unyt unit or 'AB'."
-                )
+                raise ValueError("interpolation_flux_unit must be a valid unyt unit or 'AB'.")
 
             self.observed_fluxes = observed_fluxes
             self.observed_errors = observed_errors
             self.flux_unit = self.interpolation_flux_unit
 
         valid_mask = (
-            np.isfinite(observed_fluxes)
-            & np.isfinite(observed_errors)
-            & (observed_errors > 0)
+            np.isfinite(observed_fluxes) & np.isfinite(observed_errors) & (observed_errors > 0)
         )
         if min_flux_for_binning is not None:
             valid_mask &= observed_fluxes > min_flux_for_binning
@@ -822,9 +840,7 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
 
         self.max_flux_error = max_flux_error if max_flux_error is not None else np.inf
 
-        if (
-            len(fluxes) < min_samples_per_bin * 2
-        ):  # Need at least two bins for interpolation
+        if len(fluxes) < min_samples_per_bin * 2:  # Need at least two bins for interpolation
             raise ValueError(
                 f"Not enough valid data points ({len(fluxes)}) to build the model "
                 f"with min_samples_per_bin={min_samples_per_bin}. "
@@ -869,9 +885,7 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
             errors_in_bin = errors[mask]
 
             if len(errors_in_bin) >= min_samples_per_bin:
-                self.flux_bins_centers.append(
-                    low_f + (high_f - low_f) / 2.0
-                )  # Bin center
+                self.flux_bins_centers.append(low_f + (high_f - low_f) / 2.0)  # Bin center
                 bin_median_errors.append(np.median(errors_in_bin))
                 bin_std_errors.append(np.std(errors_in_bin))
 
@@ -919,9 +933,7 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
             output[~extrapolate_mask] = self.mu_sigma_interpolator_clip(
                 flux_values[~extrapolate_mask]
             )
-            output[extrapolate_mask] = mu_sigma_interpolator_extrap(
-                flux_values[extrapolate_mask]
-            )
+            output[extrapolate_mask] = mu_sigma_interpolator_extrap(flux_values[extrapolate_mask])
             return output
 
         self.mu_sigma_interpolator_extrap = mu_sigma_interpolator
@@ -974,7 +986,6 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
 
         self.sigma_sigma_interpolator = non_negative_sigma_sigma_interpolator
 
-
     def apply_noise_to_flux(
         self,
         true_flux: Union[float, np.ndarray],
@@ -1009,9 +1020,7 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
         if self.flux_unit != true_flux_units:
             if self.flux_unit == "AB":
                 if not isinstance(true_flux, unyt_array):
-                    true_flux = (
-                        unyt_array(true_flux, units=true_flux_units).to("Jy").value
-                    )
+                    true_flux = unyt_array(true_flux, units=true_flux_units).to("Jy").value
                 else:
                     true_flux = true_flux.to("Jy").value
 
@@ -1023,26 +1032,20 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
 
                 else:
                     true_flux = (
-                        unyt_array(true_flux, units=true_flux_units)
-                        .to(self.flux_unit)
-                        .value
+                        unyt_array(true_flux, units=true_flux_units).to(self.flux_unit).value
                     )
 
         is_scalar = np.isscalar(true_flux)
         flux_array = np.atleast_1d(true_flux)
 
-        flux_array = np.array(
-            flux_array, dtype=float
-        )  # Ensure it's a float array for calculations
+        flux_array = np.array(flux_array, dtype=float)  # Ensure it's a float array for calculations
 
         sampled_sigma_prime = self.sample_uncertainty(
             flux_array,
         )
 
         # Apply minimum flux error
-        sampled_sigma_prime[sampled_sigma_prime < self.min_flux_error] = (
-            self.min_flux_error
-        )
+        sampled_sigma_prime[sampled_sigma_prime < self.min_flux_error] = self.min_flux_error
 
         # If upper limit, calculate a mask here so we don't apply crazy 10+ mag scatters
         if self.upper_limits:
@@ -1051,21 +1054,15 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
                 temp_flux_array = 10 ** (-0.4 * (flux_array - 8.9)) * Jy
                 temp_sig = (np.log(10) * temp_flux_array * sampled_sigma_prime) / 2.5
             else:
-                temp_flux_array = (
-                    unyt_array(flux_array, units=self.flux_unit).to("Jy").value
-                )
-                temp_sig = (
-                    unyt_array(sampled_sigma_prime, units=self.flux_unit).to("Jy").value
-                )
+                temp_flux_array = unyt_array(flux_array, units=self.flux_unit).to("Jy").value
+                temp_sig = unyt_array(sampled_sigma_prime, units=self.flux_unit).to("Jy").value
 
             umask = (temp_flux_array / temp_sig < self.treat_as_upper_limits_below) | (
                 np.isnan(temp_sig) | np.isnan(temp_flux_array)
             )
 
         else:
-            umask = np.zeros_like(
-                flux_array, dtype=bool
-            )  # No upper limit mask if not set
+            umask = np.zeros_like(flux_array, dtype=bool)  # No upper limit mask if not set
 
         noisy_flux_array = flux_array.copy()
         noisy_flux_array[~umask] = flux_array[~umask] + stats.truncnorm.rvs(
@@ -1075,9 +1072,7 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
             b=self.sigma_clip,
         )
         # Ensure noise is not below the minimum error
-        noisy_flux_array[np.isnan(sampled_sigma_prime)] = (
-            np.nan
-        )  # Handle NaNs from sampling
+        noisy_flux_array[np.isnan(sampled_sigma_prime)] = np.nan  # Handle NaNs from sampling
 
         if self.error_type == "observed":
             # Re-estimate the errors based on the scattered fluxes
@@ -1093,13 +1088,9 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
             if self.flux_unit == "AB":
                 temp_flux_array = 10 ** (-0.4 * (noisy_flux_array - 8.9)) * Jy
                 # Convert error back into Jy correctly
-                temp_sigma_prime = (
-                    np.log(10) * temp_flux_array * sampled_sigma_prime
-                ) / 2.5
+                temp_sigma_prime = (np.log(10) * temp_flux_array * sampled_sigma_prime) / 2.5
             else:
-                temp_flux_array = (
-                    unyt_array(noisy_flux_array, units=self.flux_unit).to("Jy").value
-                )
+                temp_flux_array = unyt_array(noisy_flux_array, units=self.flux_unit).to("Jy").value
                 temp_sigma_prime = (
                     unyt_array(sampled_sigma_prime, units=self.flux_unit).to("Jy").value
                 )
@@ -1123,9 +1114,7 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
 
             # Set upper limit flux behaviour
             if self.upper_limit_flux_behaviour == "scatter_limit":
-                samples = stats.truncnorm.rvs(
-                    loc=0, scale=scatter_lim, a=-3, b=3, size=np.sum(m)
-                )
+                samples = stats.truncnorm.rvs(loc=0, scale=scatter_lim, a=-3, b=3, size=np.sum(m))
                 noisy_flux_array[m] = self.upper_limit_value + samples
             elif self.upper_limit_flux_behaviour == "upper_limit":
                 noisy_flux_array[m] = self.upper_limit_value
@@ -1175,9 +1164,7 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
                 raise NotImplementedError()
             else:
                 noisy_flux_array = unyt_array(noisy_flux_array, units=self.flux_unit)
-                sampled_sigma_prime = unyt_array(
-                    sampled_sigma_prime, units=self.flux_unit
-                )
+                sampled_sigma_prime = unyt_array(sampled_sigma_prime, units=self.flux_unit)
 
                 if out_units == "AB":
                     # Convert to AB magnitude
@@ -1186,9 +1173,7 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
                         * noisy_flux_array.to(Jy).value
                         / (np.log(10) * sampled_sigma_prime.to(Jy).value)
                     )
-                    noisy_flux_array = (
-                        -2.5 * np.log10(noisy_flux_array.to(Jy).value) + 8.9
-                    )
+                    noisy_flux_array = -2.5 * np.log10(noisy_flux_array.to(Jy).value) + 8.9
                 elif out_units == "asinh":
                     if isinstance(asinh_softening_parameter, unyt_array):
                         f_b = asinh_softening_parameter.to(Jy)
@@ -1196,9 +1181,7 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
                         # Assume it is a sigma value, and calculate
                         # error in the same way as we calculated the SNR
                         # before.
-                        f_b = [
-                            self.snr_interpolator(i) for i in asinh_softening_parameter
-                        ]
+                        f_b = [self.snr_interpolator(i) for i in asinh_softening_parameter]
                         f_b = unyt_array(f_b, units=self.flux_unit).to(Jy)
 
                     # Convert to asinh magnitude
@@ -1217,20 +1200,14 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
                     noisy_flux_array = noisy_flux_array.to(true_flux_units).value
 
         # Apply min/max in original/output units.
-        sampled_sigma_prime[sampled_sigma_prime < self.min_flux_error] = (
-            self.min_flux_error
-        )
-        sampled_sigma_prime[sampled_sigma_prime > self.max_flux_error] = (
-            self.max_flux_error
-        )
+        sampled_sigma_prime[sampled_sigma_prime < self.min_flux_error] = self.min_flux_error
+        sampled_sigma_prime[sampled_sigma_prime > self.max_flux_error] = self.max_flux_error
 
         if is_scalar:
             return noisy_flux_array[0], sampled_sigma_prime[0]
         return noisy_flux_array, sampled_sigma_prime
 
-    def serialize_to_hdf5(
-        self, hdf5_file: str, group_name: str = "empirical_uncertainty_model"
-    ):
+    def serialize_to_hdf5(self, hdf5_file: str, group_name: str = "empirical_uncertainty_model"):
         """Serializes the model to an HDF5 file.
 
         Args:
@@ -1259,21 +1236,13 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
             group.attrs["sigma_clip"] = self.sigma_clip
 
             if self.upper_limits:
-                group.attrs["treat_as_upper_limits_below"] = (
-                    self.treat_as_upper_limits_below
-                )
+                group.attrs["treat_as_upper_limits_below"] = self.treat_as_upper_limits_below
                 group.attrs["upper_limit_value"] = self.upper_limit_value
-                group.attrs["upper_limit_flux_behaviour"] = (
-                    self.upper_limit_flux_behaviour
-                )
-                group.attrs["upper_limit_flux_err_behaviour"] = (
-                    self.upper_limit_flux_err_behaviour
-                )
+                group.attrs["upper_limit_flux_behaviour"] = self.upper_limit_flux_behaviour
+                group.attrs["upper_limit_flux_err_behaviour"] = self.upper_limit_flux_err_behaviour
 
     @classmethod
-    def deserialize_from_hdf5(
-        cls, hdf5_file: str, group_name: str = "empirical_uncertainty_model"
-    ):
+    def deserialize_from_hdf5(cls, hdf5_file: str, group_name: str = "empirical_uncertainty_model"):
         """Deserializes the model from an HDF5 file.
 
         Args:
@@ -1295,9 +1264,7 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
             min_flux_error = group.attrs["min_flux_error"]
             max_flux_error = group.attrs["max_flux_error"]
             upper_limits = group.attrs.get("upper_limits", False)
-            treat_as_upper_limits_below = group.attrs.get(
-                "treat_as_upper_limits_below", None
-            )
+            treat_as_upper_limits_below = group.attrs.get("treat_as_upper_limits_below", None)
             upper_limit_flux_behaviour = group.attrs.get(
                 "upper_limit_flux_behaviour", "scatter_limit"
             )
@@ -1326,8 +1293,6 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
         return model
 
 
-
-
 def create_uncertainity_models_from_EPOCHS_cat(
     file,
     bands,
@@ -1335,7 +1300,9 @@ def create_uncertainity_models_from_EPOCHS_cat(
     plot=False,
     old=False,
     hdu=0,
-    **kwargs
+    save=False,
+    save_path=None,
+    **kwargs,
 ):
     """Create uncertainty models from an EPOCHS catalog file.
 
@@ -1351,6 +1318,13 @@ def create_uncertainity_models_from_EPOCHS_cat(
         the original band names will be used.
     plot : bool, optional
         Whether to plot the uncertainty models. Default is False.
+    old : bool, optional
+        If True, assumes the catalog is in the old format (without aperture corrections).
+        Default is False.
+    hdu : int, optional
+        The HDU number to read from the FITS file. Default is 0.
+    save_path : str, optional
+        Path to save the plots if `plot` is True. If None, plots are not saved.
     **kwargs : dict, optional
         Additional keyword arguments to pass to the EmpiricalUncertaintyModel.
 
@@ -1429,9 +1403,7 @@ def create_uncertainity_models_from_EPOCHS_cat(
 
             plt.ylim(0, 1.2)
             mag = np.linspace(23, 40, 10000)
-            noisy_flux, sampled_sigma = noise_model.apply_noise_to_flux(
-                mag, true_flux_units="AB"
-            )
+            noisy_flux, sampled_sigma = noise_model.apply_noise_to_flux(mag, true_flux_units="AB")
 
             # plt.scatter(noisy_flux, sampled_sigma, alpha=0.1, color='green', s=0.1)
             plt.hexbin(
@@ -1449,7 +1421,9 @@ def create_uncertainity_models_from_EPOCHS_cat(
 
             plt.xlabel("Magnitude", fontsize=14)
             plt.ylabel(r"$\sigma_{\rm m, AB}$", fontsize=14)
-            plt.show()
-
+            if save:
+                save_band_name = band_new_name.replace("/", "_")
+                plt.savefig(f"{save_path}/uncertainty_model_{save_band_name}.png", dpi=300)
+            else:
+                plt.show()
     return unc_models
-
