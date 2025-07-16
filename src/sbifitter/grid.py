@@ -66,6 +66,8 @@ UNIT_DICT = {
     "stellar_mass": "Msun",
 }
 
+# ------------------------------------------
+
 
 def calculate_muv(galaxy, cosmo=Planck18):
     """Calculate the MUV magnitude of a galaxy.
@@ -122,6 +124,108 @@ def calculate_mwa(galaxy):
     mwa = galaxy.stars.calculate_median_age()
 
     return mwa.to(Myr)
+
+
+def calculate_sfr(galaxy: "Galaxy", timescale: unyt_quantity = 10 * Myr) -> unyt_quantity:
+    """Calculate the average star formation rate (SFR) of a galaxy.
+
+    This function calculates the average star formation rate over a specified
+    recent timescale from a binned star formation history (SFH).
+
+    Parameters
+    ----------
+    galaxy : Galaxy
+        The galaxy object. It must have a `stars` attribute with `ages` and
+        `sf_hist` attributes.
+        - `galaxy.stars.ages`: A 1D numpy array of the SFH bin **edges**
+          (lookback time) in units of years. The bins can be non-uniform.
+        - `galaxy.stars.sf_hist`: A 1D numpy array of the total **mass**
+          formed in each corresponding bin, in units of Msun. The size of
+          this array must be one less than the `ages` array.
+    timescale : unyt_quantity, optional
+        The timescale over which to average the SFR, by default 10 * Myr.
+
+    Returns:
+    -------
+    unyt_quantity
+        The average star formation rate of the galaxy in Msun/yr.
+
+    Raises:
+    ------
+    TypeError
+        If the input types are incorrect.
+    AttributeError
+        If the galaxy object is missing required attributes.
+    ValueError
+        If the timescale is not positive, arrays have inconsistent shapes,
+        or the calculated SFR is negative or non-finite.
+    """
+    # --- Input Validation ---
+    if not hasattr(galaxy, "stars"):
+        raise AttributeError("Galaxy object must have a 'stars' attribute.")
+    if not all(hasattr(galaxy.stars, attr) for attr in ["ages", "sf_hist"]):
+        raise AttributeError("galaxy.stars must have 'ages' and 'sf_hist' attributes.")
+    if not isinstance(timescale, unyt_quantity):
+        raise TypeError("timescale must be a unyt_quantity.")
+    if timescale <= 0 * yr:
+        raise ValueError("timescale must be positive.")
+
+    age_edges_yr = np.asarray(galaxy.stars.ages)
+    mass_in_bins_Msun = np.asarray(galaxy.stars.sf_hist)
+
+    if mass_in_bins_Msun.ndim != 1 or age_edges_yr.ndim != 1:
+        raise ValueError("'ages' and 'sf_hist' must be 1D arrays.")
+    if mass_in_bins_Msun.size != age_edges_yr.size - 1:
+        raise ValueError(
+            "The 'sf_hist' (mass) array must have one fewer element than "
+            "the 'ages' (bin edges) array."
+        )
+
+    if age_edges_yr.size < 2:
+        return unyt_quantity(0, units=Msun / yr)
+
+    # --- Calculation ---
+    bin_starts_yr = age_edges_yr[:-1]
+    bin_ends_yr = age_edges_yr[1:]
+    bin_widths_yr = bin_ends_yr - bin_starts_yr
+
+    # Calculate the SFR within each bin (Msun/yr) from the input mass.
+    # Use np.divide to handle bins with zero width safely.
+    rates_Msun_per_yr = np.divide(
+        mass_in_bins_Msun,
+        bin_widths_yr,
+        out=np.zeros_like(mass_in_bins_Msun, dtype=float),
+        where=(bin_widths_yr != 0),
+    )
+
+    timescale_val_yr = timescale.to_value(yr)
+
+    # Find the overlap of each bin with the interval [0, timescale]
+    overlap_start = np.maximum(bin_starts_yr, 0)
+    overlap_end = np.minimum(bin_ends_yr, timescale_val_yr)
+
+    # Calculate the duration of the overlap for each bin
+    overlap_duration_yr = np.maximum(0, overlap_end - overlap_start)
+
+    # Total mass formed within timescale = sum of (rate in bin * overlap duration)
+    total_mass_in_timescale_Msun = np.sum(rates_Msun_per_yr * overlap_duration_yr)
+
+    # Average SFR = Total Mass / Timescale
+    average_sfr = total_mass_in_timescale_Msun / timescale_val_yr
+
+    # --- Final Checks & Return ---
+    if not np.isfinite(average_sfr):
+        raise ValueError("Calculated SFR is not finite. Check galaxy's SFH and ages.")
+
+    sfr = unyt_quantity(average_sfr, units=Msun / yr)
+
+    if sfr < 0 * Msun / yr:
+        raise ValueError("Calculated SFR is negative. Check galaxy's SFH and ages.")
+
+    return sfr
+
+
+# ------------------------------------------
 
 
 def generate_random_DB_sfh(
@@ -655,6 +759,8 @@ def generate_sfh_basis(
             elif isinstance(param, (list, tuple)):
                 # If it's a list or tuple, convert to numpy array
                 sfh_param_arrays[pos] = np.array(param)
+
+            assert isinstance(sfh_param_units[pos], (Unit, type(None)))
 
     if len(sfh_param_names) == len(sfh_param_arrays):
         sfh_param_arrays = np.vstack(sfh_param_arrays).T
@@ -1529,14 +1635,21 @@ class GalaxyBasis:
 
             # Add unique values to sets using update operation
             for key, value in gal.all_params.items():
-                if isinstance(value, (unyt_quantity, unyt_array)):
-                    unit = str(value.units)
-                    param_units[key] = unit
-                    value = value.value
-                if isinstance(value, np.ndarray):
-                    value = value.tolist()
+                if key not in self.params_to_ignore:
+                    if isinstance(value, (unyt_quantity, unyt_array)):
+                        unit = str(value.units)
+                        param_units[key] = unit
+                        value = value.value
+                    if isinstance(value, np.ndarray):
+                        value = value.tolist()
 
-                self.all_parameters[key].add(value)
+                    if isinstance(value, list):
+                        # If value is a list, add each element to the set
+                        # for u, v in enumerate(value):
+                        #    self.all_parameters[f'{key}_{u}'].add(v)
+                        pass
+                    else:
+                        self.all_parameters[key].add(value)
 
         # Convert sets to lists at the end if needed
         self.all_parameters = {k: list(v) for k, v in self.all_parameters.items()}
@@ -3845,7 +3958,7 @@ class GalaxySimulator(object):
             for filter_code in filter_codes:
                 if filter_code not in photometry_to_remove:
                     new_filters.append(filter_code)
-            instrument.filters = FilterCollection(filters=new_filters)
+            instrument.filters = FilterCollection(filter_codes=new_filters)
 
         if noise_models is not None:
             assert isinstance(noise_models, dict), (
@@ -3928,6 +4041,7 @@ class GalaxySimulator(object):
     def from_grid(
         cls,
         grid_path: str,
+        override_synthesizer_grid_dir: Union[None, str, bool] = True,
         override_emission_model: Union[None, EmissionModel] = None,
         **kwargs,
     ):
@@ -3941,6 +4055,15 @@ class GalaxySimulator(object):
         ----------
         grid_path : str
             Path to the grid file in HDF5 format.
+        override_synthesizer_grid_dir : Union[None, str], optional
+            If provided, this directory will override the synthesizer grid directory
+            specified in the grid file. This is useful for using a model
+            on a different computer or environment where the grid directory
+            is not the same as the one used to create the grid file.
+            If True, and the grid_dir saved in the file does not exist,
+            it will check for a SYNTHESIZER_GRID_DIR environment variable
+            and use that as the grid directory. If a string is provided,
+            it will use that as the grid directory.
         override_emission_model : Union[None, EmissionModel], optional
             If provided, this emission model will override the one in the grid file.
         **kwargs : dict
@@ -3974,6 +4097,14 @@ class GalaxySimulator(object):
 
             grid_name = model_group.attrs["grid_name"]
             grid_dir = model_group.attrs.get("grid_dir", None)
+            if override_synthesizer_grid_dir is not None and not os.path.exists(grid_dir):
+                if isinstance(override_synthesizer_grid_dir, str):
+                    grid_dir = override_synthesizer_grid_dir
+                elif override_synthesizer_grid_dir is True:
+                    # Check for SYNTHESIZER_GRID_DIR environment variable
+                    grid_dir = os.getenv("SYNTHESIZER_GRID_DIR", None)
+                    if grid_dir is None:
+                        raise ValueError("SYNTHESIZER_GRID_DIR environment variable not set.")
 
             grid = Grid(grid_name, grid_dir, new_lam=lam)
 
@@ -4566,6 +4697,28 @@ class GalaxySimulator(object):
     def __str__(self):
         """String representation of the PhotometrySimulator."""
         return self.__repr__()
+
+
+class GridFromSimOutput:
+    """GridFromSimOutput class to create a Grid from simulation output."""
+
+    def __init__(
+        self,
+        sim_output_path: str,
+        feature_columns: List[str] = None,
+        parameter_columns: List[str] = None,
+    ):
+        """Create a Grid from a simulation output file.
+
+        This class reads a simulation output file and creates a Grid object
+        from the data contained within it. The simulation output file is expected
+        to be in a tabular format.
+
+        Parameters
+        ----------
+        sim_output : Union[str, h5py.File]
+            Path to the simulation output file or an open h5py.File object.
+        """
 
 
 def test_out_of_distribution(

@@ -1,4 +1,7 @@
+"""Functions for simformer tasks and model saving/loading."""
+
 import os
+import pickle
 from typing import (
     Callable,
     Dict,
@@ -9,6 +12,7 @@ from typing import (
 import corner
 import jax
 import jax.numpy as jnp
+import joblib
 import numpy as np
 import torch
 from synthesizer.emission_models import (
@@ -34,6 +38,7 @@ except Exception as e:
 
     class InferenceTask:
         """Dummy InferenceTask class for compatibility."""
+
         pass
 
 
@@ -64,7 +69,6 @@ class GalaxyPhotometryTask(InferenceTask):
             num_filters: Number of filters in the photometry simulation.
         """
         super().__init__(name, backend)
-
 
         if (
             prior_dict is None
@@ -108,6 +112,7 @@ class GalaxyPhotometryTask(InferenceTask):
         Returns:
             A callable that takes a batch of thetas and returns a batch of xs.
         """
+
         def batched_simulator(
             thetas_batch_torch: torch.Tensor,
         ) -> torch.Tensor:
@@ -117,9 +122,7 @@ class GalaxyPhotometryTask(InferenceTask):
                 # run_simulator_fn expects numpy array if it's not a dict,
                 # and handles tensor conversion internally.
                 # It returns a tensor of shape [1, num_filters].
-                x_sample_torch = self.run_simulator_fn(
-                    theta_sample_torch, return_type="tensor"
-                )
+                x_sample_torch = self.run_simulator_fn(theta_sample_torch, return_type="tensor")
                 xs_list.append(x_sample_torch)
             return torch.cat(xs_list, dim=0)  # Shape will be (num_samples, num_filters)
 
@@ -201,7 +204,8 @@ class GalaxyPhotometryTask(InferenceTask):
 
 
 class UncertainityModelTask(InferenceTask):
-    """Learn the conditional distribution of log-uncertainties given magnitudes from a data catalog."""
+    """Condtional uncertainty model task for galaxy magnitudes and log-uncertainties."""
+
     def __init__(self, magnitudes: np.ndarray, log_uncertainties: np.ndarray):
         """Initializes the NoiseModelTask with magnitudes and log-uncertainties.
 
@@ -223,24 +227,25 @@ class UncertainityModelTask(InferenceTask):
         self._x_dim = self._x_data.shape[1]
 
     def get_theta_dim(self) -> int:
+        """Returns the dimension of the theta vector (magnitude)."""
         return self._theta_dim
 
     def get_x_dim(self) -> int:
+        """Returns the dimension of the x vector (log-uncertainty)."""
         return self._x_dim
 
     def get_data(self, num_samples: int, rng=None) -> dict[str, jnp.ndarray]:
         """Returns a random subset of the provided catalog data."""
         if num_samples > self._theta_data.shape[0]:
-            raise ValueError(f"Requested {num_samples} samples, but only {self._theta_data.shape[0]} are available.")
+            raise ValueError(
+                f"Requested {num_samples} samples, but only {self._theta_data.shape[0]} are available."  # noqa E501
+            )
 
         # For simplicity, we sample with replacement.
         # A more robust implementation might use a data loader.
         indices = np.random.choice(self._theta_data.shape[0], size=num_samples, replace=True)
 
-        return {
-            "theta": self._theta_data[indices],
-            "x": self._x_data[indices]
-        }
+        return {"theta": self._theta_data[indices], "x": self._x_data[indices]}
 
     def get_base_mask_fn(self):
         """Defines that log-uncertainty 'x' depends on magnitude 'theta'."""
@@ -260,10 +265,9 @@ class UncertainityModelTask(InferenceTask):
         # Parameters ('theta') do not attend to data ('x')
         thetas_attend_xs_mask = jnp.zeros((theta_dim, x_dim), dtype=jnp.bool_)
 
-        base_mask = jnp.block([
-            [thetas_self_mask, thetas_attend_xs_mask],
-            [xs_attend_thetas_mask, xs_self_mask]
-        ])
+        base_mask = jnp.block(
+            [[thetas_self_mask, thetas_attend_xs_mask], [xs_attend_thetas_mask, xs_self_mask]]
+        )
         base_mask = base_mask.astype(jnp.bool_)
 
         def base_mask_fn(node_ids, node_meta_data):
@@ -273,6 +277,7 @@ class UncertainityModelTask(InferenceTask):
 
     # Methods like get_prior and get_simulator are not needed
     # as get_data is implemented directly from a dataset.
+
 
 # --- Helper Class for Prior ---
 class GalaxyPrior:
@@ -301,14 +306,10 @@ class GalaxyPrior:
         for param_name in self.param_order:
             low, high = self.prior_ranges[param_name]
             self.distributions.append(
-                torch.distributions.Uniform(
-                    torch.tensor(float(low)), torch.tensor(float(high))
-                )
+                torch.distributions.Uniform(torch.tensor(float(low)), torch.tensor(float(high)))
             )
 
-    def sample(
-        self, sample_shape: Tuple[int], sample_lhc=False, rng=None
-    ) -> torch.Tensor:
+    def sample(self, sample_shape: Tuple[int], sample_lhc=False, rng=None) -> torch.Tensor:
         """Generates samples from the prior.
 
         Arguments:
@@ -321,9 +322,7 @@ class GalaxyPrior:
         """
         if not sample_lhc:
             num_samples = sample_shape[0]
-            samples_per_param = [
-                dist.sample((num_samples, 1)) for dist in self.distributions
-            ]
+            samples_per_param = [dist.sample((num_samples, 1)) for dist in self.distributions]
         else:
             # Use boundaries, but sample from Latin Hypercube
             from scipy.stats.qmc import LatinHypercube
@@ -335,9 +334,7 @@ class GalaxyPrior:
                 low, high = self.prior_ranges[self.param_order[i]]
                 # Scale LHC samples to the range of the distribution
                 scaled_samples = low + (high - low) * lhc_samples[:, i : i + 1]
-                samples_per_param.append(
-                    torch.tensor(scaled_samples, dtype=torch.float32)
-                )
+                samples_per_param.append(torch.tensor(scaled_samples, dtype=torch.float32))
 
         return torch.cat(samples_per_param, dim=1)
 
@@ -366,17 +363,14 @@ def load_full_model(dir_path, model_id, simulator=None):
     """Load a full model from the specified directory and model ID."""
     from joblib import load
     from scoresbibm.tasks import get_task
-    from scoresbibm.utils.data_utils import load_model
     from scoresbibm.utils.edge_masks import get_edge_mask_fn
 
-
-    model = load_model(
-        dir_path=dir_path,
-        model_id=model_id,
-    )
+    file_name = f"{dir_path}/{model_id}.pkl"
+    with open(file_name, "rb") as file:
+        model = joblib.load(file)
 
     try:
-        meta = load(f"{dir_path}/models/data_{model_id}.joblib")
+        meta = load(f"{dir_path}/data_{model_id}.joblib")
 
         model.__dict__.update(meta)
         task_name = model.edge_mask_fn_params.get("task")
@@ -392,17 +386,17 @@ def load_full_model(dir_path, model_id, simulator=None):
         if simulator is not None:
             model.simulator = simulator
         else:
-            print(
-                "No simulator provided. Please provide a simulator to use with the model."
-            )
+            print("No simulator provided. Please provide a simulator to use with the model.")
     except FileNotFoundError:
-        pass
+        meta = {}
 
-    return model
+    if isinstance(model, tuple):
+        model = model[0]
+
+    return model, meta
+
 
 if __name__ == "__main__":
-
-
     file_path = os.path.dirname(os.path.realpath(__file__))
     grid_folder = os.path.join(os.path.dirname(os.path.dirname(file_path)), "grids")
     output_folder = os.path.join(os.path.dirname(os.path.dirname(file_path)), "models")
@@ -453,6 +447,7 @@ if __name__ == "__main__":
     )
     emitter_params_dict = {"stellar": ["tau_v"]}
     from sbifitter import GalaxySimulator
+
     galaxy_simulator_instance = GalaxySimulator(
         sfh_model=sfh_model_class,  # Pass the class
         zdist_model=zdist_model_class,  # Pass the class
@@ -524,9 +519,7 @@ if __name__ == "__main__":
             params = np.squeeze(params)
             params = {inputs_list[i]: params[i] for i in range(len(inputs_list))}
 
-        phot = galaxy_simulator_instance(
-            params
-        )  # This line requires galaxy_simulator_instance
+        phot = galaxy_simulator_instance(params)  # This line requires galaxy_simulator_instance
 
         if return_type == "tensor":
             return torch.tensor(phot[np.newaxis, :], dtype=torch.float32).to(device)
@@ -605,9 +598,7 @@ if __name__ == "__main__":
         "training_batch_size": 64,  # Batch size for training # used
         "val_every": 100,  # Validate every 100 steps # used
         "clip_max_norm": 10.0,  # Gradient clipping max norm # used
-        "condition_mask_fn": {
-            "name": "joint"
-        },  # Use the base mask function defined in the task
+        "condition_mask_fn": {"name": "joint"},  # Use the base mask function defined in the task
         "edge_mask_fn": {"name": "none"},
         "validation_fraction": 0.1,  # Fraction of data to use for validation # used
         "val_repeat": 5,  # Number of times to repeat validation # used
@@ -701,5 +692,3 @@ if __name__ == "__main__":
     with open("trained_galaxy_score_model_params.pkl", "wb") as f:
         pickle.dump(trained_score_model.score_model_params, f)
     print("Model parameters saved (example).")
-
-
