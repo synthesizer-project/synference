@@ -253,44 +253,6 @@ def main_task(args: Args) -> None:
             name_append=args.name_append,
             save_method="joblib",
             task_func=None,
-            model_config_dict={
-                "name": "ScoreTransformer",
-                "d_model": 128,
-                "n_heads": 4,
-                "n_layers": 4,
-                "d_feedforward": 256,
-                "dropout": 0.1,
-                "max_len": 5000,  # Adjust based on theta_dim + x_dim
-                "tokenizer": {"name": "LinearTokenizer", "encoding_dim": 64},
-                "use_output_scale_fn": True,
-            },
-            sde_config_dict={
-                "name": "VPSDE",  # or "VESDE"
-                "beta_min": 0.1,
-                "beta_max": 20.0,
-                "num_steps": 1000,
-                "T_min": 1e-05,
-                "T_max": 1.0,
-            },
-            train_config_dict={
-                "learning_rate": 1e-4,  # Initial learning rate for training # used
-                "min_learning_rate": 1e-6,  # Minimum learning rate for training # used
-                "z_score_data": True,  # Whether to z-score the data # used
-                "total_number_steps_scaling": 5,  # Scaling factor for total number of steps
-                "max_number_steps": 1e9,  # Maximum number of steps for training # used
-                "min_number_steps": 1e5,  # Minimum number of steps for training # used
-                "training_batch_size": 64,  # Batch size for training # used
-                "val_every": 100,  # Validate every 100 steps # used
-                "clip_max_norm": 10.0,  # Gradient clipping max norm # used
-                "condition_mask_fn": {
-                    "name": "joint"
-                },  # Use the base mask function defined in the task
-                "edge_mask_fn": {"name": "none"},
-                "validation_fraction": 0.1,  # Fraction of data to use for validation # used
-                "val_repeat": 5,  # Number of times to repeat validation # used
-                "stop_early_count": 5,  # Number of steps to wait before stopping early # used
-                "rebalance_loss": False,  # Whether to rebalance the loss # used
-            },
         )
 
     empirical_model_fitter.run_single_sbi(**args)

@@ -4129,9 +4129,13 @@ class SBI_Fitter:
                     .numpy()
                 ]
             ),
-            "log_dpit_max": log_dpit_max,
-            "mean_log_prob": np.mean(self.log_prob(X_test, y_test, posteriors)),
+            "log_dpit_max": log_dpit_max,   
         }
+
+        try:
+            metrics["mean_log_prob"] = np.mean(self.log_prob(X_test, y_test, posteriors))
+        except Exception as e:
+            pass
 
         if verbose:
             # print a nicely formatted table of the metrics.
@@ -4163,7 +4167,10 @@ class SBI_Fitter:
                     num = metrics[metric]
                     if isinstance(num, np.ndarray):
                         num = num.item()
-                    print(f"{metric_name:.<25} {num:.6f}")
+                    try:
+                        print(f"{metric_name:.<25} {num:.6f}")
+                    except:
+                        print(f"{metric_name:.<25} {num}")
 
             # Print parameter-specific metrics
             if len(param_metrics) > 0:
@@ -4501,7 +4508,7 @@ class SBI_Fitter:
         num_bootstrap=200,
         samples: np.ndarray = None,
     ) -> np.ndarray:
-        """Calculate the total absolute residual probability (TARP).
+        """Calculate Tests of Accuracy with Random Points (TARP) for the samples.
 
         Parameters
         ----------
@@ -5395,44 +5402,10 @@ class Simformer_Fitter(SBI_Fitter):
         name_append: str = "timestamp",
         save_method: str = "joblib",
         task_func: Callable = None,
-        model_config_dict={
-            "name": "ScoreTransformer",
-            "d_model": 128,
-            "n_heads": 4,
-            "n_layers": 4,
-            "d_feedforward": 256,
-            "dropout": 0.1,
-            "max_len": 5000,  # Adjust based on theta_dim + x_dim
-            "tokenizer": {"name": "LinearTokenizer", "encoding_dim": 64},
-            "use_output_scale_fn": True,
-        },
-        sde_config_dict={
-            "name": "VPSDE",  # or "VESDE"
-            "beta_min": 0.1,
-            "beta_max": 20.0,
-            "num_steps": 1000,
-            "T_min": 1e-05,
-            "T_max": 1.0,
-        },
-        train_config_dict={
-            "learning_rate": 1e-4,  # Initial learning rate for training # used
-            "min_learning_rate": 1e-6,  # Minimum learning rate for training # used
-            "z_score_data": True,  # Whether to z-score the data # used
-            "total_number_steps_scaling": 5,  # Scaling factor for total number of steps
-            "max_number_steps": 1e8,  # Maximum number of steps for training # used
-            "min_number_steps": 1e4,  # Minimum number of steps for training # used
-            "training_batch_size": 64,  # Batch size for training # used
-            "val_every": 100,  # Validate every 100 steps # used
-            "clip_max_norm": 10.0,  # Gradient clipping max norm # used
-            "condition_mask_fn": {
-                "name": "joint"
-            },  # Use the base mask function defined in the task
-            "edge_mask_fn": {"name": "none"},
-            "validation_fraction": 0.1,  # Fraction of data to use for validation # used
-            "val_repeat": 5,  # Number of times to repeat validation # used
-            "stop_early_count": 5,  # Number of steps to wait before stopping early # used
-            "rebalance_loss": False,  # Whether to rebalance the loss # used
-        },
+        model_config_dict_overrides: dict = None,
+        train_config_dict_overrides: dict = None,
+        sde_config_dict_overrides: dict = None,
+        attention_mask_type: str = "full",
     ):
         """Train a Simformer model using the provided configurations.
 
@@ -5473,24 +5446,69 @@ class Simformer_Fitter(SBI_Fitter):
         task_func : Callable, optional
             Function to create the task. If None, uses the default
             `GalaxyPhotometryTask` from `simformer`.
-        model_config_dict : dict, optional
-            Configuration dictionary for the model. Default is a pre-defined configuration.
+        model_config_dict_overrides : dict, optional
+            Dictionary to override the default model configuration.
+            Default is None, which uses the pre-defined configuration.
         sde_config_dict : dict, optional
-            Configuration dictionary for the SDE (Stochastic Differential Equation).
+            Dictionary to override configs for the SDE (Stochastic Differential Equation).
             Default is a pre-defined configuration for VPSDE.
         train_config_dict : dict, optional
-            Configuration dictionary for the training process.
-            Default is a pre-defined configuration.
-
-
+            Dictionary to override the training configuration.
+            Default is a pre-defined configuration for training.
         """
         from omegaconf import OmegaConf
         from scoresbibm.methods.score_transformer import train_transformer_model
 
+        model_config_dict={
+            "name": "ScoreTransformer",
+            "d_model": 128,
+            "n_heads": 4,
+            "n_layers": 4,
+            "d_feedforward": 256,
+            "dropout": 0.1,
+            "max_len": 5000,  # Adjust based on theta_dim + x_dim
+            "tokenizer": {"name": "LinearTokenizer", "encoding_dim": 64},
+            "use_output_scale_fn": True,
+        }
+        if model_config_dict_overrides is not None:
+            model_config_dict.update(model_config_dict_overrides)
+        
+        sde_config_dict={
+            "name": "VPSDE",  # or "VESDE"
+            "beta_min": 0.1,
+            "beta_max": 20.0,
+            "num_steps": 1000,
+            "T_min": 1e-05,
+            "T_max": 1.0,
+        }
+        if sde_config_dict_overrides is not None:
+            sde_config_dict.update(sde_config_dict_overrides)
+        
+        train_config_dict={
+            "learning_rate": 1e-4,  # Initial learning rate for training # used
+            "min_learning_rate": 1e-6,  # Minimum learning rate for training # used
+            "z_score_data": True,  # Whether to z-score the data # used
+            "total_number_steps_scaling": 5,  # Scaling factor for total number of steps
+            "max_number_steps": 1e8,  # Maximum number of steps for training # used
+            "min_number_steps": 1e4,  # Minimum number of steps for training # used
+            "training_batch_size": 64,  # Batch size for training # used
+            "val_every": 100,  # Validate every 100 steps # used
+            "clip_max_norm": 10.0,  # Gradient clipping max norm # used
+            "condition_mask_fn": {
+                "name": "joint"
+            },  # Use the base mask function defined in the task
+            "edge_mask_fn": {"name": "none"},
+            "validation_fraction": 0.1,  # Fraction of data to use for validation # used
+            "val_repeat": 5,  # Number of times to repeat validation # used
+            "stop_early_count": 5,  # Number of steps to wait before stopping early # used
+            "rebalance_loss": False,  # Whether to rebalance the loss # used
+        }
+        if train_config_dict_overrides is not None:
+            train_config_dict.update(train_config_dict_overrides)
+
         if task_func is None:
             from .simformer import GalaxyPhotometryTask as task_func
-        else:
-            task_func = task_func
+ 
 
         if name_append == "timestamp":
             name_append = f"_{self._timestamp}"
@@ -5517,11 +5535,28 @@ class Simformer_Fitter(SBI_Fitter):
             assert self.feature_array is not None, (
                 "Feature array must be provided for pre-generated samples."
             )
+            simulator_function = None
 
-            # dummy function which retuens None
-            def simulator_function(x):
-                """Dummy simulator function."""
-                return None
+        if not self.has_simulator:
+            # Split the dataset into training and validation sets.
+            train_indices, test_indices = self.split_dataset(
+                train_fraction=train_test_fraction,
+                random_seed=random_seed,
+                verbose=verbose,
+            )
+
+            x = jnp.array(self.feature_array, dtype=jnp.float32)
+            theta = jnp.array(self.fitted_parameter_array, dtype=jnp.float32)
+
+            training_data = {
+                "theta": theta[train_indices],
+                "x": x[train_indices],
+            }
+
+            validation_data = {
+                "theta": theta[test_indices],
+                "x": x[test_indices],
+            }
 
         task = task_func(
             name="galaxy_photometry",
@@ -5530,6 +5565,9 @@ class Simformer_Fitter(SBI_Fitter):
             param_names_ordered=self.fitted_parameter_names,
             run_simulator_fn=simulator_function,
             num_filters=len(self.feature_names),
+            test_X_data=copy.deepcopy(validation_data["x"]),
+            test_theta_data=copy.deepcopy(validation_data["theta"]),
+            attention_mask_type=attention_mask_type,
         )
 
         method_config_dict = {
@@ -5551,26 +5589,7 @@ class Simformer_Fitter(SBI_Fitter):
 
             validation_data = task.get_data(num_samples=num_validation_simulations)
 
-        else:
-            train_indices, test_indices = self.split_dataset(
-                train_fraction=train_test_fraction,
-                random_seed=random_seed,
-                verbose=verbose,
-            )
-
-            x = jnp.array(self.feature_array, dtype=jnp.float32)
-            theta = jnp.array(self.fitted_parameter_array, dtype=jnp.float32)
-
-            training_data = {
-                "theta": theta[train_indices],
-                "x": x[train_indices],
-            }
-
-            validation_data = {
-                "theta": theta[test_indices],
-                "x": x[test_indices],
-            }
-
+        
         if not run:
             if verbose:
                 print(f"Starting training at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -5598,6 +5617,16 @@ class Simformer_Fitter(SBI_Fitter):
             name_append=name_append,
             method_config_dict=method_config_dict,
             save_method=save_method,
+            extras={
+                "model_config_dict": model_config_dict,
+                "sde_config_dict": sde_config_dict,
+                "train_config_dict": train_config_dict,
+                "random_seed": random_seed,
+                "num_training_simulations": num_training_simulations,
+                "train_test_fraction": train_test_fraction,
+                "attention_mask_type": attention_mask_type,
+                "has_simulator": self.has_simulator,
+            }
         )
 
         # Evaluate model.
@@ -5616,6 +5645,7 @@ class Simformer_Fitter(SBI_Fitter):
             num_evaluations=25,
             rng_seed=random_seed,
             plots_dir=f"{code_path}/models/{self.name}/plots/{name_append}/",
+            metric_path=f"{code_path}/models/{self.name}/{self.name}{name_append}_metrics.json",
         )
 
     def load_model_from_pkl(
@@ -5634,12 +5664,14 @@ class Simformer_Fitter(SBI_Fitter):
         """
         from .simformer import load_full_model
 
-        model, meta = load_full_model(
+        model, meta, task = load_full_model(
             model_dir,
             model_name,
         )
 
-        # TODO: set self
+        if set_self:
+            self.simformer_task = task
+            self.posteriors = model
 
         return model, meta
 
@@ -5757,6 +5789,7 @@ class Simformer_Fitter(SBI_Fitter):
         posteriors=None,
         rng_seed: int = 42,
         plots_dir: str = f"{code_path}/models/name/plots/",
+        metric_path: str = f"{code_path}/models/name/name_metrics.json",
     ):
         """Plot diagnostics for the Simformer model.
 
@@ -5796,6 +5829,26 @@ class Simformer_Fitter(SBI_Fitter):
             num_evaluations=num_evaluations,
         )
         """
+        samples = self.sample_posterior(
+            X_test=X_test,
+            num_samples=num_samples,
+            posteriors=posteriors,
+            rng_seed=rng_seed,
+        )
+
+        metris = self.evaluate_model(
+            posteriors=posteriors,
+            X_test=X_test,
+            y_test=y_test,
+            samples=samples,
+        )
+        metrics_path = metric_path.replace("name", self.name)
+        if not os.path.exists(os.path.dirname(metrics_path)):
+            os.makedirs(os.path.dirname(metrics_path))
+
+        with open(metrics_path, "w") as f:
+            json.dump(metrics, f, indent=4)
+        
         self.plot_sample_accuracy(
             num_samples=num_samples,
             X_test=X_test,
@@ -5804,6 +5857,7 @@ class Simformer_Fitter(SBI_Fitter):
             posteriors=posteriors,
             rng_seed=rng_seed,
             plots_dir=plots_dir,
+            samples=samples,
         )
 
         self.plot_coverage(
@@ -5824,6 +5878,7 @@ class Simformer_Fitter(SBI_Fitter):
         posteriors=None,
         rng_seed: int = 42,
         plots_dir: str = f"{code_path}/models/name/plots/",
+        samples=None,
     ):
         """Plot the accuracy of the sampled posterior distribution.
 
@@ -5858,13 +5913,16 @@ class Simformer_Fitter(SBI_Fitter):
             [0] * task.get_theta_dim() + [1] * task.get_x_dim(), dtype=jnp.bool_
         )
 
-        y_test_recovered = self.sample_posterior(
-            X_test=X_test,
-            num_samples=1000,
-            posteriors=posteriors,
-            rng_seed=rng_seed,
-            attention_mask=posterior_condition_mask,
-        )
+        if samples is None:
+            y_test_recovered = self.sample_posterior(
+                X_test=X_test,
+                num_samples=1000,
+                posteriors=posteriors,
+                rng_seed=rng_seed,
+                attention_mask=posterior_condition_mask,
+            )
+        else:
+            y_test_recovered = samples
 
         # Get 16, 50 and 84 percentiles for each parameter for each test sample
 
@@ -5886,8 +5944,8 @@ class Simformer_Fitter(SBI_Fitter):
                 p50,
                 yerr=[p50 - p16, p84 - p50],
                 fmt="o",
-                capsize=2,
-                markersize=2,
+                capsize=0,
+                markersize=1,
                 elinewidth=0.5,
                 alpha=0.75,
             )
@@ -6015,21 +6073,18 @@ class Simformer_Fitter(SBI_Fitter):
 
         master_rng_key = jax.random.PRNGKey(rng_seed)
 
-        num_theta = len(self.feature_names)
-        num_x = len(self.fitted_parameter_names)
+        num_theta = len(self.fitted_parameter_names)
+        num_x = len(self.feature_names)
+        
 
-        assert X_test.shape[1] == num_x or attention_mask != "full", (
+        assert X_test.shape[1] == num_x or attention_mask == "full", (
             "Must provide all features or a manual attention mask. "
         )
 
         if attention_mask == "full":
-            mask_theta = np.zeros(num_theta, dtype=np.bool_)
-            mask_x = np.ones(num_x, dtype=np.bool_)
-
-            mask = np.concatenate(
-                [mask_theta, mask_x],
-                axis=0,
-            )
+            mask = jnp.array(
+            [0] * num_theta + [1] * num_x, dtype=jnp.bool_
+        )
         else:
             mask = attention_mask.astype(np.bool_)
 

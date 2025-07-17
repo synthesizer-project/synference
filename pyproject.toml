@@ -23,13 +23,15 @@ dependencies = [
     "numpy",
     "scipy",
     "unyt",
-    "jax"
+    "jax",
+    "simple_parsing",
+    "corner",
 ]
 
 [project.optional-dependencies]
 
 simformer = [
-    "jax",
+    "simformer @ git+https://github.com/tHarvey303/simformer/"
 ]
 
 # Development
