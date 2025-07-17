@@ -57,8 +57,14 @@ class GalaxyPhotometryTask(InferenceTask):
         param_names_ordered: List[str] = None,
         run_simulator_fn: Callable = None,
         num_filters: int = None,
+        test_X_data: np.ndarray = None,
+        test_theta_data: np.ndarray = None,
+        attention_mask_type: str = "full",  # or "causal", or a custom jnp.ndarray
     ):
         """Initializes the GalaxyPhotometryTask.
+
+        If a simulator function is not provided, test_X_data and test_theta_data
+        should be provided if you want to do any testing or validation.
 
         Arguments:
             name: Name of the task.
@@ -67,23 +73,34 @@ class GalaxyPhotometryTask(InferenceTask):
             param_names_ordered: Ordered list of parameter names.
             run_simulator_fn: Function that runs the galaxy simulator.
             num_filters: Number of filters in the photometry simulation.
+            test_X_data: Optional test data for x (photometry).
+            test_theta_data: Optional test data for theta (parameters).
+            attention_mask_type: Type of attention mask to use, can be "full", "causal",
+                or a custom jnp.ndarray defining the mask structure.
+            
         """
         super().__init__(name, backend)
+
+        if run_simulator_fn is None and (test_X_data is None or test_theta_data is None):
+            print('Warning! No simulator function or test data provided. ')
 
         if (
             prior_dict is None
             or param_names_ordered is None
-            or run_simulator_fn is None
             or num_filters is None
         ):
             raise ValueError(
-                """prior_dict, param_names_ordered, run_simulator_fn,
+                """prior_dict, param_names_ordered,
                 and num_filters must be provided."""
             )
 
         self.param_names_ordered = param_names_ordered
         self._theta_dim = len(param_names_ordered)
         self._x_dim = num_filters
+        self.backend = backend
+        self.test_X_data = test_X_data
+        self.test_theta_data = test_theta_data
+        self.attention_mask_type = attention_mask_type
 
         if isinstance(prior_dict, GalaxyPrior):
             self.prior_dist = prior_dict
@@ -91,6 +108,13 @@ class GalaxyPhotometryTask(InferenceTask):
             self.prior_dist = GalaxyPrior(
                 prior_ranges=prior_dict, param_order=self.param_names_ordered
             )
+
+        if run_simulator_fn is None:
+            self.fake_simulator = True
+            def run_simulator_fn(X, return_type='jax'):
+                return None
+        else:
+            self.fake_simulator = False
 
         self.run_simulator_fn = run_simulator_fn
 
@@ -142,13 +166,26 @@ class GalaxyPhotometryTask(InferenceTask):
         prior = self.get_prior()
         simulator = self.get_simulator()  # This is our batched_simulator
 
-        # Sample thetas (parameters) using the prior
-        # GalaxyPrior.sample returns a PyTorch tensor
-        thetas_torch = prior.sample((num_samples,), **kwargs)
+        if self.fake_simulator:
+            if self.test_X_data is None or self.test_theta_data is None:
+                raise ValueError(
+                    "No simulator function provided and no test data available."
+                )
+            # Use test data if available
+            if num_samples > self.test_X_data.shape[0]:
+                raise ValueError(
+                    f"Requested {num_samples} samples, but only {self.test_X_data.shape[0]} are available."
+                )
+            thetas_torxh = self.test_theta_data[:num_samples]
+            xs_out = self.test_X_data[:num_samples]
+        else:
+            # Sample thetas (parameters) using the prior
+            # GalaxyPrior.sample returns a PyTorch tensor
+            thetas_torch = prior.sample((num_samples,), **kwargs)
 
-        # Simulate xs (photometry) using the parameters
-        # batched_simulator also returns a PyTorch tensor
-        xs_torch = simulator(thetas_torch)
+            # Simulate xs (photometry) using the parameters
+            # batched_simulator also returns a PyTorch tensor
+            xs_torch = simulator(thetas_torch)
 
         if self.backend == "jax":
             thetas_out = jnp.array(thetas_torch.cpu().numpy())
@@ -174,19 +211,41 @@ class GalaxyPhotometryTask(InferenceTask):
         """Defines the base attention mask for the transformer."""
         theta_dim = self.get_theta_dim()
         x_dim = self.get_x_dim()
-
-        # Parameters only attend to themselves (or causal if ordered)
-        thetas_self_mask = jnp.eye(theta_dim, dtype=jnp.bool_)
-
-        # Data can attend to previous/current data points (causal within x)
-        # Or use jnp.ones if full self-attention within x is desired.
-        xs_self_mask = jnp.tril(jnp.ones((x_dim, x_dim), dtype=jnp.bool_))
-
-        # Data can attend to all parameters
-        xs_attend_thetas_mask = jnp.ones((x_dim, theta_dim), dtype=jnp.bool_)
-
-        # Parameters do not attend to data
-        thetas_attend_xs_mask = jnp.zeros((theta_dim, x_dim), dtype=jnp.bool_)
+        
+        if self.attention_mask_type == "full":
+            # Block for θ attending to θ (Full self-attention) for parameters
+            thetas_self_mask = jnp.ones((theta_dim, theta_dim), dtype=jnp.bool_)
+            # Block for x attending to x (Full self-attention) for data
+            xs_self_mask = jnp.ones((x_dim, x_dim), dtype=jnp.bool_)
+            # Block for x attending to θ - data can attend to parameters
+            xs_attends_theta_mask = jnp.ones((x_dim, theta_dim), dtype=jnp.bool_)
+            # Block for θ attending to x (NO attention) - parameters do not attend to data
+            thetas_attends_xs_mask = jnp.zeros((theta_dim, x_dim), dtype=jnp.bool_)
+        elif self.attention_mask_type == "causal":
+            # Parameters only attend to themselves (or causal if ordered)
+            thetas_self_mask = jnp.eye(theta_dim, dtype=jnp.bool_)
+            # Data can attend to previous/current data points (causal within x)
+            # Or use jnp.ones if full self-attention within x is desired.
+            xs_self_mask = jnp.tril(jnp.ones((x_dim, x_dim), dtype=jnp.bool_))
+            # Data can attend to all parameters
+            xs_attend_thetas_mask = jnp.ones((x_dim, theta_dim), dtype=jnp.bool_)
+            # Parameters do not attend to data
+            thetas_attend_xs_mask = jnp.zeros((theta_dim, x_dim), dtype=jnp.bool_)
+        elif isinstance(self.attention_mask_type, jnp.ndarray):
+            # If a custom mask is provided, use it directly
+            base_mask = self.attention_mask_type
+            if base_mask.shape != (theta_dim + x_dim, theta_dim + x_dim):
+                raise ValueError(
+                    "Custom attention mask must be of shape (theta_dim + x_dim, theta_dim + x_dim)."
+                )
+            base_mask = base_mask.astype(jnp.bool_)
+            def base_mask_fn(node_ids, node_meta_data):
+                return base_mask[jnp.ix_(node_ids, node_ids)]
+            return base_mask_fn
+        else:
+            raise ValueError(
+                "attention_mask_type must be 'full', 'causal', or a custom jnp.ndarray."
+            )
 
         base_mask = jnp.block(
             [
@@ -370,8 +429,7 @@ def load_full_model(dir_path, model_id, simulator=None):
         model = joblib.load(file)
 
     try:
-        meta = load(f"{dir_path}/data_{model_id}.joblib")
-
+        meta = load(f'{dir_path}/{model_id.replace("posterior", "params")}.pkl')
         model.__dict__.update(meta)
         task_name = model.edge_mask_fn_params.get("task")
         task = get_task(task_name)
@@ -387,13 +445,15 @@ def load_full_model(dir_path, model_id, simulator=None):
             model.simulator = simulator
         else:
             print("No simulator provided. Please provide a simulator to use with the model.")
-    except FileNotFoundError:
+    except FileNotFoundError as e:
+        print(f'not found {e}')
         meta = {}
+        task = None
 
     if isinstance(model, tuple):
         model = model[0]
 
-    return model, meta
+    return model, meta, task
 
 
 if __name__ == "__main__":
