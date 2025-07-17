@@ -1625,6 +1625,204 @@ class SBI_Fitter:
 
         return feature_array, feature_names
 
+    def bin_noisy_testing_data(
+        self,
+        X_test: np.ndarray = None,
+        y_test: np.ndarray = None,
+        snr_bins=[1, 5, 8, 10, np.inf],
+        snr_feature_names: list = None,
+    ):
+        """Bin the testing data based on SNR.
+
+        This method calculates the SNR for each feature in the testing data
+        and bins the data based on the provided SNR bins. It returns the binned
+        testing data and the corresponding labels.
+        Parameters
+        ----------
+        X_test : np.ndarray, optional
+            The testing data features. If None, uses the stored _X_test.
+        y_test : np.ndarray, optional
+            The testing data labels. If None, uses the stored _y_test.
+        snr_bins : list, optional
+            The SNR bins to use for binning the data. Default is [5, 8, 10].
+        snr_feature_names : list, optional
+            The feature names corresponding to the SNR features. If None,
+            it will use the all the photomety feature names from the feature array.
+        """
+        if X_test is None:
+            X_test = self._X_test
+        if y_test is None:
+            y_test = self._y_test
+
+        if not self.has_features:
+            raise RuntimeError(
+                "The feature creation pipeline has not been initialized. Please run `create_feature_array_from_raw_photometry` first."  # noqa: E501
+            )
+
+        if (
+            not self.feature_array_flags["scatter_fluxes"]
+            or not self.feature_array_flags["include_errors_in_feature_array"]
+        ):
+            return X_test, y_test
+
+        phot_units = self.feature_array_flags["normed_flux_units"]
+
+        snrs = []
+        for feature_name in snr_feature_names or self.feature_names:
+            if feature_name.startswith("unc_"):
+                break
+            if phot_units == "AB":
+                feature_name = "unc_" + feature_name
+                error_index = self.feature_names.index(feature_name)
+                snr = 2.5 / (X_test[:, error_index] * np.log(10))
+            elif isinstance(phot_units, unyt_quantity):
+                error_index = self.feature_names.index(f"unc_{feature_name}")
+                phot_index = self.feature_names.index(feature_name)
+                snr = X_test[:, phot_index] / X_test[:, error_index]
+            else:
+                raise ValueError(
+                    f"Unsupported photometric units: {phot_units}. "
+                    "Only 'AB' or unyt_quantity are supported."
+                )
+            snrs.append(snr)
+
+        # Calculate mean SNR acorss all features for each galaxy
+        snrs = np.array(snrs)
+        mean_snr = np.mean(snrs, axis=0)
+        # Bin the data based on the SNR bins
+        binned_data = []
+        binned_labels = []
+        for i in range(len(snr_bins) - 1):
+            lower_bound = snr_bins[i]
+            upper_bound = snr_bins[i + 1]
+            mask = (mean_snr >= lower_bound) & (mean_snr < upper_bound)
+            binned_data.append(X_test[mask])
+            binned_labels.append(y_test[mask])
+
+        # Convert to numpy arrays
+        binned_data = [np.array(data) for data in binned_data]
+        binned_labels = [np.array(labels) for labels in binned_labels]
+
+        return binned_data, binned_labels
+
+    def plot_parameter_deviations(
+        self,
+        parameters="all",
+        X_test: np.ndarray = None,
+        y_test: np.ndarray = None,
+        posteriors: np.ndarray = None,
+        snr_bins=None,
+        snr_feature_names: list = None,
+        contours: bool = True,
+        error_bars: bool = False,
+    ):
+        """Plot the deviation of parameters from the true values.
+
+        E.g. Mrecoverd - Mtrue vs Mtrue. One row in grid per snr_bin if not None.
+        """
+        if X_test is None:
+            X_test = self._X_test
+        if y_test is None:
+            y_test = self._y_test
+        if not self.has_features:
+            raise RuntimeError(
+                "The feature creation pipeline has not been initialized. Please run `create_feature_array_from_raw_photometry` first."  # noqa: E501
+            )
+
+        if posteriors is None:
+            if self.posteriors is None:
+                raise ValueError(
+                    "No posteriors provided and no posteriors stored in the SBI instance."
+                )
+            posteriors = self.posteriors
+
+        if parameters == "all":
+            parameters = self.fitted_parameter_names
+
+        if snr_bins is not None:
+            # Bin the testing data based on SNR
+            binned_data, binned_labels = self.bin_noisy_testing_data(
+                X_test=X_test,
+                y_test=y_test,
+                snr_bins=snr_bins,
+                snr_feature_names=snr_feature_names,
+            )
+        else:
+            binned_data = [X_test]
+            binned_labels = [y_test]
+
+        fig, axes = plt.subplots(
+            nrows=len(binned_data),
+            ncols=len(parameters),
+            figsize=(3 * len(parameters), 3 * len(binned_data)),
+            dpi=300,
+        )
+
+        for i, (data, labels) in enumerate(zip(binned_data, binned_labels)):
+            y_test_samples = self.sample_posterior(
+                posteriors=posteriors,
+                X_test=data,
+            )
+
+            # get quantiles of the posterior samples
+            quantiles = np.quantile(y_test_samples, [0.16, 0.5, 0.84], axis=1)
+
+            for j, param in enumerate(parameters):
+                ax = axes[i, j] if len(binned_data) > 1 else axes[j]
+                # Get the true values for the parameter
+                index = list(self.fitted_parameter_names).index(param)
+                true_values = labels[:, index]
+                # Get the recovered values from the posterior samples
+                recovered_values = quantiles[1, :, index]  # median of the posterior samples
+                # Calculate the deviation
+                deviation = recovered_values - true_values
+
+                mask = recovered_values == 0
+                true_values = true_values[~mask]
+                deviation = deviation[~mask]
+
+                # Plot the deviation vs true values
+                ax.scatter(true_values, deviation, alpha=0.5)
+                ax.axhline(0, color="red", linestyle="--")
+                if self.fitted_parameter_units is not None:
+                    param_unit = f" ({self.fitted_parameter_units[index]})"
+                else:
+                    param_unit = ""
+                ax.set_xlabel(f"True {param}{param_unit}")
+                ax.set_ylabel(rf"$\Delta$ {param} (Recovered - True){param_unit}")
+                ax.set_title(
+                    f"SNR bin: {snr_bins[i]} - {snr_bins[i + 1]}" if snr_bins else "All SNRs"
+                )
+                if contours:
+                    import seaborn as sns
+
+                    sns.kdeplot(
+                        x=true_values,
+                        y=deviation,
+                        ax=ax,
+                        fill=True,
+                        levels=10,
+                        thresh=0,
+                        alpha=0.5,
+                    )
+                if error_bars:
+                    yerr = [
+                        quantiles[1, :, index][~mask] - quantiles[0, :, index][~mask],
+                        quantiles[2, :, index][~mask] - quantiles[1, :, index][~mask],
+                    ]
+                    ax.errorbar(
+                        true_values,
+                        deviation,
+                        yerr=yerr,
+                        fmt="o",
+                        alpha=0.5,
+                        capsize=0,
+                        elinewidth=1,
+                    )
+
+        plt.tight_layout()
+        return fig
+
     def create_features_from_observations(
         self,
         observations: Union[Table, pd.DataFrame],
@@ -4665,6 +4863,9 @@ class SBI_Fitter:
                 self.simple_fitted_parameter_names = [
                     i.split("/")[-1] for i in self.fitted_parameter_names
                 ]
+                self.fitted_parameter_units = params.get(
+                    "fitted_parameter_units", self.parameter_units
+                )
                 learning_type = params.get("learning_type", "offline")
                 self.feature_names = params["feature_names"]
 
@@ -5414,7 +5615,7 @@ class Simformer_Fitter(SBI_Fitter):
             num_samples=1000,
             num_evaluations=25,
             rng_seed=random_seed,
-            plots_dir=f"{code_path}/models/{self.name}/plots/",
+            plots_dir=f"{code_path}/models/{self.name}/plots/{name_append}/",
         )
 
     def load_model_from_pkl(
@@ -5667,19 +5868,40 @@ class Simformer_Fitter(SBI_Fitter):
 
         # Get 16, 50 and 84 percentiles for each parameter for each test sample
 
-        fig, ax = plt.subplots(nrows=1, ncols=len(task.param_names_ordered), figsize=(15, 5))
+        fig, ax = plt.subplots(
+            nrows=1,
+            ncols=len(task.param_names_ordered),
+            figsize=(len(task.param_names_ordered) * 3, 3),
+        )
 
         for i, param in enumerate(task.param_names_ordered):
             # Get the 16th, 50th and 84th percentiles for the parameter
-            p16, p50, p84 = np.percentile(y_test_recovered[:, i], [16, 50, 84])
+            p16, p50, p84 = np.percentile(
+                y_test_recovered[:, :, i],
+                [16, 50, 84],
+                axis=1,
+            ).squeeze()
             ax[i].errorbar(
-                y_test[:, i],
+                y_test[:, i],  # True values
                 p50,
                 yerr=[p50 - p16, p84 - p50],
                 fmt="o",
+                capsize=2,
+                markersize=2,
+                elinewidth=0.5,
+                alpha=0.75,
+            )
+            # Add a 1:1 line
+            ax[i].plot(
+                [y_test[:, i].min(), y_test[:, i].max()],
+                [y_test[:, i].min(), y_test[:, i].max()],
+                "k--",
             )
 
             ax[i].set_title(param)
+            ax[i].set_xlabel("True")
+            if i == 0:
+                ax[i].set_ylabel("Predicted")
 
         plt.tight_layout()
 
@@ -5688,7 +5910,7 @@ class Simformer_Fitter(SBI_Fitter):
         if not os.path.exists(plots_dir):
             os.makedirs(plots_dir)
         # TODO: Rename to match convention
-        plt.savefig(os.path.join(plots_dir, f"sample_accuracy_plot_{self._timestamp}.png"))
+        plt.savefig(os.path.join(plots_dir, "plot_sample_predictions.jpg"))
 
     def plot_coverage(
         self,
