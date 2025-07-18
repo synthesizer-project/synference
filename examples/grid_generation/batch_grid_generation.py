@@ -21,8 +21,10 @@ from unyt import Gyr, K, Myr, dimensionless, unyt_array
 from sbifitter import (
     CombinedBasis,
     GalaxyBasis,
+    calculate_d4000,
+    calculate_mass_weighted_age,
     calculate_muv,
-    calculate_mwa,
+    calculate_sfr,
     draw_from_hypercube,
     generate_constant_R,
     generate_random_DB_sfh,
@@ -487,8 +489,13 @@ for sfh_name, sfh_params in sfhs.items():
     # Any function could be passed in.
     combined_basis.process_bases(
         overwrite=False,
-        mUV=(calculate_muv, cosmo),
-        mwa=calculate_mwa,
+        mUV=(calculate_muv, cosmo),  # Calculate mUV using the provided cosmology
+        mass_weighted_age=calculate_mass_weighted_age,  # Calculate mass-weighted age
+        sfr_3=(calculate_sfr, 3 * Myr),  # Calculate SFR averaged over the last 3 Myr
+        sfr_10=(calculate_sfr, 10 * Myr),  # Calculate SFR averaged over the last 10 Myr
+        sfr_30=(calculate_sfr, 30 * Myr),  # Calculate SFR averaged over the last 30 Myr
+        sfr_100=(calculate_sfr, 100 * Myr),  # Calculate SFR averaged over the last 100 Myr
+        d4000=calculate_d4000,  # Calculate D4000 index
         n_proc=n_proc,
         verbose=False,
         batch_size=batch_size,

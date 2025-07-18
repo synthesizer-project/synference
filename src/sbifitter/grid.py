@@ -101,128 +101,186 @@ def calculate_muv(galaxy, cosmo=Planck18):
     return phots
 
 
-def calculate_mwa(galaxy):
-    """Calculate the mass-weighted age of a galaxy.
+def calculate_sfr(galaxy, timescale=10 * Myr):
+    """Calculate the star formation rate (SFR) of a galaxy over a specified timescale.
 
-    Parameters
-    ----------
-    galaxy : Galaxy
-        The galaxy object containing stellar spectra.
-
-    Returns:
-    -------
-    float
-        The mass-weighted age of the galaxy in Myr.
-    """
-    if not isinstance(galaxy, Galaxy):
-        raise TypeError("galaxy must be an instance of the Galaxy class")
-
-    if not hasattr(galaxy.stars, "spectra"):
-        raise AttributeError("galaxy.stars must have a spectra attribute")
-
-    # Calculate the mass-weighted age
-    mwa = galaxy.stars.calculate_median_age()
-
-    return mwa.to(Myr)
-
-
-def calculate_sfr(galaxy: "Galaxy", timescale: unyt_quantity = 10 * Myr) -> unyt_quantity:
-    """Calculate the average star formation rate (SFR) of a galaxy.
-
-    This function calculates the average star formation rate over a specified
-    recent timescale from a binned star formation history (SFH).
-
-    Parameters
-    ----------
-    galaxy : Galaxy
-        The galaxy object. It must have a `stars` attribute with `ages` and
-        `sf_hist` attributes.
-        - `galaxy.stars.ages`: A 1D numpy array of the SFH bin **edges**
-          (lookback time) in units of years. The bins can be non-uniform.
-        - `galaxy.stars.sf_hist`: A 1D numpy array of the total **mass**
-          formed in each corresponding bin, in units of Msun. The size of
-          this array must be one less than the `ages` array.
-    timescale : unyt_quantity, optional
-        The timescale over which to average the SFR, by default 10 * Myr.
+    Args:
+        galaxy: An instance of a synthesizer.parametric.Galaxy object.
+        timescale: The timescale over which to calculate the SFR (default is 10 Myr).
 
     Returns:
-    -------
-    unyt_quantity
-        The average star formation rate of the galaxy in Msun/yr.
-
-    Raises:
-    ------
-    TypeError
-        If the input types are incorrect.
-    AttributeError
-        If the galaxy object is missing required attributes.
-    ValueError
-        If the timescale is not positive, arrays have inconsistent shapes,
-        or the calculated SFR is negative or non-finite.
+        The star formation rate as a float.
     """
-    # --- Input Validation ---
-    if not hasattr(galaxy, "stars"):
-        raise AttributeError("Galaxy object must have a 'stars' attribute.")
-    if not all(hasattr(galaxy.stars, attr) for attr in ["ages", "sf_hist"]):
-        raise AttributeError("galaxy.stars must have 'ages' and 'sf_hist' attributes.")
-    if not isinstance(timescale, unyt_quantity):
-        raise TypeError("timescale must be a unyt_quantity.")
-    if timescale <= 0 * yr:
-        raise ValueError("timescale must be positive.")
+    timescale = (0, timescale.to("yr").value)  # Convert timescale to years
+    sfr = galaxy.stars.get_average_sfr(t_range=timescale)
+    return sfr
 
-    age_edges_yr = np.asarray(galaxy.stars.ages)
-    mass_in_bins_Msun = np.asarray(galaxy.stars.sf_hist)
 
-    if mass_in_bins_Msun.ndim != 1 or age_edges_yr.ndim != 1:
-        raise ValueError("'ages' and 'sf_hist' must be 1D arrays.")
-    if mass_in_bins_Msun.size != age_edges_yr.size - 1:
-        raise ValueError(
-            "The 'sf_hist' (mass) array must have one fewer element than "
-            "the 'ages' (bin edges) array."
-        )
+def calculate_mass_weighted_age(galaxy):
+    """Calculate the mass-weighted age of the stars in the galaxy."""
+    return galaxy.stars.get_mass_weighted_age().to("Myr")
 
-    if age_edges_yr.size < 2:
-        return unyt_quantity(0, units=Msun / yr)
 
-    # --- Calculation ---
-    bin_starts_yr = age_edges_yr[:-1]
-    bin_ends_yr = age_edges_yr[1:]
-    bin_widths_yr = bin_ends_yr - bin_starts_yr
-
-    # Calculate the SFR within each bin (Msun/yr) from the input mass.
-    # Use np.divide to handle bins with zero width safely.
-    rates_Msun_per_yr = np.divide(
-        mass_in_bins_Msun,
-        bin_widths_yr,
-        out=np.zeros_like(mass_in_bins_Msun, dtype=float),
-        where=(bin_widths_yr != 0),
+def calculate_lum_weighted_age(galaxy, spectra_type="total", filter_code="V"):
+    """Calculate the luminosity-weighted age of the stars in the galaxy."""
+    return galaxy.stars.get_lum_weighted_age(spectra_type=spectra_type, filter_code=filter_code).to(
+        "Myr"
     )
 
-    timescale_val_yr = timescale.to_value(yr)
 
-    # Find the overlap of each bin with the interval [0, timescale]
-    overlap_start = np.maximum(bin_starts_yr, 0)
-    overlap_end = np.minimum(bin_ends_yr, timescale_val_yr)
+def calculate_flux_weighted_age(galaxy, spectra_type="total", filter_code="JWST/NIRCam.F444W"):
+    """Calculate the flux-weighted age of the stars in the galaxy."""
+    return galaxy.stars.get_flux_weighted_age(
+        spectra_type=spectra_type, filter_code=filter_code
+    ).to("Myr")
 
-    # Calculate the duration of the overlap for each bin
-    overlap_duration_yr = np.maximum(0, overlap_end - overlap_start)
 
-    # Total mass formed within timescale = sum of (rate in bin * overlap duration)
-    total_mass_in_timescale_Msun = np.sum(rates_Msun_per_yr * overlap_duration_yr)
+def calculate_colour(
+    galaxy: Galaxy, filter1: str, filter2: str, emission_model_key: str = "total"
+) -> float:
+    """Measures the colour of a galaxy between two filters (filter1 - filter2).
 
-    # Average SFR = Total Mass / Timescale
-    average_sfr = total_mass_in_timescale_Msun / timescale_val_yr
+    Args:
+        galaxy: An instance of a synthesizer.parametric.Galaxy object.
+        filter1: The first filter code (e.g., 'JWST/NIRCam.F444W').
+        filter2: The second filter code (e.g., 'JWST/NIRCam.F115W').
+        emission_model_key: The key for the emission model to use (default is 'total').
 
-    # --- Final Checks & Return ---
-    if not np.isfinite(average_sfr):
-        raise ValueError("Calculated SFR is not finite. Check galaxy's SFH and ages.")
+    Returns:
+        The colour of the galaxy as a float.
+    """
+    for i, filter_code in enumerate([filter1, filter2]):
+        if (
+            galaxy.stars.spectra[emission_model_key].photo_fnu is None
+            or filter_code not in galaxy.stars.spectra[emission_model_key].photo_fnu
+        ):
+            try:
+                if filter_code in ["U", "V", "J"]:
+                    from synthesizer.filters import UVJ
 
-    sfr = unyt_quantity(average_sfr, units=Msun / yr)
+                    uvj = UVJ()
+                    filter = uvj[filter_code]
+                    filters = FilterCollection(filters=[filter])
+                else:
+                    filters = FilterCollection(filter_codes=[filter_code])
+                galaxy.stars.get_photo_fluxes(filters)
+                print(galaxy.stars.spectra[emission_model_key].photo_fnu)
+            except ValueError:
+                raise ValueError(
+                    "Filter '{filter_code}' is not available in the "
+                    f"emission model '{emission_model_key}'."
+                )
+        if i == 0:
+            flux1 = galaxy.stars.spectra[emission_model_key].photo_fnu[filter_code]
+        else:
+            flux2 = galaxy.stars.spectra[emission_model_key].photo_fnu[filter_code]
 
-    if sfr < 0 * Msun / yr:
-        raise ValueError("Calculated SFR is negative. Check galaxy's SFH and ages.")
+    colour = 2.5 * np.log10(flux2 / flux1)
 
-    return sfr
+    return colour
+
+
+def calculate_d4000(galaxy: Galaxy, emission_model_key: str = "total") -> float:
+    """Measures the D4000 index of a galaxy.
+
+    Args:
+        galaxy: An instance of a synthesizer.parametric.Galaxy object.
+        emission_model_key: The key for the emission model to use (default is 'total').
+
+    Returns:
+        The D4000 index as a float.
+    """
+    d4000 = galaxy.stars.spectra[emission_model_key].measure_d4000()
+    return d4000
+
+
+def calculate_beta(galaxy: Galaxy, emission_model_key: str = "total") -> float:
+    """Measures the beta index of a galaxy.
+
+    Args:
+        galaxy: An instance of a synthesizer.parametric.Galaxy object.
+        emission_model_key: The key for the emission model to use (default is 'total').
+
+    Returns:
+        The beta index as a float.
+    """
+    beta = galaxy.stars.spectra[emission_model_key].measure_beta()
+    return beta
+
+
+def calculate_balmer_decrement(galaxy: Galaxy, emission_model_key: str = "total") -> float:
+    """Measures the Balmer decrement oemission_modelf a galaxy.
+
+    Args:
+        galaxy: An instance of a synthesizer.parametric.Galaxy object.
+        emission_model_key: The key for the emission model to use (default is 'total').
+
+    Returns:
+        The Balmer decrement as a float.
+    """
+    balmer_decrement = galaxy.stars.spectra[emission_model_key].measure_balmer_break(
+        integration_method="simps"
+    )
+    return balmer_decrement
+
+
+def calculate_line_flux(galaxy: Galaxy, emission_model, line="Ha"):
+    """Measures the equivalent widths of specific emission lines in a galaxy.
+
+    Args:
+        galaxy: An instance of a synthesizer.parametric.Galaxy object.
+        emission_model: An instance of a synthesizer.emission_models.EmissionModel.
+        line: The name of the emission line to measure (default is 'Ha').
+
+    Returns:
+        A dictionary with line names as keys and their equivalent widths as values.
+    """
+    from synthesizer.emissions.utils import aliases
+
+    line = aliases.get(line, line)  # Handle aliases for line names
+
+    line = galaxy.stars.get_lines(([line]), emission_model)
+    flux = line.get_flux(cosmo=Planck18, z=galaxy.redshift)[0]
+
+    return flux
+
+
+def calculate_line_ew(galaxy: Galaxy, emission_model, line="Ha"):
+    """Measures the equivalent widths of specific emission lines in a galaxy.
+
+    Args:
+        galaxy: An instance of a synthesizer.parametric.Galaxy object.
+        emission_model: An instance of a synthesizer.emission_models.EmissionModel.
+        line: The name of the emission line to measure (default is 'Ha').
+
+    Returns:
+        A dictionary with line names as keys and their equivalent widths as values.
+    """
+    from synthesizer.emissions.utils import aliases
+
+    line = aliases.get(line, line)  # Handle aliases for line names
+
+    line = galaxy.stars.get_lines(([line]), emission_model)
+
+    print(galaxy.stars.lines["nebular"])
+
+    return line.equivalent_width[0]
+
+
+class SUPP_FUNCTIONS:
+    """A class to hold supplementary functions for galaxy analysis."""
+
+    calculate_muv = calculate_muv
+    calculate_sfr = calculate_sfr
+    calculate_mass_weighted_age = calculate_mass_weighted_age
+    calculate_lum_weighted_age = calculate_lum_weighted_age
+    calculate_flux_weighted_age = calculate_flux_weighted_age
+    calculate_colour = calculate_colour
+    calculate_d4000 = calculate_d4000
+    calculate_beta = calculate_beta
+    calculate_balmer_decrement = calculate_balmer_decrement
+    calculate_line_flux = calculate_line_flux
+    calculate_line_ew = calculate_line_ew
 
 
 # ------------------------------------------
