@@ -22,13 +22,16 @@ dependencies = [
     "astropy",
     "numpy",
     "scipy",
-    "unyt"
+    "unyt",
+    "jax",
+    "simple_parsing",
+    "corner",
 ]
 
 [project.optional-dependencies]
 
 simformer = [
-    "jax",
+    "simformer @ git+https://github.com/tHarvey303/simformer/"
 ]
 
 # Development
@@ -93,7 +96,7 @@ exclude = [
 ]
 
 # PEP-8 line length
-line-length = 90
+line-length = 100
 indent-width = 4
 
 

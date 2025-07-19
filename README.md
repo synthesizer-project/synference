@@ -33,6 +33,9 @@ SBIFitter requires Python 3.10 or higher. It has the following dependencies:
 - [sbi](https://sbi.readthedocs.io/) for simulation-based inference
 - [h5py](https://www.h5py.org/) for HDF5 file handling
 - [unyt](https://unyt.readthedocs.io/) for unit handling
+- [matplotlib](https://matplotlib.org/) for plotting and visualization
+- [tqdm](https://tqdm.github.io/) for progress bars
+- [jax](https://jax.readthedocs.io/) for GPU acceleration (optional, for some inference models)
 
 These dependencies will be automatically installed when you install SBIFitter using pip.
 
@@ -59,7 +62,7 @@ To get started with SBIFitter, you can check out the [examples](examples/) direc
 
 The most basic usage, for creating a simple mock catalogue and training a model on it looks like this:
 
-Firstly we setup the Synthesizer based mode. More details on how to set up the Synthesizer model can be found in the [Synthesizer documentation](https://synthesizer-project.github.io/). Here we use a BPASS SPS grid, a lognormal star formation history, a single stellar metallicity and a simple emission model including Cloudy nebular emission but no dust reprocessing. The photometric filters used are common JWST/NIRCam wideband filters, but any filters supported by [SVO](https://svo2.cab.inta-csic.es/theory/fps/index.php) or loaded manually can be used. The model parameters are drawn from a Latin hypercube sampling of the parameter space, but this can be done in any way indepedent of SBIFitter. All we are providing to the grid generation is a set of *10,000* galaxies with a range of stellar masses, redshifts, metallicities, and star formation histories, and these can be created in any way you like.
+Firstly we setup the Synthesizer based model. More details on how to set up the Synthesizer model can be found in the [Synthesizer documentation](https://synthesizer-project.github.io/). Here we use a BPASS SPS grid, a lognormal star formation history, a single stellar metallicity and a simple emission model including Cloudy nebular emission but no dust reprocessing. The photometric filters used are common JWST/NIRCam wideband filters, but any filters supported by [SVO](https://svo2.cab.inta-csic.es/theory/fps/index.php) or loaded manually can be used. The model parameters are drawn from a Latin hypercube sampling of the parameter space, but this can be done in any way indepedent of SBIFitter. All we are providing to the grid generation is a set of *10,000* galaxies with a range of stellar masses, redshifts, metallicities, and star formation histories, and these can be created in any way you like.
 
 ```python
 from synthesizer.grid import Grid
