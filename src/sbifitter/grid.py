@@ -67,6 +67,8 @@ UNIT_DICT = {
 }
 
 # ------------------------------------------
+# Functions for galaxy parameters
+# ------------------------------------------
 
 
 def calculate_muv(galaxy, cosmo=Planck18):
@@ -164,7 +166,6 @@ def calculate_colour(
                 else:
                     filters = FilterCollection(filter_codes=[filter_code])
                 galaxy.stars.get_photo_fluxes(filters)
-                print(galaxy.stars.spectra[emission_model_key].photo_fnu)
             except ValueError:
                 raise ValueError(
                     "Filter '{filter_code}' is not available in the "
@@ -267,6 +268,50 @@ def calculate_line_ew(galaxy: Galaxy, emission_model, line="Ha"):
     return line.equivalent_width[0]
 
 
+def calculate_sfh_quantile(galaxy, quantile=0.5, norm=False, cosmo=Planck18):
+    """Calculate the lookback time at which a certain fraction of the total mass is formed.
+
+    Args:
+        galaxy: An instance of a synthesizer.parametric.Galaxy object.
+        quantile: The fraction of total mass formed (default is 0.5 for median).
+        norm: If True then the age is as a fraction of the age of the universe at
+            the redshift of the galaxy.
+        cosmo: Cosmology object to use for age calculations, default is Planck18.
+
+    Returns:
+        The lookback time in Myr at which the specified fraction of total mass is formed.
+    """
+    if not isinstance(galaxy, Galaxy):
+        raise TypeError("galaxy must be an instance of synthesizer.parametric.Galaxy")
+
+    if not hasattr(galaxy.stars, "sfh"):
+        raise AttributeError("galaxy.stars must have a 'sfh' attribute")
+
+    assert 0 <= quantile <= 1, "quantile must be between 0 and 1."
+
+    mass_bins = galaxy.stars.sf_hist
+    ages = galaxy.stars.ages
+    # from young to old
+
+    cumulative_mass = np.cumsum(mass_bins[::-1])
+
+    # Find the time at which the specified quantile of total mass is formed
+    total_mass = cumulative_mass[-1]
+    target_mass = quantile * total_mass
+
+    # Find the index where cumulative mass exceeds target mass
+    index = np.searchsorted(cumulative_mass, target_mass)
+
+    lookback_time = ages[::-1][index].to("Myr")  # Get the corresponding age from the ages array
+
+    if norm:
+        # Normalize the lookback time to the age of the universe at the galaxy's redshift
+        age_of_universe = cosmo.age(galaxy.redshift).to("Myr").value
+        lookback_time = lookback_time.value / age_of_universe
+
+    return lookback_time
+
+
 class SUPP_FUNCTIONS:
     """A class to hold supplementary functions for galaxy analysis."""
 
@@ -281,6 +326,7 @@ class SUPP_FUNCTIONS:
     calculate_balmer_decrement = calculate_balmer_decrement
     calculate_line_flux = calculate_line_flux
     calculate_line_ew = calculate_line_ew
+    calculate_sfh_quantile = calculate_sfh_quantile
 
 
 # ------------------------------------------
@@ -2606,6 +2652,10 @@ class CombinedBasis:
                     phot = {}
                     for observatory in observed_photometry:
                         phot_inst = observed_photometry[observatory]
+                        if isinstance(phot_inst, h5py.Dataset):
+                            # THIS IS A HACK TO AVOID LOADING
+                            # REST-FRAME FLUXES
+                            continue
 
                         for key in phot_inst.keys():
                             full_key = f"{observatory}/{key}"
@@ -2667,7 +2717,6 @@ class CombinedBasis:
                         # Combine supplementary properties
                         for key in supp_properties.keys():
                             if key not in outputs[base.model_name]["supp_properties"]:
-                                print(f"creating {key}")
                                 outputs[base.model_name]["supp_properties"][key] = {}
                             if not isinstance(
                                 supp_properties[key],
@@ -2686,13 +2735,6 @@ class CombinedBasis:
                                 }
 
                             for subkey in supp_properties[key].keys():
-                                print(
-                                    key,
-                                    subkey,
-                                    self.base_emission_model_keys,
-                                    "here",
-                                    outputs[base.model_name]["supp_properties"][key],
-                                )
                                 if subkey not in outputs[base.model_name]["supp_properties"][key]:
                                     outputs[base.model_name]["supp_properties"][key][subkey] = []
                                 outputs[base.model_name]["supp_properties"][key][subkey] = (
@@ -2707,7 +2749,6 @@ class CombinedBasis:
                                 )
 
         self.pipeline_outputs = outputs
-
         return outputs
 
     def create_grid(
@@ -3630,17 +3671,21 @@ class CombinedBasis:
                         for subkey, subvalue in value.items():
                             if check_scaling(subvalue):
                                 supp_dict[key][subkey] = subvalue[pos] * scaling_factors
-                                supp_param_units[key] = str(subvalue.units)
                             else:
                                 supp_dict[key][subkey] = subvalue[pos]
-                                supp_param_units[key] = str(dimensionless)
+                            supp_param_units[key] = (
+                                str(subvalue.units)
+                                if isinstance(subvalue, unyt_array)
+                                else "dimensionless"
+                            )
                     else:
                         if check_scaling(value):
                             supp_dict[key] = value[pos] * scaling_factors
-                            supp_param_units[key] = str(value.units)
                         else:
                             supp_dict[key] = value[pos]
-                            supp_param_units[key] = str(dimensionless)
+                        supp_param_units[key] = (
+                            str(value.units) if isinstance(value, unyt_array) else "dimensionless"
+                        )
 
                 # Store all relevant data for this base
 
