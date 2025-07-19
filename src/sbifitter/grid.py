@@ -1807,6 +1807,7 @@ class GalaxyBasis:
         emission_model_keys=None,
         batch_galaxies: bool = True,
         batch_size: int = 40_000,
+        overwrite: bool = False,
         **extra_analysis_functions,
     ) -> Pipeline:
         """Processes galaxies through Synthesizer pipeline.
@@ -1884,7 +1885,7 @@ class GalaxyBasis:
 
                 final_fullpath = fullpath.replace(".hdf5", f"_{batch_i + 1}.hdf5")
                 init_fullpath = fullpath.replace(".hdf5", "_0.hdf5")
-                if os.path.exists(final_fullpath):
+                if os.path.exists(final_fullpath) and not overwrite:
                     print(
                         f"""Skipping batch {batch_i + 1} as
                         {final_fullpath} already exists."""
@@ -2097,45 +2098,40 @@ class GalaxyBasis:
                 color=colors[emission_model],
                 linestyle="--",
             )
-
             mass = galaxy.stars.initial_mass
             if mass == 0:
-                text_gal[emission_model] = f"{emission_model}     \nNo stars"
+                text_gal[emission_model] = f"**{emission_model}**\nNo stars"
             else:
                 age = galaxy.stars.calculate_mean_age()
                 zmet = galaxy.stars.calculate_mean_metallicity()
 
-                text_gal[emission_model] = rf"""{emission_model}     \\nAge \
-                     {age.to(Myr):.0f}\\n$\log_{{10}} \
-                     $Z: {np.log10(zmet.value):.2f}\\nM$_\star$: \
-                       {np.log10(mass):.1f} M$_\odot$"""
+            text_gal[emission_model] = f"""**{emission_model}**
+Age: {age.to(Myr):.0f}
+$\\log_{{10}}(Z)$: {np.log10(zmet):.2f}
+$\\log_{{10}}(M_\\star/M_\\odot)$: {np.log10(mass):.1f}"""
 
-        ax[0].legend(loc="upper right", fontsize=6, ncols=3)
-        # Set the x-axis limits
-        if max_y > 1 * nJy:
-            min_y = max(min_y, 1 * nJy)
-        else:
-            min_y = 1e-3 * max_y
-        ax[0].set_xlim(0.9 * min_x, 1.1 * max_x)
-        ax[0].set_ylim(0.9 * min_y, 2 * max_y)
+        info_blocks = []
+        info_blocks.append(f"$z = {redshift:.2f}$")
+        info_blocks.extend(text_gal.values())
 
-        textstr = "\n".join((r"$z = %.2f$" % (redshift),))
+        # Format and add galaxy parameters if they exist
+        if galaxy_params:
+            param_lines = [f"{key}: {value:.2f}" for key, value in galaxy_params.items()]
+            info_blocks.append("\n".join(param_lines))
 
-        textstr += "\n" + "\n".join(text_gal.values())
+        # Join the blocks with double newlines for clear separation
+        textstr = "\n\n".join(info_blocks)
 
-        # add galaxy params
-
-        textstr += "\n" + "\n".join([f"{key}: {value:.2f}" for key, value in galaxy_params.items()])
-
-        # these are matplotlib.patch.Patch properties
+        # Define properties for the text box
         props = dict(boxstyle="round", facecolor="wheat", alpha=0.5)
-        # place a text box in upper left in axes coords
+
+        # Place the text box on the axes
         ax[1].text(
             0.95,
-            0.72,
+            0.95,  # Adjusted y-position for better placement with verticalalignment='top'
             textstr,
             transform=ax[1].transAxes,
-            fontsize=12,
+            fontsize=10,  # Adjusted for better fit
             horizontalalignment="right",
             verticalalignment="top",
             bbox=props,
@@ -2260,10 +2256,10 @@ class GalaxyBasis:
 
         if (
             os.path.exists(full_out_path)
-            and not overwrite[0]
             or os.path.exists(f"{out_dir}/{out_name}_{total_batches}.hdf5")
+            and not overwrite[0]
         ):
-            print(f"File {full_out_path} already exists. Skipping.")
+            print(f"File {full_out_path} already exists. Skipping loading.")
             return
         if os.path.exists(full_out_path) and overwrite[0]:
             print(f"Overwriting {full_out_path}.")
@@ -2282,6 +2278,7 @@ class GalaxyBasis:
             save=True,
             emission_model_keys=emission_model_key,
             batch_size=batch_size,
+            overwrite=overwrite[0],
             **extra_analysis_functions,
         )
 
@@ -2519,13 +2516,12 @@ class CombinedBasis:
 
             if (
                 os.path.exists(full_out_path)
-                and not overwrite[i]
                 or os.path.exists(f"{self.out_dir}/{base.model_name}_{total_batches}.hdf5")
-            ):
+            ) and not overwrite[i]:
                 print(f"File {full_out_path} already exists. Skipping.")
                 continue
             elif os.path.exists(full_out_path) and overwrite[i]:
-                print(f"File {full_out_path} already exists. Overwriting.")
+                print(f"File {full_out_path} already exists. Overwriting..")
                 os.remove(full_out_path)
             elif not os.path.exists(self.out_dir):
                 os.makedirs(self.out_dir)
@@ -2546,6 +2542,7 @@ class CombinedBasis:
                 save=True,
                 emission_model_keys=self.base_emission_model_keys[i],
                 batch_size=batch_size,
+                overwrite=overwrite[i],
                 **extra_analysis_functions,
             )
 
