@@ -531,6 +531,7 @@ def check_scaling(arr: Union[unyt_array, unyt_quantity]):
         mass,
         power,
         specific_flux,
+        time,
     )
 
     if isinstance(arr, unyt_quantity):
@@ -554,6 +555,7 @@ def check_scaling(arr: Union[unyt_array, unyt_quantity]):
         luminance,
         mass,
         luminous_flux,
+        mass / time,
     ):
         return True
 

@@ -21,9 +21,11 @@ from unyt import Gyr, K, Myr, dimensionless, unyt_array
 from sbifitter import (
     CombinedBasis,
     GalaxyBasis,
+    calculate_beta,
     calculate_d4000,
     calculate_mass_weighted_age,
     calculate_muv,
+    calculate_sfh_quantile,
     calculate_sfr,
     draw_from_hypercube,
     generate_constant_R,
@@ -172,7 +174,7 @@ except Exception:
     n_proc = 6
 
 av_to_tau_v = 1.086  # conversion factor from Av to tau_v for the dust attenuation curve
-
+overwrite = True  # whether to overwrite existing grids
 Nmodels = 100_000  # 00  # _000
 batch_size = 40_000  # number of models to generate in each batch
 redshift = (0.01, 12)
@@ -192,6 +194,15 @@ log_zmet = (-4, -1.39)  # max of grid (e.g. 0.04)
 
 
 sfhs = {
+    "continuity": {
+        "sfh_type": SFH.Continuity,
+        "agebins": continuity_agebins,
+        "df": 2,
+        "scale": 1.0,  # scale for students-t prior
+        "params_to_ignore": ["max_age", "agebins"],
+        "nbins": 6,  # number of bins to use for the Continuity SFH
+        "sfh_param_names": [],
+    },
     "dense_basis": {
         "Nparam_SFH": 3,
         "tx_alpha": 1,
@@ -202,15 +213,6 @@ sfhs = {
         "ssfr": (-12, -7),  # log10(sSFR) in yr^-1'
         "params_to_ignore": ["max_age"],
     },
-    "continuity": {
-        "sfh_type": SFH.Continuity,
-        "agebins": continuity_agebins,
-        "df": 2,
-        "scale": 1.0,  # scale for students-t prior
-        "params_to_ignore": ["max_age", "agebins"],
-        "nbins": 6,  # number of bins to use for the Continuity SFH
-        "sfh_param_names": [],
-    },
     "double_powerlaw": {
         "sfh_type": SFH.DoublePowerLaw,
         "sfh_param_names": ["peak_age_norm", "alpha", "beta"],
@@ -218,7 +220,10 @@ sfhs = {
             0.00,
             0.99,
         ),  # normalized to maximum age of the universe at that redshift.
-        "alpha": (-100, -0.01),  # power-law index for the first part of the SFH
+        "alpha": (
+            -100,
+            -0.01,
+        ),  # power-law index for the first part of the SFH - probably should be log-uniform
         "beta": (0.01, 100),  # power-law index for the second part of the SFH
         "params_to_ignore": ["max_age"],  # max_age is not used in the DoublePowerLaw SFH
         "sfh_units": [None, None, None],  # units for the parameters
@@ -269,9 +274,9 @@ for sfh_name, sfh_params in sfhs.items():
 
     sfh_name = str(sfh_type).split(".")[-1].split("'")[0]
 
-    name = f"BPASS_Chab_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_CF00_v1"  # noqa: E501
+    name = f"BPASS_Chab_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_CF00_v2"  # noqa: E501
     print(f"{out_dir}/grid_{name}.hdf5")
-    if os.path.exists(f"{out_dir}/grid_{name}.hdf5"):
+    if os.path.exists(f"{out_dir}/grid_{name}.hdf5") and not overwrite:
         print(f"Grid {name} already exists, skipping.")
         continue
 
@@ -294,8 +299,6 @@ for sfh_name, sfh_params in sfhs.items():
                 1,
             )
         # add to SFH_param_names
-
-    print(full_params)
 
     # Draw samples from Latin Hypercube.
     # unlog_keys are keys which should be unlogged after drawing from the hypercube.
@@ -488,18 +491,24 @@ for sfh_name, sfh_params in sfhs.items():
     # Passing in extra analysis function to pipeline to calculate mUV.
     # Any function could be passed in.
     combined_basis.process_bases(
-        overwrite=False,
+        overwrite=overwrite,
         mUV=(calculate_muv, cosmo),  # Calculate mUV using the provided cosmology
         mass_weighted_age=calculate_mass_weighted_age,  # Calculate mass-weighted age
         sfr_3=(calculate_sfr, 3 * Myr),  # Calculate SFR averaged over the last 3 Myr
         sfr_10=(calculate_sfr, 10 * Myr),  # Calculate SFR averaged over the last 10 Myr
         sfr_30=(calculate_sfr, 30 * Myr),  # Calculate SFR averaged over the last 30 Myr
         sfr_100=(calculate_sfr, 100 * Myr),  # Calculate SFR averaged over the last 100 Myr
+        sfh_quant_25=(calculate_sfh_quantile, 0.25, True),  # Calculate SFH quantile at 25%
+        sfh_quant_50=(calculate_sfh_quantile, 0.50, True),  # Calculate SFH quantile at 50%
+        sfh_quant_75=(calculate_sfh_quantile, 0.75, True),  # Calculate SFH quantile at 75%
+        # UV=(calculate_colour, 'U','V', "total"), # These are broken as they need to be rest-frame
+        # VJ=(calculate_colour, 'V','J', "total"),
         d4000=calculate_d4000,  # Calculate D4000 index
+        beta=calculate_beta,  # Calculate beta using the instrument
         n_proc=n_proc,
         verbose=False,
         batch_size=batch_size,
     )
 
     # Create grid - kinda overkill for a single case, but it does work.
-    combined_basis.create_grid(overwrite=False)
+    combined_basis.create_grid(overwrite=overwrite)

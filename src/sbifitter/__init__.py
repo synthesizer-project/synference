@@ -8,7 +8,7 @@ from .grid import (
     calculate_muv, draw_from_hypercube, GalaxySimulator, generate_random_DB_sfh,
     test_out_of_distribution, calculate_mass_weighted_age, calculate_lum_weighted_age,
     calculate_flux_weighted_age, calculate_colour, calculate_d4000, calculate_beta, calculate_balmer_decrement,
-    calculate_line_flux, calculate_line_ew, SUPP_FUNCTIONS
+    calculate_line_flux, calculate_line_ew, calculate_sfh_quantile, SUPP_FUNCTIONS
 )
 
 from .utils import (
@@ -54,6 +54,9 @@ __all__ = [
     "calculate_balmer_decrement",
     "calculate_line_flux",
     "calculate_line_ew",
+    "calculate_d4000",
+    "calculate_colour",
+    "calculate_sfh_quantile",
     "SUPP_FUNCTIONS",
     "SBI_Fitter",
     "MissingPhotometryHandler",
