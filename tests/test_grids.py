@@ -13,7 +13,8 @@ from synthesizer.emission_models.attenuation import Calzetti2000
 from synthesizer.grid import Grid
 from synthesizer.instruments import FilterCollection, Instrument
 from synthesizer.parametric import SFH, Galaxy, Stars, ZDist
-from unyt import Jy, Msun, Myr, nJy, unyt_array
+from unyt import Angstrom, Jy, Msun, Myr, nJy, unyt_array
+from unyt.dimensions import mass, time
 
 test_dir = os.path.dirname(os.path.abspath(__file__))
 grid_dir = test_dir + "/test_grids/"
@@ -89,9 +90,7 @@ def simple_zdist():
 
 
 @pytest.fixture
-def grid_basis_params(
-    test_grid, mock_emission_model, mock_instrument, simple_sfh, simple_zdist
-):
+def grid_basis_params(test_grid, mock_emission_model, mock_instrument, simple_sfh, simple_zdist):
     """Fixture to create parameters for GalaxyBasis with a grid."""
     return {
         "model_name": "test_basis",
@@ -210,9 +209,7 @@ def check_hdf5(hfile, expected_keys, expected_attrs=None, check_size=False):
     with h5py.File(hfile, "r") as f:
         for key in expected_keys:
             assert key in f, f"Key '{key}' not found in HDF5 file."
-            assert isinstance(f[key], h5py.Dataset), (
-                f"Key '{key}' is not a dataset in HDF5 file."
-            )
+            assert isinstance(f[key], h5py.Dataset), f"Key '{key}' is not a dataset in HDF5 file."
             if check_size:
                 # Check all numpy arrays are 2D
                 assert f[key].ndim == 2, f"Key '{key}' is not a 2D array in HDF5 file."
@@ -247,9 +244,7 @@ def combined_grid_basis_params(grid_basis_params):
         "log_stellar_masses": [9] * len(grid_basis_params["redshifts"]),
         "redshifts": grid_basis_params["redshifts"],
         "base_emission_model_keys": ["total", "total"],
-        "combination_weights": np.array(
-            [np.array([i, 1 - i]) for i in np.arange(0, 1.1, 0.25)]
-        ),
+        "combination_weights": np.array([np.array([i, 1 - i]) for i in np.arange(0, 1.1, 0.25)]),
         "out_name": "test_combined",
         "out_dir": f"{test_dir}/test_output/",
         "log_base_masses": 9,
@@ -352,12 +347,8 @@ class TestGalaxyBasis:
         )
 
         assert isinstance(galaxy, Galaxy)
-        assert galaxy.redshift == 7.0, (
-            f"Expected redshift to be 7.0, got {galaxy.redshift}"
-        )
-        assert galaxy.stars.tau_v == 0.2, (
-            f"Expected tau_v to be 0.2, got {galaxy.stars.tau_v}"
-        )
+        assert galaxy.redshift == 7.0, f"Expected redshift to be 7.0, got {galaxy.redshift}"
+        assert galaxy.stars.tau_v == 0.2, f"Expected tau_v to be 0.2, got {galaxy.stars.tau_v}"
         assert galaxy.stars.initial_mass.value == 1e9, (
             f"Expected initial mass to be 1e9 Msun, got {galaxy.stars.initial_mass}"
         )
@@ -618,9 +609,7 @@ class TestSBIFitter:
         fitter.create_feature_array_from_raw_photometry(extra_features=[])
 
         # Test with extra features
-        fitter.create_feature_array_from_raw_photometry(
-            extra_features=["redshift", "log_mass"]
-        )
+        fitter.create_feature_array_from_raw_photometry(extra_features=["redshift", "log_mass"])
         assert (
             "redshift" in fitter.feature_names
         ), f"""Redshift not found in simple fitted parameter names after adding as
@@ -639,9 +628,7 @@ class TestSBIFitter:
         # Test including errors
         depths = np.array([29] * len(fitter.raw_photometry_names))
         depths = (10 ** (-0.4 * (depths - 8.9))) / 5 * Jy
-        fitter.create_feature_array_from_raw_photometry(
-            scatter_fluxes=True, depths=depths
-        )
+        fitter.create_feature_array_from_raw_photometry(scatter_fluxes=True, depths=depths)
 
         fitter.create_feature_array_from_raw_photometry(
             scatter_fluxes=3,
@@ -737,6 +724,127 @@ class TestFullPipeline:
         )
 
         fitter.run_single_sbi()
+
+
+class TestSuppFunctions:
+    """Test suite for the utility functions in the synthesizer package."""
+
+    def param_functions(self, function):
+        """Get a parameter function from the SUPP_FUNCTIONS module."""
+        from sbifitter import SUPP_FUNCTIONS
+
+        return getattr(SUPP_FUNCTIONS, function)
+
+    @pytest.fixture
+    def test_galaxy(self, test_parametric_galaxy, mock_emission_model):
+        """Fixture to create a mock Galaxy object for testing."""
+        test_parametric_galaxy.stars.get_spectra(emission_model=mock_emission_model)
+        test_parametric_galaxy.get_observed_spectra(cosmo=Planck18)
+        filter_codes = ["JWST/NIRCam.F444W", "JWST/NIRCam.F115W"]
+        filters = FilterCollection(filter_codes=filter_codes)
+        test_parametric_galaxy.get_photo_fluxes(filters)
+        return test_parametric_galaxy
+
+    def test_calculate_muv(self, test_galaxy):
+        """Test the calculate_muv function."""
+        func = self.param_functions("calculate_muv")
+        muv = func(test_galaxy, Planck18)
+        muv = muv["total"]
+        assert muv is not None, "calculate_muv did not return a value."
+        assert isinstance(muv, unyt_array), (
+            f"calculate_muv did not return a unyt_array. Got {type(muv)} instead."
+        )
+        assert muv.units.dimensions == Jy.dimensions, (
+            "calculate_muv did not return a value with the correct units."
+        )
+
+    def test_calculate_beta(self, test_galaxy):
+        """Test the calculate_beta function."""
+        func = self.param_functions("calculate_beta")
+        beta = func(test_galaxy)
+
+        assert beta is not None, "calculate_beta did not return a value."
+        assert isinstance(beta, float), "calculate_beta did not return a floar."
+
+    def test_calculate_sfr(self, test_galaxy):
+        """Test the calculate_sfr function."""
+        pytest.skip("Skipping calculate_sfr test as it requires a function not in Synthesizer.")
+        func = self.param_functions("calculate_sfr")
+        sfr = func(test_galaxy)
+
+        assert sfr is not None, "calculate_sfr did not return a value."
+        assert isinstance(sfr, unyt_array), "calculate_sfr did not return a unyt_array."
+        assert sfr.units.dimensions == mass / time, (
+            "calculate_sfr did not return a value with the correct dimensions."
+        )
+
+    def test_calculate_balmer_decrement(self, test_galaxy):
+        """Test the calculate_balmer_break function."""
+        func = self.param_functions("calculate_balmer_decrement")
+        balmer_break = func(test_galaxy)
+
+        assert balmer_break is not None, "calculate_balmer_break did not return a value."
+        assert isinstance(balmer_break, float), "calculate_balmer_break did not return a float."
+
+    def test_calculate_colour(self, test_galaxy):
+        """Test the calculate_colours function."""
+        func = self.param_functions("calculate_colour")
+        colour = func(test_galaxy, "V", "J", emission_model_key="total")
+
+        assert colour is not None, "calculate_colour did not return a value."
+
+        assert np.isfinite(colour).all(), "calculate_colour returned NaN or infinite values."
+
+    def test_calculate_line_ew(self, test_galaxy, mock_emission_model):
+        """Test the calculate_line_ew function."""
+        func = self.param_functions("calculate_line_ew")
+        ew = func(test_galaxy, mock_emission_model, "Ha")
+
+        assert ew is not None, "calculate_line_ew did not return a value."
+        assert isinstance(ew, unyt_array), "calculate_line_ew did not return a unyt_array."
+        assert ew.units == Angstrom, (
+            "calculate_line_ew did not return a value with the correct units."
+        )
+        assert np.isfinite(ew), "calculate_line_ew returned NaN or infinite values."
+        assert ew > 0 * Angstrom, "calculate_line_ew returned a non-positive equivalent width."
+
+    def test_calculate_line_flux(self, test_galaxy, mock_emission_model):
+        """Test the calculate_line_flux function."""
+        func = self.param_functions("calculate_line_flux")
+        flux = func(test_galaxy, mock_emission_model, "Ha")
+
+        assert flux is not None, "calculate_line_flux did not return a value."
+        assert isinstance(flux, unyt_array), "calculate_line_flux did not return a unyt_array."
+        assert flux.units.dimensions == mass / time**3, (
+            "calculate_line_flux did not return a value with the correct units. "
+            f"Expected Jy, got {flux.units.dimensions}"
+        )
+
+    def test_calculate_d4000(self, test_galaxy):
+        """Test the calculate_d4000 function."""
+        pytest.skip("Skipping calculate_d4000 test as it requires a function not in Synthesizer.")
+        func = self.param_functions("calculate_d4000")
+        d4000 = func(test_galaxy)
+
+        assert d4000 is not None, "calculate_d4000 did not return a value."
+        assert isinstance(d4000, float), "calculate_d4000 did not return a float."
+        assert 1 <= d4000 <= 2.5, "calculate_d4000 returned a value outside the expected range."
+
+    def test_calculate_mass_weighted_age(self, test_galaxy):
+        """Test the calculate_mass_weighted_age function."""
+        pytest.skip(
+            "Skipping calculate_mass_weighted_age test as it requires afunction not in Synthesizer."
+        )
+        func = self.param_functions("calculate_mass_weighted_age")
+        age = func(test_galaxy)
+
+        assert age is not None, "calculate_mass_weighted_age did not return a value."
+        assert isinstance(age, unyt_array), (
+            "calculate_mass_weighted_age did not return a unyt_array."
+        )
+        assert age.units == Myr, (
+            "calculate_mass_weighted_age did not return a value with the correct units."
+        )
 
 
 if __name__ == "__main__":

@@ -1,15 +1,18 @@
 """Utility functions for SBIFitter."""
 
+import io
 import operator
 import os
+import pickle
 import re
 import sys
 from typing import Dict, List, Union
 
 import h5py
+import matplotlib.pyplot as plt
 import numpy as np
-import scipy.stats
-from unyt import Angstrom, Jy, nJy, unyt_array
+import scipy.stats as stats
+from unyt import Angstrom, Jy, nJy, unyt_array, unyt_quantity
 
 
 def load_grid_from_hdf5(
@@ -134,14 +137,14 @@ def list_parameters(distribution):
     # from https://stackoverflow.com/questions/30453097/getting-the-parameter-names-of-scipy-stats-distributions
     """
     if isinstance(distribution, str):
-        distribution = getattr(scipy.stats, distribution)
+        distribution = getattr(stats, distribution)
     if distribution.shapes:
         parameters = [name.strip() for name in distribution.shapes.split(",")]
     else:
         parameters = []
-    if distribution.name in scipy.stats._discrete_distns._distn_names:
+    if distribution.name in stats._discrete_distns._distn_names:
         parameters += ["loc"]
-    elif distribution.name in scipy.stats._continuous_distns._distn_names:
+    elif distribution.name in stats._continuous_distns._distn_names:
         parameters += ["loc", "scale"]
     else:
         sys.exit("Distribution name not found in discrete or continuous lists.")
@@ -366,19 +369,13 @@ def f_jy_to_asinh(
     if f_b.ndim == 0:
         f_b = np.full_like(f_jy, f_b.value, dtype=f_jy.dtype)
     elif f_b.ndim == 1 and f_jy.ndim == 2:
-        assert f_b.shape[0] == f_jy.shape[0], (
-            "Flux softening must match the number of filters."
-        )
+        assert f_b.shape[0] == f_jy.shape[0], "Flux softening must match the number of filters."
         f_b = np.tile(f_b, (f_jy.shape[1], 1)).T
 
     else:
-        assert f_b.shape == f_jy.shape, (
-            "Flux and flux softening must have the same shape."
-        )
+        assert f_b.shape == f_jy.shape, "Flux and flux softening must have the same shape."
 
-    asinh = (
-        -2.5 * np.log10(np.e) * (np.asinh(f_jy / (2 * f_b)) + np.log(f_b / (3631 * Jy)))
-    )
+    asinh = -2.5 * np.log10(np.e) * (np.arcsinh(f_jy / (2 * f_b)) + np.log(f_b / (3631 * Jy)))
     return asinh
 
 
@@ -404,12 +401,1088 @@ def f_jy_err_to_asinh(
     if f_b.ndim == 0:
         f_b = unyt_array(np.full_like(f_jy, f_b.value, dtype=f_jy.dtype), units=f_b.units)
     elif f_b.ndim == 1 and f_jy.ndim == 2:
-        assert f_b.shape[0] == f_jy.shape[0], (
-            "Flux softening must match the number of filters."
-        )
+        assert f_b.shape[0] == f_jy.shape[0], "Flux softening must match the number of filters."
         f_b = np.tile(f_b, (f_jy.shape[1], 1)).T
     else:
         assert f_b.shape == f_jy.shape, "Flux and flux error must have the same shape."
 
     f_b = f_b.to(Jy).value
     return 2.5 * np.log10(np.e) * f_jy_err / np.sqrt(f_jy**2 + (2 * f_b) ** 2)
+
+
+def save_emission_model(model):
+    """Save the fixed parameters of the emission model.
+
+    Parameters:
+        model: The emission model object.
+
+    Returns:
+        A dictionary containing fixed parameters, dust attenuation,
+        and dust emission model information.
+    """
+    fixed_params = model.fixed_parameters
+
+    if fixed_params is None:
+        fixed_params = {}
+
+    for k, m in model._models.items():
+        for i, j in m.fixed_parameters.items():
+            if i not in fixed_params.keys():
+                fixed_params[i] = j
+            else:
+                if isinstance(fixed_params[i], str) and not isinstance(j, str):
+                    fixed_params[i] = j
+
+    dust_attenuation_keys = {}
+    if "attenuated" in model._transformation.keys():
+        dust_law = model._transformation["attenuated"][1]
+        dust_attenuation_keys.update(dust_law.__dict__)
+        dust_attenuation_keys.pop("description")
+        dust_attenuation_keys.pop("_required_params")
+        dust_law = type(dust_law).__name__
+
+    else:
+        dust_law = None
+
+    dust_emission_keys = {}
+
+    if "dust_emission" in model._models:
+        dust_em = model._models["dust_emission"].generator
+        dust_emission_keys.update(dust_em.__dict__)
+        dust_emission_model = type(dust_em).__name__
+    else:
+        dust_emission_model = None
+
+    fixed_param_units = []
+    for k, v in fixed_params.items():
+        if hasattr(v, "units"):
+            fixed_param_units.append(str(v.units))
+            fixed_params[k] = v.value
+        else:
+            fixed_param_units.append("")
+
+    fixed_parameter_keys = list(fixed_params.keys())
+    fixed_parameter_values = list(fixed_params.values())
+    # if any strings in fixed_parameter_values, convert all to string
+    if any(isinstance(v, str) for v in fixed_parameter_values):
+        fixed_parameter_values = [str(v) for v in fixed_parameter_values]
+
+    dust_attenuation_units = []
+    for k, v in dust_attenuation_keys.items():
+        if hasattr(v, "units"):
+            dust_attenuation_units.append(str(v.units))
+            dust_attenuation_keys[k] = v.value
+        else:
+            dust_attenuation_units.append("")
+
+    dust_attenuation_values = list(dust_attenuation_keys.values())
+    dust_attenuation_keys = list(dust_attenuation_keys.keys())
+
+    dust_emission_units = []
+    for k, v in dust_emission_keys.items():
+        if hasattr(v, "units"):
+            dust_emission_units.append(str(v.units))
+            dust_emission_keys[k] = v.value
+        else:
+            dust_emission_units.append("")
+
+    dust_emission_values = list(dust_emission_keys.values())
+    dust_emission_keys = list(dust_emission_keys.keys())
+
+    return {
+        "fixed_parameter_keys": fixed_parameter_keys,
+        "fixed_parameter_values": fixed_parameter_values,
+        "fixed_parameter_units": fixed_param_units,
+        "dust_law": dust_law,
+        "dust_attenuation_keys": dust_attenuation_keys,
+        "dust_attenuation_values": dust_attenuation_values,
+        "dust_attenuation_units": dust_attenuation_units,
+        "dust_emission": dust_emission_model,
+        "dust_emission_keys": dust_emission_keys,
+        "dust_emission_values": dust_emission_values,
+        "dust_emission_units": dust_emission_units,
+    }
+
+
+class CPU_Unpickler(pickle.Unpickler):
+    """Custom unpickler that handles specific Torch storage loading."""
+
+    def find_class(self, module, name):
+        """Find class in the specified module."""
+        import torch
+
+        if module == "torch.storage" and name == "_load_from_bytes":
+            return lambda b: torch.load(io.BytesIO(b), map_location="cpu")
+        else:
+            return super().find_class(module, name)
+
+
+def check_scaling(arr: Union[unyt_array, unyt_quantity]):
+    """Check if the input array has dimensions that scale with normalization."""
+    assert isinstance(arr, unyt_array) or isinstance(arr, unyt_quantity), (
+        "Input must be a unyt_array or unyt_quantity, got {}".format(type(arr))
+    )
+
+    from unyt.dimensions import (
+        energy,
+        flux,
+        luminance,
+        luminous_flux,
+        mass,
+        power,
+        specific_flux,
+        time,
+    )
+
+    if isinstance(arr, unyt_quantity):
+        arr = 1.0 * arr  # Ensure it is a unyt_array
+
+    if not isinstance(arr, unyt_array):
+        return False
+
+    # We want to check how the unit scales.
+    # If it is a flux, flux density, luminosity, mass etc or other parameters
+    # which scale with normalization, we want to return True
+    # if it is a distance, time, dimensionless parameter, we want to return False
+    if arr.units.is_dimensionless:
+        return False
+
+    if arr.units.dimensions in (
+        energy,
+        power,
+        flux,
+        specific_flux,
+        luminance,
+        mass,
+        luminous_flux,
+        mass / time,
+    ):
+        return True
+
+    return False
+
+
+def detect_outliers(
+    base_distribution,
+    observations,
+    method="mahalanobis",
+    contamination=0.1,
+    n_neighbors=20,
+    threshold=None,
+    confidence=0.95,
+    n_components=None,
+    plot=True,
+    **kwargs,
+):
+    """Detect outliers in multivariate data using various methods.
+
+    Parameters:
+    -----------
+    base_distribution : array-like, shape (n_samples, n_features)
+        Reference distribution data
+    observations : array-like, shape (n_obs, n_features)
+        Observations to test for outliers
+    method : str, default='mahalanobis'
+        Method to use: 'mahalanobis', 'robust_mahalanobis', 'lof', 'isolation_forest',
+        'one_class_svm', 'pca', 'hotelling_t2', 'kde'
+    contamination : float, default=0.1
+        Expected proportion of outliers (for applicable methods)
+    n_neighbors : int, default=20
+        Number of neighbors for LOF
+    threshold : float, optional
+        Manual threshold for outlier detection
+    confidence : float, default=0.95
+        Confidence level for statistical tests
+    n_components : int, optional
+        Number of components for PCA (if None, uses all)
+    plot : bool, default=True
+        Whether to plot results (only applicable for some methods)
+    **kwargs : dict
+        Additional parameters for specific methods
+
+    Returns:
+    --------
+    dict : Dictionary containing:
+        - 'outlier_mask': Boolean array indicating outliers
+        - 'scores': Outlier scores
+        - 'threshold_used': Threshold value used
+        - 'method_info': Additional method-specific information
+    """
+    from sklearn.covariance import EllipticEnvelope
+    from sklearn.decomposition import PCA
+    from sklearn.ensemble import IsolationForest
+    from sklearn.neighbors import LocalOutlierFactor
+    from sklearn.svm import OneClassSVM
+
+    base_distribution = np.asarray(base_distribution)
+    observations = np.asarray(observations)
+
+    # Ensure same number of features
+    if base_distribution.shape[1] != observations.shape[1]:
+        raise ValueError("Base distribution and observations must have same number of features")
+
+    n_features = base_distribution.shape[1]
+    n_obs = observations.shape[0]
+
+    results = {
+        "outlier_mask": np.zeros(n_obs, dtype=bool),
+        "scores": np.zeros(n_obs),
+        "threshold_used": None,
+        "method_info": {},
+    }
+
+    if method == "mahalanobis":
+        # Standard Mahalanobis distance
+        mean = np.mean(base_distribution, axis=0)
+        cov = np.cov(base_distribution.T)
+
+        # Handle singular covariance matrix
+        try:
+            inv_cov = np.linalg.inv(cov)
+        except np.linalg.LinAlgError:
+            inv_cov = np.linalg.pinv(cov)
+
+        # Calculate Mahalanobis distances
+        diff = observations - mean
+        mahal_dist = np.sqrt(np.sum(diff @ inv_cov * diff, axis=1))
+
+        # Threshold based on chi-squared distribution
+        if threshold is None:
+            threshold = np.sqrt(stats.chi2.ppf(confidence, n_features))
+
+        results["scores"] = mahal_dist
+        results["outlier_mask"] = mahal_dist > threshold
+        results["threshold_used"] = threshold
+        results["method_info"] = {"mean": mean, "covariance": cov}
+
+    elif method == "robust_mahalanobis":
+        # Robust Mahalanobis using Minimum Covariance Determinant
+        robust_cov = EllipticEnvelope(contamination=contamination)
+        robust_cov.fit(base_distribution)
+
+        # Get robust estimates
+        mean = robust_cov.location_
+        cov = robust_cov.covariance_
+
+        # Calculate robust Mahalanobis distances
+        diff = observations - mean
+        try:
+            inv_cov = np.linalg.inv(cov)
+        except np.linalg.LinAlgError:
+            inv_cov = np.linalg.pinv(cov)
+
+        mahal_dist = np.sqrt(np.sum(diff @ inv_cov * diff, axis=1))
+
+        if threshold is None:
+            threshold = np.sqrt(stats.chi2.ppf(confidence, n_features))
+
+        results["scores"] = mahal_dist
+        results["outlier_mask"] = mahal_dist > threshold
+        results["threshold_used"] = threshold
+        results["method_info"] = {"robust_mean": mean, "robust_covariance": cov}
+
+    elif method == "lof":
+        # Local Outlier Factor
+        lof = LocalOutlierFactor(n_neighbors=n_neighbors, novelty=True, contamination=contamination)
+        lof.fit(base_distribution)
+
+        # Predict outliers (-1 for outliers, 1 for inliers)
+        predictions = lof.predict(observations)
+        scores = lof.decision_function(observations)
+
+        results["scores"] = -scores  # Make positive scores indicate outliers
+        results["outlier_mask"] = predictions == -1
+        results["threshold_used"] = 0  # LOF uses 0 as threshold
+        results["method_info"] = {"n_neighbors": n_neighbors}
+
+    elif method == "isolation_forest":
+        # Isolation Forest
+        iso_forest = IsolationForest(contamination=contamination, random_state=42)
+        iso_forest.fit(base_distribution)
+
+        predictions = iso_forest.predict(observations)
+        scores = iso_forest.decision_function(observations)
+
+        results["scores"] = -scores  # Make positive scores indicate outliers
+        results["outlier_mask"] = predictions == -1
+        results["threshold_used"] = 0
+        results["method_info"] = {"contamination": contamination}
+
+    elif method == "one_class_svm":
+        # One-Class SVM
+        gamma = kwargs.get("gamma", "scale")
+        nu = kwargs.get("nu", contamination)
+
+        svm = OneClassSVM(gamma=gamma, nu=nu)
+        svm.fit(base_distribution)
+
+        predictions = svm.predict(observations)
+        scores = svm.decision_function(observations)
+
+        results["scores"] = -scores
+        results["outlier_mask"] = predictions == -1
+        results["threshold_used"] = 0
+        results["method_info"] = {"gamma": gamma, "nu": nu}
+
+    elif method == "pca":
+        # PCA-based outlier detection
+        if n_components is None:
+            n_components = min(n_features, base_distribution.shape[0] - 1)
+
+        pca = PCA(n_components=n_components)
+        pca.fit(base_distribution)
+
+        # Transform observations to PCA space
+        obs_transformed = pca.transform(observations)
+
+        # Reconstruct and calculate reconstruction error
+        obs_reconstructed = pca.inverse_transform(obs_transformed)
+        reconstruction_error = np.sum((observations - obs_reconstructed) ** 2, axis=1)
+
+        if threshold is None:
+            # Use percentile of reconstruction errors from base distribution
+            base_transformed = pca.transform(base_distribution)
+            base_reconstructed = pca.inverse_transform(base_transformed)
+            base_errors = np.sum((base_distribution - base_reconstructed) ** 2, axis=1)
+            threshold = np.percentile(base_errors, confidence * 100)
+
+        results["scores"] = reconstruction_error
+        results["outlier_mask"] = reconstruction_error > threshold
+        results["threshold_used"] = threshold
+        results["method_info"] = {
+            "n_components": n_components,
+            "explained_variance_ratio": pca.explained_variance_ratio_,
+        }
+
+    elif method == "hotelling_t2":
+        # Hotelling's T² test for multivariate normality
+        mean = np.mean(base_distribution, axis=0)
+        cov = np.cov(base_distribution.T)
+        n_base = base_distribution.shape[0]
+
+        try:
+            inv_cov = np.linalg.inv(cov)
+        except np.linalg.LinAlgError:
+            inv_cov = np.linalg.pinv(cov)
+
+        # Calculate T² statistics
+        diff = observations - mean
+        t2_stats = np.sum(diff @ inv_cov * diff, axis=1) * n_base
+
+        # Convert to F-distribution
+        f_stats = t2_stats * (n_base - n_features) / ((n_base - 1) * n_features)
+
+        if threshold is None:
+            threshold = stats.f.ppf(confidence, n_features, n_base - n_features)
+
+        results["scores"] = f_stats
+        results["outlier_mask"] = f_stats > threshold
+        results["threshold_used"] = threshold
+        results["method_info"] = {
+            "n_base_samples": n_base,
+            "degrees_of_freedom": (n_features, n_base - n_features),
+        }
+
+    elif method == "kde":
+        # Kernel Density Estimation
+        from scipy.stats import gaussian_kde
+
+        try:
+            kde = gaussian_kde(base_distribution.T)
+            densities = kde(observations.T)
+
+            # Use low density as outlier indicator
+            base_densities = kde(base_distribution.T)
+            if threshold is None:
+                threshold = np.percentile(base_densities, (1 - confidence) * 100)
+
+            results["scores"] = -np.log(densities + 1e-10)  # Use negative log density
+            results["outlier_mask"] = densities < threshold
+            results["threshold_used"] = threshold
+            results["method_info"] = {"kde_bandwidth": kde.factor}
+        except Exception as e:
+            print(f"KDE failed: {e}. Using fallback method.")
+            # Fallback to Mahalanobis
+            return detect_outliers(
+                base_distribution,
+                observations,
+                method="mahalanobis",
+                confidence=confidence,
+                threshold=threshold,
+            )
+
+    else:
+        raise ValueError(f"Unknown method: {method}")
+
+    # Display results
+    if plot:
+        _display_results(base_distribution, observations, results, method)
+
+    return results
+
+
+def _display_results(base_distribution, observations, results, method):
+    """Display visualization of outlier detection results."""
+    n_features = base_distribution.shape[1]
+    n_outliers = np.sum(results["outlier_mask"])
+    n_total = len(observations)
+
+    print(f"\n=== Outlier Detection Results ({method.upper()}) ===")
+    print(f"Total observations: {n_total}")
+    print(f"Outliers detected: {n_outliers} ({n_outliers / n_total:.1%})")
+    print(f"Threshold used: {results['threshold_used']:.4f}")
+
+    if "method_info" in results and results["method_info"]:
+        print("\nMethod-specific information:")
+        for key, value in results["method_info"].items():
+            if isinstance(value, np.ndarray):
+                if value.ndim == 1 and len(value) <= 5:
+                    print(f"  {key}: {value}")
+                else:
+                    print(f"  {key}: array of shape {value.shape}")
+            else:
+                print(f"  {key}: {value}")
+
+    # Create visualization for 2D data
+    if n_features == 2:
+        plt.figure(figsize=(12, 5))
+
+        # Plot 1: Data distribution
+        plt.subplot(1, 2, 1)
+        plt.scatter(
+            base_distribution[:, 0],
+            base_distribution[:, 1],
+            alpha=0.6,
+            label="Base Distribution",
+            c="lightblue",
+            s=20,
+        )
+
+        inliers = observations[~results["outlier_mask"]]
+        outliers = observations[results["outlier_mask"]]
+
+        if len(inliers) > 0:
+            plt.scatter(inliers[:, 0], inliers[:, 1], c="green", label="Inliers", s=50, alpha=0.8)
+        if len(outliers) > 0:
+            plt.scatter(outliers[:, 0], outliers[:, 1], c="red", label="Outliers", s=50, alpha=0.8)
+
+        plt.xlabel("Feature 1")
+        plt.ylabel("Feature 2")
+        plt.title(f"Outlier Detection - {method.upper()}")
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+
+        # Plot 2: Outlier scores
+        plt.subplot(1, 2, 2)
+        plt.hist(results["scores"], bins=20, alpha=0.7, color="skyblue", edgecolor="black")
+        if results["threshold_used"] is not None:
+            plt.axvline(
+                results["threshold_used"],
+                color="red",
+                linestyle="--",
+                label=f"Threshold: {results['threshold_used']:.3f}",
+            )
+        plt.xlabel("Outlier Score")
+        plt.ylabel("Frequency")
+        plt.title("Distribution of Outlier Scores")
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        plt.show()
+
+    elif n_features > 2:
+        from sklearn.decomposition import PCA
+
+        # For higher dimensional data, show score distribution
+        plt.figure(figsize=(10, 4))
+
+        plt.subplot(1, 2, 1)
+        plt.hist(results["scores"], bins=20, alpha=0.7, color="skyblue", edgecolor="black")
+        if results["threshold_used"] is not None:
+            plt.axvline(
+                results["threshold_used"],
+                color="red",
+                linestyle="--",
+                label=f"Threshold: {results['threshold_used']:.3f}",
+            )
+        plt.xlabel("Outlier Score")
+        plt.ylabel("Frequency")
+        plt.title("Distribution of Outlier Scores")
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+
+        # Show first two principal components
+        plt.subplot(1, 2, 2)
+        pca = PCA(n_components=2)
+        base_pca = pca.fit_transform(base_distribution)
+        obs_pca = pca.transform(observations)
+
+        plt.scatter(
+            base_pca[:, 0],
+            base_pca[:, 1],
+            alpha=0.6,
+            label="Base Distribution",
+            c="lightblue",
+            s=20,
+        )
+
+        inliers_pca = obs_pca[~results["outlier_mask"]]
+        outliers_pca = obs_pca[results["outlier_mask"]]
+
+        if len(inliers_pca) > 0:
+            plt.scatter(
+                inliers_pca[:, 0], inliers_pca[:, 1], c="green", label="Inliers", s=50, alpha=0.8
+            )
+        if len(outliers_pca) > 0:
+            plt.scatter(
+                outliers_pca[:, 0], outliers_pca[:, 1], c="red", label="Outliers", s=50, alpha=0.8
+            )
+
+        plt.xlabel("First Principal Component")
+        plt.ylabel("Second Principal Component")
+        plt.title(f"PCA View - {method.upper()}")
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        plt.show()
+
+    # Print outlier indices
+    outlier_indices = np.where(results["outlier_mask"])[0]
+    if len(outlier_indices) > 0:
+        print(
+            f"\nOutlier indices: {outlier_indices[:10]}{'...' if len(outlier_indices) > 10 else ''}"
+        )
+
+
+def analyze_feature_contributions(
+    base_distribution,
+    observations,
+    method="mahalanobis",
+    feature_names=None,
+    contamination=0.1,
+    confidence=0.95,
+):
+    """Analyze which features contribute most to outlier detection in distance-based methods.
+
+    Parameters:
+    -----------
+    base_distribution : array-like, shape (n_samples, n_features)
+        Reference distribution data
+    observations : array-like, shape (n_obs, n_features)
+        Observations to analyze
+    method : str, default='mahalanobis'
+        Method to use: 'mahalanobis', 'robust_mahalanobis', or 'standardized_euclidean'
+    feature_names : list, optional
+        Names of features for plotting
+    contamination : float, default=0.1
+        Expected proportion of outliers (for robust methods)
+    confidence : float, default=0.95
+        Confidence level for thresholds
+
+    Returns:
+    --------
+    dict : Dictionary containing feature contribution analysis
+    """
+    from sklearn.covariance import EllipticEnvelope
+    from sklearn.preprocessing import StandardScaler
+
+    base_distribution = np.asarray(base_distribution)
+    observations = np.asarray(observations)
+
+    n_features = base_distribution.shape[1]
+    n_obs = observations.shape[0]
+
+    if feature_names is None:
+        feature_names = [f"Feature_{i + 1}" for i in range(n_features)]
+
+    results = {
+        "feature_names": feature_names,
+        "method": method,
+        "feature_contributions": np.zeros((n_obs, n_features)),
+        "total_distances": np.zeros(n_obs),
+        "feature_importance": np.zeros(n_features),
+        "outlier_mask": np.zeros(n_obs, dtype=bool),
+    }
+
+    if method == "mahalanobis":
+        mean = np.mean(base_distribution, axis=0)
+        cov = np.cov(base_distribution.T)
+
+        try:
+            inv_cov = np.linalg.inv(cov)
+        except np.linalg.LinAlgError:
+            inv_cov = np.linalg.pinv(cov)
+
+        # Calculate differences
+        diff = observations - mean
+
+        # Feature contributions to squared Mahalanobis distance
+        # For each observation, contribution of feature i is: diff_i * sum_j(inv_cov[i,j] * diff_j)
+        for i in range(n_obs):
+            for j in range(n_features):
+                results["feature_contributions"][i, j] = diff[i, j] * np.dot(
+                    inv_cov[j, :], diff[i, :]
+                )
+
+        # Total squared distances
+        squared_distances = np.sum(results["feature_contributions"], axis=1)
+        results["total_distances"] = np.sqrt(squared_distances)
+
+        # Threshold
+        threshold = np.sqrt(stats.chi2.ppf(confidence, n_features))
+        results["outlier_mask"] = results["total_distances"] > threshold
+
+        results["mean"] = mean
+        results["covariance"] = cov
+        results["inv_covariance"] = inv_cov
+
+    elif method == "robust_mahalanobis":
+        robust_cov = EllipticEnvelope(contamination=contamination)
+        robust_cov.fit(base_distribution)
+
+        mean = robust_cov.location_
+        cov = robust_cov.covariance_
+
+        try:
+            inv_cov = np.linalg.inv(cov)
+        except np.linalg.LinAlgError:
+            inv_cov = np.linalg.pinv(cov)
+
+        diff = observations - mean
+
+        # Feature contributions
+        for i in range(n_obs):
+            for j in range(n_features):
+                results["feature_contributions"][i, j] = diff[i, j] * np.dot(
+                    inv_cov[j, :], diff[i, :]
+                )
+
+        squared_distances = np.sum(results["feature_contributions"], axis=1)
+        results["total_distances"] = np.sqrt(squared_distances)
+
+        threshold = np.sqrt(stats.chi2.ppf(confidence, n_features))
+        results["outlier_mask"] = results["total_distances"] > threshold
+
+        results["robust_mean"] = mean
+        results["robust_covariance"] = cov
+        results["inv_covariance"] = inv_cov
+
+    elif method == "standardized_euclidean":
+        # Standardize features independently
+        scaler = StandardScaler()
+        obs_scaled = scaler.transform(observations)
+
+        # Each feature contributes independently
+        results["feature_contributions"] = obs_scaled**2
+        results["total_distances"] = np.sqrt(np.sum(results["feature_contributions"], axis=1))
+
+        # Threshold based on chi-squared (since standardized features are approximately normal)
+        threshold = np.sqrt(stats.chi2.ppf(confidence, n_features))
+        results["outlier_mask"] = results["total_distances"] > threshold
+
+        results["feature_means"] = scaler.mean_
+        results["feature_stds"] = scaler.scale_
+
+    # Calculate feature importance (average absolute contribution across all observations)
+    results["feature_importance"] = np.mean(np.abs(results["feature_contributions"]), axis=0)
+
+    # Normalize feature importance to sum to 1
+    results["feature_importance_normalized"] = results["feature_importance"] / np.sum(
+        results["feature_importance"]
+    )
+
+    # Display results
+    _display_feature_analysis(results)
+
+    return results
+
+
+def _display_feature_analysis(results):
+    """Display comprehensive feature contribution analysis."""
+    feature_names = results["feature_names"]
+    n_features = len(feature_names)
+    n_obs = len(results["total_distances"])
+    outlier_mask = results["outlier_mask"]
+
+    print(f"\n=== FEATURE CONTRIBUTION ANALYSIS ({results['method'].upper()}) ===")
+    print(f"Total observations: {n_obs}")
+    print(f"Outliers detected: {np.sum(outlier_mask)} ({np.sum(outlier_mask) / n_obs:.1%})")
+    print(f"Number of features: {n_features}")
+
+    # Feature importance ranking
+    importance_order = np.argsort(results["feature_importance_normalized"])[::-1]
+
+    print("\nFEATURE IMPORTANCE RANKING:")
+    print("-" * 50)
+    for i, feat_idx in enumerate(importance_order):
+        print(
+            f"{i + 1:2d}. {feature_names[feat_idx]:15s}: {results['feature_importance_normalized'][feat_idx]:.3f} "  # noqa E501
+            f"({results['feature_importance_normalized'][feat_idx] * 100:.1f}%)"
+        )
+
+    # Outlier-specific analysis
+    if np.sum(outlier_mask) > 0:
+        print("\nOUTLIER-SPECIFIC FEATURE CONTRIBUTIONS:")
+        print("-" * 50)
+
+        outlier_contributions = results["feature_contributions"][outlier_mask]
+        avg_outlier_contrib = np.mean(np.abs(outlier_contributions), axis=0)
+        outlier_importance = avg_outlier_contrib / np.sum(avg_outlier_contrib)
+
+        outlier_order = np.argsort(outlier_importance)[::-1]
+
+        for i, feat_idx in enumerate(outlier_order[:5]):  # Top 5
+            print(
+                f"{i + 1:2d}. {feature_names[feat_idx]:15s}: {outlier_importance[feat_idx]:.3f} "
+                f"({outlier_importance[feat_idx] * 100:.1f}%)"
+            )
+
+    # Create comprehensive visualization
+    plt.figure(figsize=(20, 15))
+
+    # 1. Feature importance bar plot
+    ax1 = plt.subplot(3, 3, 1)
+    bars = ax1.bar(range(n_features), results["feature_importance_normalized"])
+    ax1.set_xlabel("Features")
+    ax1.set_ylabel("Normalized Importance")
+    ax1.set_title("Feature Importance in Outlier Detection")
+    ax1.set_xticks(range(n_features))
+    ax1.set_xticklabels(feature_names, rotation=45, ha="right")
+    ax1.grid(True, alpha=0.3)
+
+    # Color bars by importance
+    colors = plt.cm.viridis(
+        results["feature_importance_normalized"] / np.max(results["feature_importance_normalized"])
+    )
+    for bar, color in zip(bars, colors):
+        bar.set_color(color)
+
+    # 2. Contribution heatmap for outliers
+    ax2 = plt.subplot(3, 3, 2)
+    if np.sum(outlier_mask) > 0:
+        outlier_contrib = results["feature_contributions"][outlier_mask]
+        im = ax2.imshow(outlier_contrib.T, aspect="auto", cmap="RdBu_r")
+        ax2.set_xlabel("Outlier Index")
+        ax2.set_ylabel("Features")
+        ax2.set_title("Feature Contributions for Outliers")
+        ax2.set_yticks(range(n_features))
+        ax2.set_yticklabels(feature_names)
+        plt.colorbar(im, ax=ax2, label="Contribution")
+    else:
+        ax2.text(
+            0.5, 0.5, "No outliers detected", ha="center", va="center", transform=ax2.transAxes
+        )
+        ax2.set_title("Feature Contributions for Outliers")
+
+    # 3. Distance distribution
+    ax3 = plt.subplot(3, 3, 3)
+    ax3.hist(results["total_distances"], bins=30, alpha=0.7, color="skyblue", edgecolor="black")
+    ax3.axvline(
+        np.mean(results["total_distances"]),
+        color="red",
+        linestyle="--",
+        label="Mean Distance",
+        alpha=0.8,
+    )
+    if np.sum(outlier_mask) > 0:
+        ax3.axvline(
+            np.min(results["total_distances"][outlier_mask]),
+            color="orange",
+            linestyle="--",
+            label="Min Outlier Distance",
+            alpha=0.8,
+        )
+    ax3.set_xlabel("Distance")
+    ax3.set_ylabel("Frequency")
+    ax3.set_title("Distribution of Distances")
+    ax3.legend()
+    ax3.grid(True, alpha=0.3)
+
+    # 4. Feature contribution boxplots
+    ax4 = plt.subplot(3, 3, 4)
+    contrib_data = []
+    labels = []
+    for i, name in enumerate(feature_names):
+        contrib_data.append(results["feature_contributions"][:, i])
+        labels.append(name)
+
+    ax4.boxplot(contrib_data, labels=labels)
+    ax4.set_xlabel("Features")
+    ax4.set_ylabel("Contribution")
+    ax4.set_title("Distribution of Feature Contributions")
+    ax4.tick_params(axis="x", rotation=45)
+    ax4.grid(True, alpha=0.3)
+
+    # 5. Scatter plot of top 2 contributing features
+    ax5 = plt.subplot(3, 3, 5)
+    top_2_features = importance_order[:2]
+
+    if results["method"] in ["mahalanobis", "robust_mahalanobis"]:
+        # Use original feature values
+        base_vals = results.get("base_distribution", np.zeros((1, n_features)))
+        obs_vals = results.get("observations", np.zeros((n_obs, n_features)))
+
+        # If we don't have the original data, reconstruct from contributions
+        if base_vals.shape[0] == 1:
+            # Use mean values as approximation
+            # if "mean" in results:
+            #    base_mean = results["mean"]
+            # elif "robust_mean" in results:
+            #    base_mean = results["robust_mean"]
+            # else:
+            #    base_mean = np.zeros(n_features)
+
+            # Approximate observation values (this is a simplification)
+            ax5.scatter(
+                results["feature_contributions"][:, top_2_features[0]],
+                results["feature_contributions"][:, top_2_features[1]],
+                c=results["total_distances"],
+                cmap="viridis",
+                alpha=0.7,
+            )
+            ax5.set_xlabel(f"{feature_names[top_2_features[0]]} (Contribution)")
+            ax5.set_ylabel(f"{feature_names[top_2_features[1]]} (Contribution)")
+        else:
+            ax5.scatter(
+                obs_vals[:, top_2_features[0]],
+                obs_vals[:, top_2_features[1]],
+                c=results["total_distances"],
+                cmap="viridis",
+                alpha=0.7,
+            )
+            ax5.set_xlabel(f"{feature_names[top_2_features[0]]} (Value)")
+            ax5.set_ylabel(f"{feature_names[top_2_features[1]]} (Value)")
+    else:
+        ax5.scatter(
+            results["feature_contributions"][:, top_2_features[0]],
+            results["feature_contributions"][:, top_2_features[1]],
+            c=results["total_distances"],
+            cmap="viridis",
+            alpha=0.7,
+        )
+        ax5.set_xlabel(f"{feature_names[top_2_features[0]]} (Contribution)")
+        ax5.set_ylabel(f"{feature_names[top_2_features[1]]} (Contribution)")
+
+    ax5.set_title("Top 2 Contributing Features")
+    plt.colorbar(plt.cm.ScalarMappable(cmap="viridis"), ax=ax5, label="Distance")
+
+    # 6. Feature correlation with distance
+    ax6 = plt.subplot(3, 3, 6)
+    correlations = []
+    for i in range(n_features):
+        corr = np.corrcoef(
+            np.abs(results["feature_contributions"][:, i]), results["total_distances"]
+        )[0, 1]
+        correlations.append(corr)
+
+    bars = ax6.bar(range(n_features), correlations)
+    ax6.set_xlabel("Features")
+    ax6.set_ylabel("Correlation with Distance")
+    ax6.set_title("Feature Correlation with Total Distance")
+    ax6.set_xticks(range(n_features))
+    ax6.set_xticklabels(feature_names, rotation=45, ha="right")
+    ax6.grid(True, alpha=0.3)
+
+    # Color bars by correlation
+    colors = plt.cm.RdYlBu_r((np.array(correlations) + 1) / 2)
+    for bar, color in zip(bars, colors):
+        bar.set_color(color)
+
+    # 7. Cumulative feature importance
+    ax7 = plt.subplot(3, 3, 7)
+    sorted_importance = np.sort(results["feature_importance_normalized"])[::-1]
+    cumulative_importance = np.cumsum(sorted_importance)
+
+    ax7.plot(range(1, n_features + 1), cumulative_importance, "o-", linewidth=2, markersize=6)
+    ax7.axhline(0.8, color="red", linestyle="--", alpha=0.7, label="80% threshold")
+    ax7.axhline(0.9, color="orange", linestyle="--", alpha=0.7, label="90% threshold")
+    ax7.set_xlabel("Number of Top Features")
+    ax7.set_ylabel("Cumulative Importance")
+    ax7.set_title("Cumulative Feature Importance")
+    ax7.legend()
+    ax7.grid(True, alpha=0.3)
+
+    # 8. Individual feature distributions for outliers vs inliers
+    ax8 = plt.subplot(3, 3, 8)
+    top_feature_idx = importance_order[0]
+
+    if np.sum(outlier_mask) > 0 and np.sum(~outlier_mask) > 0:
+        outlier_contrib = results["feature_contributions"][outlier_mask, top_feature_idx]
+        inlier_contrib = results["feature_contributions"][~outlier_mask, top_feature_idx]
+
+        ax8.hist(inlier_contrib, bins=20, alpha=0.7, label="Inliers", color="blue", density=True)
+        ax8.hist(outlier_contrib, bins=20, alpha=0.7, label="Outliers", color="red", density=True)
+        ax8.set_xlabel(f"{feature_names[top_feature_idx]} Contribution")
+        ax8.set_ylabel("Density")
+        ax8.set_title("Distribution of Top Feature Contributions")
+        ax8.legend()
+        ax8.grid(True, alpha=0.3)
+    else:
+        ax8.text(
+            0.5,
+            0.5,
+            "Insufficient data for comparison",
+            ha="center",
+            va="center",
+            transform=ax8.transAxes,
+        )
+        ax8.set_title("Feature Distribution Comparison")
+
+    # 9. Summary statistics table
+    ax9 = plt.subplot(3, 3, 9)
+    ax9.axis("tight")
+    ax9.axis("off")
+
+    # Create summary table
+    summary_data = []
+    for i, feat_idx in enumerate(importance_order[:5]):
+        summary_data.append(
+            [
+                feature_names[feat_idx],
+                f"{results['feature_importance_normalized'][feat_idx]:.3f}",
+                f"{correlations[feat_idx]:.3f}",
+                f"{np.mean(results['feature_contributions'][:, feat_idx]):.3f}",
+                f"{np.std(results['feature_contributions'][:, feat_idx]):.3f}",
+            ]
+        )
+
+    table = ax9.table(
+        cellText=summary_data,
+        colLabels=["Feature", "Importance", "Correlation", "Mean Contrib", "Std Contrib"],
+        cellLoc="center",
+        loc="center",
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(9)
+    table.scale(1.2, 1.5)
+    ax9.set_title("Top 5 Features Summary")
+
+    plt.tight_layout()
+    plt.show()
+
+    # Print specific insights
+    print("\nKEY INSIGHTS:")
+    print("-" * 50)
+
+    # Most important feature
+    top_feature = importance_order[0]
+    print(
+        f"• Most important feature: {feature_names[top_feature]} "
+        f"({results['feature_importance_normalized'][top_feature] * 100:.1f}% of total importance)"
+    )
+
+    # Feature concentration
+    top_3_importance = np.sum(results["feature_importance_normalized"][importance_order[:3]])
+    print(f"• Top 3 features account for {top_3_importance * 100:.1f}% of outlier detection")
+
+    # Feature with highest correlation
+    max_corr_idx = np.argmax(correlations)
+    print(
+        f"• Feature most correlated with distance: {feature_names[max_corr_idx]} "
+        f"(correlation: {correlations[max_corr_idx]:.3f})"
+    )
+
+    if np.sum(outlier_mask) > 0:
+        # Feature that drives outliers most
+        outlier_contrib = results["feature_contributions"][outlier_mask]
+        avg_outlier_contrib = np.mean(np.abs(outlier_contrib), axis=0)
+        outlier_driver = np.argmax(avg_outlier_contrib)
+        print(f"• Feature driving outliers most: {feature_names[outlier_driver]}")
+
+
+def compare_methods_feature_importance(base_distribution, observations, feature_names=None):
+    """Compare feature importance across different distance-based methods."""
+    methods = ["mahalanobis", "robust_mahalanobis", "standardized_euclidean"]
+
+    if feature_names is None:
+        feature_names = [f"Feature_{i + 1}" for i in range(base_distribution.shape[1])]
+
+    results = {}
+
+    print("COMPARING FEATURE IMPORTANCE ACROSS METHODS")
+    print("=" * 60)
+
+    for method in methods:
+        print(f"\nAnalyzing {method}...")
+        results[method] = analyze_feature_contributions(
+            base_distribution, observations, method=method, feature_names=feature_names
+        )
+
+    # Create comparison plot
+    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+
+    for i, method in enumerate(methods):
+        importance = results[method]["feature_importance_normalized"]
+        bars = axes[i].bar(range(len(feature_names)), importance)
+        axes[i].set_title(f"{method.replace('_', ' ').title()}")
+        axes[i].set_xlabel("Features")
+        axes[i].set_ylabel("Normalized Importance")
+        axes[i].set_xticks(range(len(feature_names)))
+        axes[i].set_xticklabels(feature_names, rotation=45, ha="right")
+        axes[i].grid(True, alpha=0.3)
+
+        # Color bars
+        colors = plt.cm.viridis(importance / np.max(importance))
+        for bar, color in zip(bars, colors):
+            bar.set_color(color)
+
+    plt.tight_layout()
+    plt.show()
+
+    return results
+
+
+# Example usage
+if __name__ == "__main__":
+    # Generate sample data with known feature importance
+    np.random.seed(42)
+
+    # Create base distribution
+    n_samples = 500
+    n_features = 5
+
+    # Feature 1 and 2 are highly correlated and important
+    # Feature 3 has higher variance
+    # Features 4 and 5 are less important
+
+    base_data = np.random.randn(n_samples, n_features)
+    base_data[:, 1] = base_data[:, 0] + 0.5 * np.random.randn(n_samples)  # Correlated
+    base_data[:, 2] = 2 * np.random.randn(n_samples)  # Higher variance
+
+    # Create observations with outliers driven by specific features
+    n_obs = 100
+    observations = np.random.randn(n_obs, n_features)
+    observations[:, 1] = observations[:, 0] + 0.5 * np.random.randn(n_obs)
+    observations[:, 2] = 2 * np.random.randn(n_obs)
+
+    # Add outliers driven primarily by feature 1
+    outlier_indices = [10, 25, 40, 60, 80]
+    observations[outlier_indices, 0] += 4  # Strong outlier in feature 1
+    observations[outlier_indices, 1] += 2  # Some effect in correlated feature
+
+    # Add outliers driven by feature 3
+    observations[[15, 35, 55], 2] += 6
+
+    feature_names = [
+        "Primary_Driver",
+        "Correlated_Feature",
+        "High_Variance",
+        "Low_Impact_1",
+        "Low_Impact_2",
+    ]
+
+    # Analyze feature contributions
+    print("SINGLE METHOD ANALYSIS")
+    print("=" * 50)
+    results = analyze_feature_contributions(
+        base_data, observations, method="robust_mahalanobis", feature_names=feature_names
+    )
+
+    print("\n" + "=" * 80)
+
+    # Compare methods
+    comparison_results = compare_methods_feature_importance(
+        base_data, observations, feature_names=feature_names
+    )

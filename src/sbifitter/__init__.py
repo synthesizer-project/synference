@@ -1,28 +1,40 @@
 # -*- coding: utf-8 -*-
 import os
-
+import warnings
 
 from .grid import (
-    generate_sfh_grid, generate_metallicity_distribution, generate_emission_models, 
-    generate_sfh_basis, GalaxyBasis, CombinedBasis,
+    generate_sfh_grid, generate_metallicity_distribution, generate_emission_models,
+    generate_sfh_basis, GalaxyBasis, CombinedBasis,  calculate_sfr,
     calculate_muv, draw_from_hypercube, GalaxySimulator, generate_random_DB_sfh,
-    EmpiricalUncertaintyModel, test_out_of_distribution, create_uncertainity_models_from_EPOCHS_cat
+    test_out_of_distribution, calculate_mass_weighted_age, calculate_lum_weighted_age,
+    calculate_flux_weighted_age, calculate_colour, calculate_d4000, calculate_beta, calculate_balmer_decrement,
+    calculate_line_flux, calculate_line_ew, calculate_sfh_quantile, SUPP_FUNCTIONS
 )
 
 from .utils import (
     load_grid_from_hdf5, calculate_min_max_wav_grid, generate_constant_R,
     list_parameters, rename_overlapping_parameters, FilterArithmeticParser,
     timeout_handler, TimeoutException, create_sqlite_db, f_jy_err_to_asinh,
-    f_jy_to_asinh
+    f_jy_to_asinh, check_scaling, detect_outliers, compare_methods_feature_importance,
+    analyze_feature_contributions
+)
+
+from .noise_models import (
+    EmpiricalUncertaintyModel, create_uncertainity_models_from_EPOCHS_cat,
+    DepthUncertaintyModel, UncertaintyModel, AsinhEmpiricalUncertaintyModel,
+    GeneralEmpiricalUncertaintyModel
 )
 
 
 try:
-    from .sbi import SBI_Fitter, MissingPhotometryHandler
+    from .sbi import SBI_Fitter, MissingPhotometryHandler, Simformer_Fitter
 except ImportError as e:
     print(e)
     print('Dependencies for SBI not installed. Only the grid generation functions will be available.')
 
+
+#from .simformer import UncertainityModelTask
+warnings.filterwarnings('ignore')
 
 __all__ = [
     "generate_sfh_grid",
@@ -34,11 +46,25 @@ __all__ = [
     "draw_from_hypercube",
     "CombinedBasis",
     "calculate_muv",
+    "calculate_sfr",
+    "calculate_mass_weighted_age",
+    "calculate_lum_weighted_age",
+    "calculate_flux_weighted_age",
+    "calculate_beta",
+    "calculate_balmer_decrement",
+    "calculate_line_flux",
+    "calculate_line_ew",
+    "calculate_d4000",
+    "calculate_colour",
+    "calculate_sfh_quantile",
+    "SUPP_FUNCTIONS",
     "SBI_Fitter",
     "MissingPhotometryHandler",
+    "Simformer_Fitter",
     "GalaxySimulator",
     "generate_random_DB_sfh",
     "EmpiricalUncertaintyModel",
+    "AsinhEmpiricalUncertaintyModel",
     "test_out_of_distribution",
     "create_uncertainity_models_from_EPOCHS_cat",
     "load_grid_from_hdf5",
@@ -51,4 +77,12 @@ __all__ = [
     "create_sqlite_db",
     "f_jy_err_to_asinh",
     "f_jy_to_asinh",
+    "check_scaling",
+    "detect_outliers",
+    "compare_methods_feature_importance",
+    "analyze_feature_contributions",
+    #"UncertainityModelTask",
+    "DepthUncertaintyModel",
+    "UncertaintyModel",
+    "GeneralEmpiricalUncertaintyModel"
 ]
