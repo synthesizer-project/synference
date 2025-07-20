@@ -17,15 +17,21 @@ from dill.source import getsource
 from matplotlib.ticker import FuncFormatter, ScalarFormatter
 from scipy.linalg import inv
 from scipy.stats import qmc
-from synthesizer.conversions import lnu_to_fnu
-from synthesizer.emission_models import EmissionModel
-from synthesizer.emission_models.attenuation import Inoue14
-from synthesizer.emissions import plot_spectra
-from synthesizer.grid import Grid
-from synthesizer.instruments import FilterCollection, Instrument
-from synthesizer.parametric import SFH, Galaxy, Stars, ZDist
-from synthesizer.particle.stars import sample_sfzh
-from synthesizer.pipeline import Pipeline
+try:
+    from synthesizer.conversions import lnu_to_fnu
+    from synthesizer.emission_models import EmissionModel
+    from synthesizer.emission_models.attenuation import Inoue14
+    from synthesizer.emissions import plot_spectra
+    from synthesizer.grid import Grid
+    from synthesizer.instruments import FilterCollection, Instrument
+    from synthesizer.parametric import SFH, Galaxy, Stars, ZDist
+    from synthesizer.particle.stars import sample_sfzh
+    from synthesizer.pipeline import Pipeline
+    synthesizer_available = True
+except Exception as e:
+    print('Synthesizer dependencies not installed. Only the SBI functions will be available.')
+    synthesizer_available = False
+
 from tqdm import tqdm
 from unyt import (
     Angstrom,
@@ -68,6 +74,25 @@ UNIT_DICT = {
 
 # ------------------------------------------
 
+
+if not synthesizer_available:
+    # Make dummy classes for type checking
+    class SFH:
+        class Common:
+            pass
+    class ZDist:
+        class Common:
+            pass
+    class EmissionModel:
+        pass
+    class Galaxy:
+        pass
+    class Grid:
+        pass
+    class Instrument:
+        pass
+    class Pipeline:
+        pass
 
 def calculate_muv(galaxy, cosmo=Planck18):
     """Calculate the MUV magnitude of a galaxy.
