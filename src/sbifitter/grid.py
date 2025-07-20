@@ -73,6 +73,8 @@ UNIT_DICT = {
 }
 
 # ------------------------------------------
+# Functions for galaxy parameters
+# ------------------------------------------
 
 
 if not synthesizer_available:
@@ -126,128 +128,230 @@ def calculate_muv(galaxy, cosmo=Planck18):
     return phots
 
 
-def calculate_mwa(galaxy):
-    """Calculate the mass-weighted age of a galaxy.
+def calculate_sfr(galaxy, timescale=10 * Myr):
+    """Calculate the star formation rate (SFR) of a galaxy over a specified timescale.
 
-    Parameters
-    ----------
-    galaxy : Galaxy
-        The galaxy object containing stellar spectra.
-
-    Returns:
-    -------
-    float
-        The mass-weighted age of the galaxy in Myr.
-    """
-    if not isinstance(galaxy, Galaxy):
-        raise TypeError("galaxy must be an instance of the Galaxy class")
-
-    if not hasattr(galaxy.stars, "spectra"):
-        raise AttributeError("galaxy.stars must have a spectra attribute")
-
-    # Calculate the mass-weighted age
-    mwa = galaxy.stars.calculate_median_age()
-
-    return mwa.to(Myr)
-
-
-def calculate_sfr(galaxy: "Galaxy", timescale: unyt_quantity = 10 * Myr) -> unyt_quantity:
-    """Calculate the average star formation rate (SFR) of a galaxy.
-
-    This function calculates the average star formation rate over a specified
-    recent timescale from a binned star formation history (SFH).
-
-    Parameters
-    ----------
-    galaxy : Galaxy
-        The galaxy object. It must have a `stars` attribute with `ages` and
-        `sf_hist` attributes.
-        - `galaxy.stars.ages`: A 1D numpy array of the SFH bin **edges**
-          (lookback time) in units of years. The bins can be non-uniform.
-        - `galaxy.stars.sf_hist`: A 1D numpy array of the total **mass**
-          formed in each corresponding bin, in units of Msun. The size of
-          this array must be one less than the `ages` array.
-    timescale : unyt_quantity, optional
-        The timescale over which to average the SFR, by default 10 * Myr.
+    Args:
+        galaxy: An instance of a synthesizer.parametric.Galaxy object.
+        timescale: The timescale over which to calculate the SFR (default is 10 Myr).
 
     Returns:
-    -------
-    unyt_quantity
-        The average star formation rate of the galaxy in Msun/yr.
-
-    Raises:
-    ------
-    TypeError
-        If the input types are incorrect.
-    AttributeError
-        If the galaxy object is missing required attributes.
-    ValueError
-        If the timescale is not positive, arrays have inconsistent shapes,
-        or the calculated SFR is negative or non-finite.
+        The star formation rate as a float.
     """
-    # --- Input Validation ---
-    if not hasattr(galaxy, "stars"):
-        raise AttributeError("Galaxy object must have a 'stars' attribute.")
-    if not all(hasattr(galaxy.stars, attr) for attr in ["ages", "sf_hist"]):
-        raise AttributeError("galaxy.stars must have 'ages' and 'sf_hist' attributes.")
-    if not isinstance(timescale, unyt_quantity):
-        raise TypeError("timescale must be a unyt_quantity.")
-    if timescale <= 0 * yr:
-        raise ValueError("timescale must be positive.")
+    timescale = (0, timescale.to("yr").value)  # Convert timescale to years
+    sfr = galaxy.stars.get_average_sfr(t_range=timescale)
+    return sfr
 
-    age_edges_yr = np.asarray(galaxy.stars.ages)
-    mass_in_bins_Msun = np.asarray(galaxy.stars.sf_hist)
 
-    if mass_in_bins_Msun.ndim != 1 or age_edges_yr.ndim != 1:
-        raise ValueError("'ages' and 'sf_hist' must be 1D arrays.")
-    if mass_in_bins_Msun.size != age_edges_yr.size - 1:
-        raise ValueError(
-            "The 'sf_hist' (mass) array must have one fewer element than "
-            "the 'ages' (bin edges) array."
-        )
+def calculate_mass_weighted_age(galaxy):
+    """Calculate the mass-weighted age of the stars in the galaxy."""
+    return galaxy.stars.get_mass_weighted_age().to("Myr")
 
-    if age_edges_yr.size < 2:
-        return unyt_quantity(0, units=Msun / yr)
 
-    # --- Calculation ---
-    bin_starts_yr = age_edges_yr[:-1]
-    bin_ends_yr = age_edges_yr[1:]
-    bin_widths_yr = bin_ends_yr - bin_starts_yr
-
-    # Calculate the SFR within each bin (Msun/yr) from the input mass.
-    # Use np.divide to handle bins with zero width safely.
-    rates_Msun_per_yr = np.divide(
-        mass_in_bins_Msun,
-        bin_widths_yr,
-        out=np.zeros_like(mass_in_bins_Msun, dtype=float),
-        where=(bin_widths_yr != 0),
+def calculate_lum_weighted_age(galaxy, spectra_type="total", filter_code="V"):
+    """Calculate the luminosity-weighted age of the stars in the galaxy."""
+    return galaxy.stars.get_lum_weighted_age(spectra_type=spectra_type, filter_code=filter_code).to(
+        "Myr"
     )
 
-    timescale_val_yr = timescale.to_value(yr)
 
-    # Find the overlap of each bin with the interval [0, timescale]
-    overlap_start = np.maximum(bin_starts_yr, 0)
-    overlap_end = np.minimum(bin_ends_yr, timescale_val_yr)
+def calculate_flux_weighted_age(galaxy, spectra_type="total", filter_code="JWST/NIRCam.F444W"):
+    """Calculate the flux-weighted age of the stars in the galaxy."""
+    return galaxy.stars.get_flux_weighted_age(
+        spectra_type=spectra_type, filter_code=filter_code
+    ).to("Myr")
 
-    # Calculate the duration of the overlap for each bin
-    overlap_duration_yr = np.maximum(0, overlap_end - overlap_start)
 
-    # Total mass formed within timescale = sum of (rate in bin * overlap duration)
-    total_mass_in_timescale_Msun = np.sum(rates_Msun_per_yr * overlap_duration_yr)
+def calculate_colour(
+    galaxy: Galaxy, filter1: str, filter2: str, emission_model_key: str = "total"
+) -> float:
+    """Measures the colour of a galaxy between two filters (filter1 - filter2).
 
-    # Average SFR = Total Mass / Timescale
-    average_sfr = total_mass_in_timescale_Msun / timescale_val_yr
+    Args:
+        galaxy: An instance of a synthesizer.parametric.Galaxy object.
+        filter1: The first filter code (e.g., 'JWST/NIRCam.F444W').
+        filter2: The second filter code (e.g., 'JWST/NIRCam.F115W').
+        emission_model_key: The key for the emission model to use (default is 'total').
 
-    # --- Final Checks & Return ---
-    if not np.isfinite(average_sfr):
-        raise ValueError("Calculated SFR is not finite. Check galaxy's SFH and ages.")
+    Returns:
+        The colour of the galaxy as a float.
+    """
+    for i, filter_code in enumerate([filter1, filter2]):
+        if (
+            galaxy.stars.spectra[emission_model_key].photo_fnu is None
+            or filter_code not in galaxy.stars.spectra[emission_model_key].photo_fnu
+        ):
+            try:
+                if filter_code in ["U", "V", "J"]:
+                    from synthesizer.filters import UVJ
 
-    sfr = unyt_quantity(average_sfr, units=Msun / yr)
+                    uvj = UVJ()
+                    filter = uvj[filter_code]
+                    filters = FilterCollection(filters=[filter])
+                else:
+                    filters = FilterCollection(filter_codes=[filter_code])
+                galaxy.stars.get_photo_fluxes(filters)
+            except ValueError:
+                raise ValueError(
+                    "Filter '{filter_code}' is not available in the "
+                    f"emission model '{emission_model_key}'."
+                )
+        if i == 0:
+            flux1 = galaxy.stars.spectra[emission_model_key].photo_fnu[filter_code]
+        else:
+            flux2 = galaxy.stars.spectra[emission_model_key].photo_fnu[filter_code]
 
-    if sfr < 0 * Msun / yr:
-        raise ValueError("Calculated SFR is negative. Check galaxy's SFH and ages.")
+    colour = 2.5 * np.log10(flux2 / flux1)
 
-    return sfr
+    return colour
+
+
+def calculate_d4000(galaxy: Galaxy, emission_model_key: str = "total") -> float:
+    """Measures the D4000 index of a galaxy.
+
+    Args:
+        galaxy: An instance of a synthesizer.parametric.Galaxy object.
+        emission_model_key: The key for the emission model to use (default is 'total').
+
+    Returns:
+        The D4000 index as a float.
+    """
+    d4000 = galaxy.stars.spectra[emission_model_key].measure_d4000()
+    return d4000
+
+
+def calculate_beta(galaxy: Galaxy, emission_model_key: str = "total") -> float:
+    """Measures the beta index of a galaxy.
+
+    Args:
+        galaxy: An instance of a synthesizer.parametric.Galaxy object.
+        emission_model_key: The key for the emission model to use (default is 'total').
+
+    Returns:
+        The beta index as a float.
+    """
+    beta = galaxy.stars.spectra[emission_model_key].measure_beta()
+    return beta
+
+
+def calculate_balmer_decrement(galaxy: Galaxy, emission_model_key: str = "total") -> float:
+    """Measures the Balmer decrement oemission_modelf a galaxy.
+
+    Args:
+        galaxy: An instance of a synthesizer.parametric.Galaxy object.
+        emission_model_key: The key for the emission model to use (default is 'total').
+
+    Returns:
+        The Balmer decrement as a float.
+    """
+    balmer_decrement = galaxy.stars.spectra[emission_model_key].measure_balmer_break(
+        integration_method="simps"
+    )
+    return balmer_decrement
+
+
+def calculate_line_flux(galaxy: Galaxy, emission_model, line="Ha"):
+    """Measures the equivalent widths of specific emission lines in a galaxy.
+
+    Args:
+        galaxy: An instance of a synthesizer.parametric.Galaxy object.
+        emission_model: An instance of a synthesizer.emission_models.EmissionModel.
+        line: The name of the emission line to measure (default is 'Ha').
+
+    Returns:
+        A dictionary with line names as keys and their equivalent widths as values.
+    """
+    from synthesizer.emissions.utils import aliases
+
+    line = aliases.get(line, line)  # Handle aliases for line names
+
+    line = galaxy.stars.get_lines(([line]), emission_model)
+    flux = line.get_flux(cosmo=Planck18, z=galaxy.redshift)[0]
+
+    return flux
+
+
+def calculate_line_ew(galaxy: Galaxy, emission_model, line="Ha"):
+    """Measures the equivalent widths of specific emission lines in a galaxy.
+
+    Args:
+        galaxy: An instance of a synthesizer.parametric.Galaxy object.
+        emission_model: An instance of a synthesizer.emission_models.EmissionModel.
+        line: The name of the emission line to measure (default is 'Ha').
+
+    Returns:
+        A dictionary with line names as keys and their equivalent widths as values.
+    """
+    from synthesizer.emissions.utils import aliases
+
+    line = aliases.get(line, line)  # Handle aliases for line names
+
+    line = galaxy.stars.get_lines(([line]), emission_model)
+
+    print(galaxy.stars.lines["nebular"])
+
+    return line.equivalent_width[0]
+
+
+def calculate_sfh_quantile(galaxy, quantile=0.5, norm=False, cosmo=Planck18):
+    """Calculate the lookback time at which a certain fraction of the total mass is formed.
+
+    Args:
+        galaxy: An instance of a synthesizer.parametric.Galaxy object.
+        quantile: The fraction of total mass formed (default is 0.5 for median).
+        norm: If True then the age is as a fraction of the age of the universe at
+            the redshift of the galaxy.
+        cosmo: Cosmology object to use for age calculations, default is Planck18.
+
+    Returns:
+        The lookback time in Myr at which the specified fraction of total mass is formed.
+    """
+    if not isinstance(galaxy, Galaxy):
+        raise TypeError("galaxy must be an instance of synthesizer.parametric.Galaxy")
+
+    if not hasattr(galaxy.stars, "sfh"):
+        raise AttributeError("galaxy.stars must have a 'sfh' attribute")
+
+    assert 0 <= quantile <= 1, "quantile must be between 0 and 1."
+
+    mass_bins = galaxy.stars.sf_hist
+    ages = galaxy.stars.ages
+    # from young to old
+
+    cumulative_mass = np.cumsum(mass_bins[::-1])
+
+    # Find the time at which the specified quantile of total mass is formed
+    total_mass = cumulative_mass[-1]
+    target_mass = quantile * total_mass
+
+    # Find the index where cumulative mass exceeds target mass
+    index = np.searchsorted(cumulative_mass, target_mass)
+
+    lookback_time = ages[::-1][index].to("Myr")  # Get the corresponding age from the ages array
+
+    if norm:
+        # Normalize the lookback time to the age of the universe at the galaxy's redshift
+        age_of_universe = cosmo.age(galaxy.redshift).to("Myr").value
+        lookback_time = lookback_time.value / age_of_universe
+
+    return lookback_time
+
+
+class SUPP_FUNCTIONS:
+    """A class to hold supplementary functions for galaxy analysis."""
+
+    calculate_muv = calculate_muv
+    calculate_sfr = calculate_sfr
+    calculate_mass_weighted_age = calculate_mass_weighted_age
+    calculate_lum_weighted_age = calculate_lum_weighted_age
+    calculate_flux_weighted_age = calculate_flux_weighted_age
+    calculate_colour = calculate_colour
+    calculate_d4000 = calculate_d4000
+    calculate_beta = calculate_beta
+    calculate_balmer_decrement = calculate_balmer_decrement
+    calculate_line_flux = calculate_line_flux
+    calculate_line_ew = calculate_line_ew
+    calculate_sfh_quantile = calculate_sfh_quantile
 
 
 # ------------------------------------------
@@ -1728,6 +1832,7 @@ class GalaxyBasis:
         emission_model_keys=None,
         batch_galaxies: bool = True,
         batch_size: int = 40_000,
+        overwrite: bool = False,
         **extra_analysis_functions,
     ) -> Pipeline:
         """Processes galaxies through Synthesizer pipeline.
@@ -1805,7 +1910,7 @@ class GalaxyBasis:
 
                 final_fullpath = fullpath.replace(".hdf5", f"_{batch_i + 1}.hdf5")
                 init_fullpath = fullpath.replace(".hdf5", "_0.hdf5")
-                if os.path.exists(final_fullpath):
+                if os.path.exists(final_fullpath) and not overwrite:
                     print(
                         f"""Skipping batch {batch_i + 1} as
                         {final_fullpath} already exists."""
@@ -2018,45 +2123,40 @@ class GalaxyBasis:
                 color=colors[emission_model],
                 linestyle="--",
             )
-
             mass = galaxy.stars.initial_mass
             if mass == 0:
-                text_gal[emission_model] = f"{emission_model}     \nNo stars"
+                text_gal[emission_model] = f"**{emission_model}**\nNo stars"
             else:
                 age = galaxy.stars.calculate_mean_age()
                 zmet = galaxy.stars.calculate_mean_metallicity()
 
-                text_gal[emission_model] = rf"""{emission_model}     \\nAge \
-                     {age.to(Myr):.0f}\\n$\log_{{10}} \
-                     $Z: {np.log10(zmet.value):.2f}\\nM$_\star$: \
-                       {np.log10(mass):.1f} M$_\odot$"""
+            text_gal[emission_model] = f"""**{emission_model}**
+Age: {age.to(Myr):.0f}
+$\\log_{{10}}(Z)$: {np.log10(zmet):.2f}
+$\\log_{{10}}(M_\\star/M_\\odot)$: {np.log10(mass):.1f}"""
 
-        ax[0].legend(loc="upper right", fontsize=6, ncols=3)
-        # Set the x-axis limits
-        if max_y > 1 * nJy:
-            min_y = max(min_y, 1 * nJy)
-        else:
-            min_y = 1e-3 * max_y
-        ax[0].set_xlim(0.9 * min_x, 1.1 * max_x)
-        ax[0].set_ylim(0.9 * min_y, 2 * max_y)
+        info_blocks = []
+        info_blocks.append(f"$z = {redshift:.2f}$")
+        info_blocks.extend(text_gal.values())
 
-        textstr = "\n".join((r"$z = %.2f$" % (redshift),))
+        # Format and add galaxy parameters if they exist
+        if galaxy_params:
+            param_lines = [f"{key}: {value:.2f}" for key, value in galaxy_params.items()]
+            info_blocks.append("\n".join(param_lines))
 
-        textstr += "\n" + "\n".join(text_gal.values())
+        # Join the blocks with double newlines for clear separation
+        textstr = "\n\n".join(info_blocks)
 
-        # add galaxy params
-
-        textstr += "\n" + "\n".join([f"{key}: {value:.2f}" for key, value in galaxy_params.items()])
-
-        # these are matplotlib.patch.Patch properties
+        # Define properties for the text box
         props = dict(boxstyle="round", facecolor="wheat", alpha=0.5)
-        # place a text box in upper left in axes coords
+
+        # Place the text box on the axes
         ax[1].text(
             0.95,
-            0.72,
+            0.95,  # Adjusted y-position for better placement with verticalalignment='top'
             textstr,
             transform=ax[1].transAxes,
-            fontsize=12,
+            fontsize=10,  # Adjusted for better fit
             horizontalalignment="right",
             verticalalignment="top",
             bbox=props,
@@ -2181,10 +2281,10 @@ class GalaxyBasis:
 
         if (
             os.path.exists(full_out_path)
-            and not overwrite[0]
             or os.path.exists(f"{out_dir}/{out_name}_{total_batches}.hdf5")
+            and not overwrite[0]
         ):
-            print(f"File {full_out_path} already exists. Skipping.")
+            print(f"File {full_out_path} already exists. Skipping loading.")
             return
         if os.path.exists(full_out_path) and overwrite[0]:
             print(f"Overwriting {full_out_path}.")
@@ -2203,6 +2303,7 @@ class GalaxyBasis:
             save=True,
             emission_model_keys=emission_model_key,
             batch_size=batch_size,
+            overwrite=overwrite[0],
             **extra_analysis_functions,
         )
 
@@ -2440,13 +2541,12 @@ class CombinedBasis:
 
             if (
                 os.path.exists(full_out_path)
-                and not overwrite[i]
                 or os.path.exists(f"{self.out_dir}/{base.model_name}_{total_batches}.hdf5")
-            ):
+            ) and not overwrite[i]:
                 print(f"File {full_out_path} already exists. Skipping.")
                 continue
             elif os.path.exists(full_out_path) and overwrite[i]:
-                print(f"File {full_out_path} already exists. Overwriting.")
+                print(f"File {full_out_path} already exists. Overwriting..")
                 os.remove(full_out_path)
             elif not os.path.exists(self.out_dir):
                 os.makedirs(self.out_dir)
@@ -2467,6 +2567,7 @@ class CombinedBasis:
                 save=True,
                 emission_model_keys=self.base_emission_model_keys[i],
                 batch_size=batch_size,
+                overwrite=overwrite[i],
                 **extra_analysis_functions,
             )
 
@@ -2573,6 +2674,10 @@ class CombinedBasis:
                     phot = {}
                     for observatory in observed_photometry:
                         phot_inst = observed_photometry[observatory]
+                        if isinstance(phot_inst, h5py.Dataset):
+                            # THIS IS A HACK TO AVOID LOADING
+                            # REST-FRAME FLUXES
+                            continue
 
                         for key in phot_inst.keys():
                             full_key = f"{observatory}/{key}"
@@ -2634,7 +2739,6 @@ class CombinedBasis:
                         # Combine supplementary properties
                         for key in supp_properties.keys():
                             if key not in outputs[base.model_name]["supp_properties"]:
-                                print(f"creating {key}")
                                 outputs[base.model_name]["supp_properties"][key] = {}
                             if not isinstance(
                                 supp_properties[key],
@@ -2653,13 +2757,6 @@ class CombinedBasis:
                                 }
 
                             for subkey in supp_properties[key].keys():
-                                print(
-                                    key,
-                                    subkey,
-                                    self.base_emission_model_keys,
-                                    "here",
-                                    outputs[base.model_name]["supp_properties"][key],
-                                )
                                 if subkey not in outputs[base.model_name]["supp_properties"][key]:
                                     outputs[base.model_name]["supp_properties"][key][subkey] = []
                                 outputs[base.model_name]["supp_properties"][key][subkey] = (
@@ -2674,7 +2771,6 @@ class CombinedBasis:
                                 )
 
         self.pipeline_outputs = outputs
-
         return outputs
 
     def create_grid(
@@ -3597,17 +3693,21 @@ class CombinedBasis:
                         for subkey, subvalue in value.items():
                             if check_scaling(subvalue):
                                 supp_dict[key][subkey] = subvalue[pos] * scaling_factors
-                                supp_param_units[key] = str(subvalue.units)
                             else:
                                 supp_dict[key][subkey] = subvalue[pos]
-                                supp_param_units[key] = str(dimensionless)
+                            supp_param_units[key] = (
+                                str(subvalue.units)
+                                if isinstance(subvalue, unyt_array)
+                                else "dimensionless"
+                            )
                     else:
                         if check_scaling(value):
                             supp_dict[key] = value[pos] * scaling_factors
-                            supp_param_units[key] = str(value.units)
                         else:
                             supp_dict[key] = value[pos]
-                            supp_param_units[key] = str(dimensionless)
+                        supp_param_units[key] = (
+                            str(value.units) if isinstance(value, unyt_array) else "dimensionless"
+                        )
 
                 # Store all relevant data for this base
 

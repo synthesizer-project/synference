@@ -2546,7 +2546,7 @@ class SBI_Fitter:
 
         def objective_func(trial):
             """Setup function here to use shared parameters."""
-            return self.run_evaluate_sbi(
+            return self._run_evaluate_sbi(
                 trial=trial,
                 train_indices=train_indices,
                 test_indices=test_indices,
@@ -2701,7 +2701,7 @@ class SBI_Fitter:
 
         return results
 
-    def run_evaluate_sbi(
+    def _run_evaluate_sbi(
         self,
         trial: optuna.Trial,
         suggested_hyperparameters: dict,
@@ -4129,12 +4129,12 @@ class SBI_Fitter:
                     .numpy()
                 ]
             ),
-            "log_dpit_max": log_dpit_max,   
+            "log_dpit_max": log_dpit_max,
         }
 
         try:
             metrics["mean_log_prob"] = np.mean(self.log_prob(X_test, y_test, posteriors))
-        except Exception as e:
+        except Exception:
             pass
 
         if verbose:
@@ -4176,7 +4176,7 @@ class SBI_Fitter:
                         num = num.item()
                     try:
                         print(f"{metric_name:.<25} {num:.6f}")
-                    except:
+                    except Exception:
                         print(f"{metric_name:.<25} {num}{type(num)}")
 
             # Print parameter-specific metrics
@@ -4242,7 +4242,20 @@ class SBI_Fitter:
         posteriors: object = None,
         online: bool = False,
     ) -> None:
-        """Plot the diagnostics of the SBI model."""
+        """Plot the diagnostics of the SBI model.
+
+        Parameters:
+            X_train: Training feature array.
+            y_train: Training target array.
+            X_test: Test feature array.
+            y_test: Test target array.
+            stats: List of statistics to plot. If None, will use self.stats.
+            plots_dir: Directory to save the plots.
+            sample_method: Method to use for sampling. Options are 'direct', 'emcee',
+                'pyro', or 'vi'.
+            posteriors: List of posterior distributions. If None, will use self.posteriors
+            online: If True, will not plot the posterior and coverage.
+        """
         plots_dir = plots_dir.replace("name", self.name)
         if not os.path.exists(plots_dir):
             os.makedirs(plots_dir)
@@ -5466,7 +5479,7 @@ class Simformer_Fitter(SBI_Fitter):
         from omegaconf import OmegaConf
         from scoresbibm.methods.score_transformer import train_transformer_model
 
-        model_config_dict={
+        model_config_dict = {
             "name": "ScoreTransformer",
             "d_model": 128,
             "n_heads": 4,
@@ -5479,8 +5492,8 @@ class Simformer_Fitter(SBI_Fitter):
         }
         if model_config_dict_overrides is not None:
             model_config_dict.update(model_config_dict_overrides)
-        
-        sde_config_dict={
+
+        sde_config_dict = {
             "name": "VPSDE",  # or "VESDE"
             "beta_min": 0.1,
             "beta_max": 20.0,
@@ -5490,8 +5503,8 @@ class Simformer_Fitter(SBI_Fitter):
         }
         if sde_config_dict_overrides is not None:
             sde_config_dict.update(sde_config_dict_overrides)
-        
-        train_config_dict={
+
+        train_config_dict = {
             "learning_rate": 1e-4,  # Initial learning rate for training # used
             "min_learning_rate": 1e-6,  # Minimum learning rate for training # used
             "z_score_data": True,  # Whether to z-score the data # used
@@ -5515,7 +5528,6 @@ class Simformer_Fitter(SBI_Fitter):
 
         if task_func is None:
             from .simformer import GalaxyPhotometryTask as task_func
- 
 
         if name_append == "timestamp":
             name_append = f"_{self._timestamp}"
@@ -5596,7 +5608,6 @@ class Simformer_Fitter(SBI_Fitter):
 
             validation_data = task.get_data(num_samples=num_validation_simulations)
 
-        
         if not run:
             if verbose:
                 print(f"Starting training at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -5633,7 +5644,7 @@ class Simformer_Fitter(SBI_Fitter):
                 "train_test_fraction": train_test_fraction,
                 "attention_mask_type": attention_mask_type,
                 "has_simulator": self.has_simulator,
-            }
+            },
         )
 
         # Evaluate model.
@@ -5801,6 +5812,7 @@ class Simformer_Fitter(SBI_Fitter):
         """Plot diagnostics for the Simformer model.
 
         Arguments:
+        ----------
         X_test : np.ndarray, optional
             Test data to evaluate the model. If None, uses the X_test attribute of the object.
         y_test : np.ndarray, optional
@@ -5818,6 +5830,12 @@ class Simformer_Fitter(SBI_Fitter):
             Random seed for reproducibility. Default is 42.
         plots_dir : str, optional
             Directory to save the plots. Default is f"{code_path}/models/{name}/plots/".
+        metric_path : str, optional
+            Path to save the metrics JSON file. Default is f"{code_path}/models/{name
+        }/{name}_metrics.json".
+
+        Returns:
+        None
         """
         if task is None:
             task = self.simformer_task
@@ -5855,7 +5873,7 @@ class Simformer_Fitter(SBI_Fitter):
 
         with open(metrics_path, "w") as f:
             json.dump(metrics, f, indent=4)
-        
+
         self.plot_sample_accuracy(
             num_samples=num_samples,
             X_test=X_test,
@@ -5909,6 +5927,9 @@ class Simformer_Fitter(SBI_Fitter):
         plots_dir : str, optional
             Directory to save the plots. Default is
             f"{code_path}/models/{name}/plots/".
+        samples : np.ndarray, optional
+            Pre-computed samples from the posterior. If None, samples will be
+            drawn from the posterior using the sample_posterior method.
         """
         if task is None:
             task = self.simformer_task
@@ -6082,16 +6103,13 @@ class Simformer_Fitter(SBI_Fitter):
 
         num_theta = len(self.fitted_parameter_names)
         num_x = len(self.feature_names)
-        
 
         assert X_test.shape[1] == num_x or attention_mask == "full", (
             "Must provide all features or a manual attention mask. "
         )
 
         if attention_mask == "full":
-            mask = jnp.array(
-            [0] * num_theta + [1] * num_x, dtype=jnp.bool_
-        )
+            mask = jnp.array([0] * num_theta + [1] * num_x, dtype=jnp.bool_)
         else:
             mask = attention_mask.astype(np.bool_)
 
