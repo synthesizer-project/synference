@@ -435,7 +435,6 @@ class EmpiricalUncertaintyModel(UncertaintyModel):
     def sample_uncertainty(
         self,
         true_flux: Union[float, np.ndarray],
-        extrapolate=False,
         filter_negative: bool = True,
     ) -> Union[float, np.ndarray, None]:
         """Samples a 'fake' uncertainty (sigma_prime_X) for a given true flux.
@@ -460,25 +459,28 @@ class EmpiricalUncertaintyModel(UncertaintyModel):
         flux_array = np.atleast_1d(true_flux)
         sampled_sigmas = np.empty_like(flux_array)
 
-        if not extrapolate:
-            mu_sigma_values = self.mu_sigma_interpolator(flux_array)
-            sigma_sigma_values = self.sigma_sigma_interpolator(flux_array)
-        else:
-            mu_sigma_values = self.mu_sigma_interpolator_extrap(flux_array)
-            sigma_sigma_values = self.sigma_sigma_interpolator_extrap(flux_array)
+        mu_sigma_values = self.mu_sigma_interpolator(flux_array)
+        sigma_sigma_values = self.sigma_sigma_interpolator(flux_array)
 
-        # redo with normal numpy distribution vectorized
-        sigma_prime_x = np.random.normal(
+        # Define the bounds for truncation (0 to infinity)
+        lower_bound = 0
+        upper_bound = np.inf
+
+        # Calculate the bounds in terms of standard deviations from the mean
+        # This is the format required by scipy.stats.truncnorm
+        a = (lower_bound - mu_sigma_values) / sigma_sigma_values
+        b = (upper_bound - mu_sigma_values) / sigma_sigma_values
+
+        from scipy.stats import truncnorm
+
+        # Sample from the truncated normal distribution
+        sampled_sigmas = truncnorm.rvs(
+            a=a,
+            b=b,
             loc=mu_sigma_values,
             scale=sigma_sigma_values,
             size=flux_array.shape,
         )
-
-        if filter_negative:
-            # make any negative values NaN
-            sampled_sigmas = np.where(sigma_prime_x > 0, sigma_prime_x, np.nan)
-        else:
-            sampled_sigmas = sigma_prime_x
 
         return sampled_sigmas[0] if is_scalar else sampled_sigmas
 
@@ -1060,6 +1062,7 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
             umask = (temp_flux_array / temp_sig < self.treat_as_upper_limits_below) | (
                 np.isnan(temp_sig) | np.isnan(temp_flux_array)
             )
+            # print(umask)
 
         else:
             umask = np.zeros_like(flux_array, dtype=bool)  # No upper limit mask if not set
@@ -1086,6 +1089,7 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
             snr_limit = self.treat_as_upper_limits_below
 
             if self.flux_unit == "AB":
+                # print('AB:', noisy_flux_array, sampled_sigma_prime)
                 temp_flux_array = 10 ** (-0.4 * (noisy_flux_array - 8.9)) * Jy
                 # Convert error back into Jy correctly
                 temp_sigma_prime = (np.log(10) * temp_flux_array * sampled_sigma_prime) / 2.5
@@ -1097,6 +1101,8 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
 
             snr = temp_flux_array / temp_sigma_prime
             m = snr < snr_limit
+
+            # print(m, snr, temp_flux_array, temp_sigma_prime)
 
             m = (
                 m
