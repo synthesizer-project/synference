@@ -178,7 +178,7 @@ def main_task(args: Args) -> None:
         model_name=args.model_name, hdf5_path=args.grid_path, device=args.device
     )
 
-    if not args.include_errors_in_feature_array:
+    if args.scatter_fluxes > 0 and not args.include_errors_in_feature_array:
         unused_filters = [
             filt
             for filt in empirical_model_fitter.raw_photometry_names
@@ -195,7 +195,14 @@ def main_task(args: Args) -> None:
             filt for filt in unused_filters if filt in empirical_model_fitter.raw_photometry_names
         ]
 
+    print('Photometry in grid:', empirical_model_fitter.raw_photometry_names, file=sys.stdout)
+    for filt in empirical_model_fitter.raw_photometry_names:
+        if args.scatter_fluxes > 0 and args.include_errors_in_feature_array and filt not in empirical_noise_models:
+            unused_filters.append(filt)
+
     print(f"Unused filters: {unused_filters}", file=sys.stdout)
+    
+
     empirical_model_fitter.create_feature_array_from_raw_photometry(
         extra_features=list(args.model_features),
         normalize_method=args.norm_method,
