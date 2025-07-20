@@ -3,10 +3,12 @@ import os
 import warnings
 
 from .grid import (
-    generate_sfh_grid, generate_metallicity_distribution, generate_emission_models, 
+    generate_sfh_grid, generate_metallicity_distribution, generate_emission_models,
     generate_sfh_basis, GalaxyBasis, CombinedBasis,  calculate_sfr,
-    calculate_muv, calculate_mwa, draw_from_hypercube, GalaxySimulator, generate_random_DB_sfh,
-    test_out_of_distribution
+    calculate_muv, draw_from_hypercube, GalaxySimulator, generate_random_DB_sfh,
+    test_out_of_distribution, calculate_mass_weighted_age, calculate_lum_weighted_age,
+    calculate_flux_weighted_age, calculate_colour, calculate_d4000, calculate_beta, calculate_balmer_decrement,
+    calculate_line_flux, calculate_line_ew, calculate_sfh_quantile, SUPP_FUNCTIONS
 )
 
 from .utils import (
@@ -44,7 +46,18 @@ __all__ = [
     "draw_from_hypercube",
     "CombinedBasis",
     "calculate_muv",
-    "calculate_mwa",
+    "calculate_sfr",
+    "calculate_mass_weighted_age",
+    "calculate_lum_weighted_age",
+    "calculate_flux_weighted_age",
+    "calculate_beta",
+    "calculate_balmer_decrement",
+    "calculate_line_flux",
+    "calculate_line_ew",
+    "calculate_d4000",
+    "calculate_colour",
+    "calculate_sfh_quantile",
+    "SUPP_FUNCTIONS",
     "SBI_Fitter",
     "MissingPhotometryHandler",
     "Simformer_Fitter",
@@ -67,7 +80,6 @@ __all__ = [
     "check_scaling",
     "detect_outliers",
     "compare_methods_feature_importance",
-    "calculate_sfr",
     "analyze_feature_contributions",
     #"UncertainityModelTask",
     "DepthUncertaintyModel",
