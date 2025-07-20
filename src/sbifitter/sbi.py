@@ -4145,11 +4145,18 @@ class SBI_Fitter:
             full_metrics = []
 
             for metric in metrics:
+                print(metric, type(metrics[metric]))
                 if (
-                    isinstance(metrics[metric], np.ndarray)
+                    isinstance(metrics[metric], (np.ndarray, list, torch.Tensor, jnp.ndarray))
                     and hasattr(metrics[metric], "__len__")
                     and len(metrics[metric]) == len(self.fitted_parameter_names)
-                ):
+                ):  
+                    try:
+                        metric = metric.tolist()
+                        metrics[metric] = metrics[metric].tolist()
+                    except AttributeError:
+                        pass
+
                     param_metrics.append(metric)
                 else:
                     full_metrics.append(metric)
@@ -4170,7 +4177,7 @@ class SBI_Fitter:
                     try:
                         print(f"{metric_name:.<25} {num:.6f}")
                     except:
-                        print(f"{metric_name:.<25} {num}")
+                        print(f"{metric_name:.<25} {num}{type(num)}")
 
             # Print parameter-specific metrics
             if len(param_metrics) > 0:
@@ -5836,7 +5843,7 @@ class Simformer_Fitter(SBI_Fitter):
             rng_seed=rng_seed,
         )
 
-        metris = self.evaluate_model(
+        metrics = self.evaluate_model(
             posteriors=posteriors,
             X_test=X_test,
             y_test=y_test,

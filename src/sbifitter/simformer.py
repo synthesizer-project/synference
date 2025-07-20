@@ -15,16 +15,19 @@ import jax.numpy as jnp
 import joblib
 import numpy as np
 import torch
-from synthesizer.emission_models import (
-    TotalEmission,
-)
-from synthesizer.emission_models.attenuation import Calzetti2000
-from synthesizer.grid import Grid
-from synthesizer.instruments import FilterCollection, Instrument
-from synthesizer.parametric import (
-    SFH,
-    ZDist,
-)  # Need concrete SFH, ZDist classes
+
+try:
+    from synthesizer.emission_models import TotalEmission
+    from synthesizer.emission_models.attenuation import Calzetti2000
+    from synthesizer.grid import Grid
+    from synthesizer.instruments import FilterCollection, Instrument
+    from synthesizer.parametric import (
+        SFH,
+        ZDist,
+    )  # Need concrete SFH, ZDist classese
+except:
+    pass
+
 from unyt import (
     Myr,
 )
