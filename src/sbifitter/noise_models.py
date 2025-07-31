@@ -1058,8 +1058,10 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
             else:
                 temp_flux_array = unyt_array(flux_array, units=self.flux_unit).to("Jy").value
                 temp_sig = unyt_array(sampled_sigma_prime, units=self.flux_unit).to("Jy").value
-
-            umask = (temp_flux_array / temp_sig < self.treat_as_upper_limits_below) | (
+            snr = (temp_flux_array / temp_sig).value.astype(float)
+            print(type(snr), snr.dtype, snr.shape)
+            print(self.treat_as_upper_limits_below, type(self.treat_as_upper_limits_below))
+            umask = (snr < self.treat_as_upper_limits_below) | (
                 np.isnan(temp_sig) | np.isnan(temp_flux_array)
             )
             # print(umask)
@@ -1248,7 +1250,7 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
                 group.attrs["upper_limit_flux_err_behaviour"] = self.upper_limit_flux_err_behaviour
 
     @classmethod
-    def deserialize_from_hdf5(cls, hdf5_file: str, group_name: str = "empirical_uncertainty_model"):
+    def deserialize_from_hdf5(cls, hdf5_file: str, group_name: str = "all"):
         """Deserializes the model from an HDF5 file.
 
         Args:
@@ -1261,42 +1263,54 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
         """
         import h5py
 
+        output = {}
         with h5py.File(hdf5_file, "r") as f:
-            group = f[group_name]
-            flux_bins_centers = group["flux_bins_centers"][:]
-            mu_sigma_values = group["mu_sigma_values"][:]
-            num_bins = group.attrs["num_bins"]
-            flux_unit = group.attrs["flux_unit"]
-            min_flux_error = group.attrs["min_flux_error"]
-            max_flux_error = group.attrs["max_flux_error"]
-            upper_limits = group.attrs.get("upper_limits", False)
-            treat_as_upper_limits_below = group.attrs.get("treat_as_upper_limits_below", None)
-            upper_limit_flux_behaviour = group.attrs.get(
-                "upper_limit_flux_behaviour", "scatter_limit"
-            )
-            upper_limit_flux_err_behaviour = group.attrs.get(
-                "upper_limit_flux_err_behaviour", "flux"
-            )
+            if group_name == "all":
+                group_names = list(f.keys())
+            else:
+                group_names = [group_name]
+            for group_name in group_names:
+                group = f[group_name]
+                flux_bins_centers = group["flux_bins_centers"][:]
+                mu_sigma_values = group["mu_sigma_values"][:]
+                num_bins = group.attrs["num_bins"]
+                flux_unit = group.attrs["flux_unit"]
+                min_flux_error = group.attrs["min_flux_error"]
+                max_flux_error = group.attrs["max_flux_error"]
+                upper_limits = group.attrs.get("upper_limits", False)
+                treat_as_upper_limits_below = group.attrs.get("treat_as_upper_limits_below", None)
+                if treat_as_upper_limits_below is not None:
+                    treat_as_upper_limits_below = float(treat_as_upper_limits_below)
+                upper_limit_flux_behaviour = group.attrs.get(
+                    "upper_limit_flux_behaviour", "scatter_limit"
+                )
+                upper_limit_flux_err_behaviour = group.attrs.get(
+                    "upper_limit_flux_err_behaviour", "flux"
+                )
 
-        model = cls(
-            observed_fluxes=flux_bins_centers,
-            observed_errors=mu_sigma_values,
-            num_bins=num_bins,
-            flux_bins=flux_bins_centers,
-            log_bins=False,  # Assuming linear bins for deserialization
-            min_samples_per_bin=1,  # Default value, can be adjusted later
-            flux_unit=flux_unit,
-            min_flux_error=min_flux_error,
-            error_type="empirical",  # Default value, can be adjusted later
-            sigma_clip=3.0,  # Default value, can be adjusted later
-            upper_limits=upper_limits,
-            treat_as_upper_limits_below=treat_as_upper_limits_below,
-            upper_limit_flux_behaviour=upper_limit_flux_behaviour,
-            upper_limit_flux_err_behaviour=upper_limit_flux_err_behaviour,
-            max_flux_error=max_flux_error,
-        )
+                model = cls(
+                    observed_fluxes=flux_bins_centers,
+                    observed_errors=mu_sigma_values,
+                    num_bins=num_bins,
+                    flux_bins=flux_bins_centers,
+                    log_bins=False,  # Assuming linear bins for deserialization
+                    min_samples_per_bin=1,  # Default value, can be adjusted later
+                    flux_unit=flux_unit,
+                    min_flux_error=min_flux_error,
+                    error_type="empirical",  # Default value, can be adjusted later
+                    sigma_clip=3.0,  # Default value, can be adjusted later
+                    upper_limits=upper_limits,
+                    treat_as_upper_limits_below=treat_as_upper_limits_below,
+                    upper_limit_flux_behaviour=upper_limit_flux_behaviour,
+                    upper_limit_flux_err_behaviour=upper_limit_flux_err_behaviour,
+                    max_flux_error=max_flux_error,
+                )
+                output[group_name] = model
 
-        return model
+        if len(output) == 1:
+            return output[group_names[0]]
+
+        return output
 
 
 def create_uncertainity_models_from_EPOCHS_cat(
