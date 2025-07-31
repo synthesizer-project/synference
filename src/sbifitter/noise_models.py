@@ -826,8 +826,6 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
                 "If upper_limits is True, treat_as_upper_limits_below must be provided."
             )
 
-        self.max_observed_flux_err = np.max(errors)
-
         self.upper_limits = upper_limits
         self.treat_as_upper_limits_below = treat_as_upper_limits_below
         self.upper_limit_flux_behaviour = upper_limit_flux_behaviour
@@ -841,6 +839,9 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
             else:
                 ftemp = fluxes
                 etemp = errors
+
+            self.snr_x = ftemp / etemp  # Calculate SNR
+            self.snr_y = ftemp.copy()  # Copy fluxes for SNR interpolation
 
             self.snr_interpolator = interp1d(ftemp / etemp, ftemp)
             upper_limit_value = self.snr_interpolator(treat_as_upper_limits_below)
@@ -1256,6 +1257,16 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
                 "sigma_sigma_values",
                 data=self.sigma_sigma_interpolator(self.flux_bins_centers),
             )
+            group.create_dataset(
+                "observed_fluxes",
+                data=self.observed_fluxes,
+                compression="gzip",
+            )
+            group.create_dataset(
+                "observed_errors",
+                data=self.observed_errors,
+                compression="gzip",
+            )
             group.attrs["num_bins"] = len(self.flux_bins_centers)
             group.attrs["flux_unit"] = self.flux_unit
             group.attrs["min_flux_error"] = self.min_flux_error
@@ -1296,6 +1307,8 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
                 group_names = [group_name]
             for group_name in group_names:
                 group = f[group_name]
+                observed_fluxes = group["observed_fluxes"][:]
+                observed_errors = group["observed_errors"][:]
                 flux_bins_centers = group["flux_bins_centers"][:]
                 mu_sigma_values = group["mu_sigma_values"][:]
                 sigma_sigma_values = group["sigma_sigma_values"][:]
@@ -1321,8 +1334,8 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
                 min_samples_per_bin = group.attrs.get("min_samples_per_bin", 10)
 
                 model = cls(
-                    observed_fluxes=flux_bins_centers,
-                    observed_errors=np.zeros_like(flux_bins_centers),  # Dummy
+                    observed_fluxes=observed_fluxes,
+                    observed_errors=observed_errors,
                     num_bins=num_bins,
                     flux_bins=flux_bins_centers,
                     log_bins=log_bins,
