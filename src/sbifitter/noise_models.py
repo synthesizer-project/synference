@@ -1,5 +1,6 @@
 """Noise models for photometric fluxes."""
 
+import copy
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import matplotlib.pyplot as plt
@@ -749,6 +750,8 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
         self.num_bins = num_bins
         self.flux_bins = flux_bins
         self.log_bins = log_bins
+        if min_flux_for_binning == "None":
+            min_flux_for_binning = None
         self.min_flux_for_binning = min_flux_for_binning
         self.min_samples_per_bin = min_samples_per_bin
         self.flux_unit = flux_unit
@@ -1012,7 +1015,7 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
             asinh transformation.
 
         """
-        true_flux = true_flux.copy()
+        true_flux = copy.deepcopy(true_flux)
 
         if out_units == "asinh":
             assert asinh_softening_parameter is not None, (
@@ -1114,14 +1117,9 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
                 | np.isnan(temp_sigma_prime)
             )  # Ensure we mask out NaNs and infinities
 
-            # set max to
-            val_lim = self.mu_sigma_interpolator(
-                self.upper_limit_value
-            )  # Use the interpolated sigma for the upper limit value but include scatter
-            scatter_lim = self.sigma_sigma_interpolator(self.upper_limit_value)
-
             # Set upper limit flux behaviour
             if self.upper_limit_flux_behaviour == "scatter_limit":
+                scatter_lim = self.sigma_sigma_interpolator(self.upper_limit_value)
                 samples = stats.truncnorm.rvs(loc=0, scale=scatter_lim, a=-3, b=3, size=np.sum(m))
                 noisy_flux_array[m] = self.upper_limit_value + samples
             elif self.upper_limit_flux_behaviour == "upper_limit":
@@ -1138,6 +1136,9 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
 
             # Set upper limit flux error behaviour
             if self.upper_limit_flux_err_behaviour == "flux":
+                val_lim = self.mu_sigma_interpolator(
+                    self.upper_limit_value
+                )  # Use the interpolated sigma for the upper limit value but include scatter
                 sampled_sigma_prime[m] = val_lim
             elif self.upper_limit_flux_err_behaviour == "upper_limit":
                 sampled_sigma_prime[m] = self.upper_limit_value
@@ -1215,16 +1216,24 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
             return noisy_flux_array[0], sampled_sigma_prime[0]
         return noisy_flux_array, sampled_sigma_prime
 
-    def serialize_to_hdf5(self, hdf5_file: str, group_name: str = "empirical_uncertainty_model"):
+    def serialize_to_hdf5(
+        self,
+        hdf5_file: str,
+        group_name: str = "empirical_uncertainty_model",
+        overwrite: bool = False,
+    ) -> None:
         """Serializes the model to an HDF5 file.
 
         Args:
             hdf5_file: Path to the HDF5 file where the model will be saved.
             group_name: Name of the group in the HDF5 file where the model will be stored.
+            overwrite: If True, overwrite the existing group if it exists.
         """
         import h5py
 
         with h5py.File(hdf5_file, "a") as f:
+            if overwrite and group_name in f:
+                del f[group_name]
             group = f.create_group(group_name)
             group.create_dataset("flux_bins_centers", data=self.flux_bins_centers)
             group.create_dataset(
@@ -1242,9 +1251,13 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
             group.attrs["upper_limits"] = self.upper_limits
             group.attrs["error_type"] = self.error_type
             group.attrs["sigma_clip"] = self.sigma_clip
+            group.attrs["min_samples_per_bin"] = self.min_samples_per_bin
+            group.attrs["log_bins"] = self.log_bins
+            group.attrs["min_flux_for_binning"] = str(self.min_flux_for_binning)
+            group.attrs["interpolation_flux_unit"] = self.interpolation_flux_unit
 
             if self.upper_limits:
-                group.attrs["treat_as_upper_limits_below"] = self.treat_as_upper_limits_below
+                group.attrs["treat_as_upper_limits_below"] = int(self.treat_as_upper_limits_below)
                 group.attrs["upper_limit_value"] = self.upper_limit_value
                 group.attrs["upper_limit_flux_behaviour"] = self.upper_limit_flux_behaviour
                 group.attrs["upper_limit_flux_err_behaviour"] = self.upper_limit_flux_err_behaviour
@@ -1287,23 +1300,31 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
                 upper_limit_flux_err_behaviour = group.attrs.get(
                     "upper_limit_flux_err_behaviour", "flux"
                 )
+                error_type = group.attrs.get("error_type", "empirical")
+                sigma_clip = group.attrs.get("sigma_clip", 3.0)
+                log_bins = group.attrs.get("log_bins", True)
+                min_flux_for_binning = group.attrs.get("min_flux_for_binning", None)
+                interpolation_flux_unit = group.attrs.get("interpolation_flux_unit", flux_unit)
+                min_samples_per_bin = group.attrs.get("min_samples_per_bin", 10)
 
                 model = cls(
                     observed_fluxes=flux_bins_centers,
                     observed_errors=mu_sigma_values,
                     num_bins=num_bins,
                     flux_bins=flux_bins_centers,
-                    log_bins=False,  # Assuming linear bins for deserialization
-                    min_samples_per_bin=1,  # Default value, can be adjusted later
+                    log_bins=log_bins,
+                    min_samples_per_bin=min_samples_per_bin,
                     flux_unit=flux_unit,
                     min_flux_error=min_flux_error,
-                    error_type="empirical",  # Default value, can be adjusted later
-                    sigma_clip=3.0,  # Default value, can be adjusted later
+                    error_type=error_type,
+                    sigma_clip=sigma_clip,
                     upper_limits=upper_limits,
                     treat_as_upper_limits_below=treat_as_upper_limits_below,
                     upper_limit_flux_behaviour=upper_limit_flux_behaviour,
                     upper_limit_flux_err_behaviour=upper_limit_flux_err_behaviour,
                     max_flux_error=max_flux_error,
+                    interpolation_flux_unit=interpolation_flux_unit,
+                    min_flux_for_binning=min_flux_for_binning,
                 )
                 output[group_name] = model
 
