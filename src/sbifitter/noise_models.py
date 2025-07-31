@@ -842,9 +842,15 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
 
             self.snr_x = ftemp / etemp  # Calculate SNR
             self.snr_y = ftemp.copy()  # Copy fluxes for SNR interpolation
+            snr = ftemp / etemp
+            order = np.argsort(snr)
+            snr = snr[order]
+            ftemp = ftemp[order]
 
-            self.snr_interpolator = interp1d(ftemp / etemp, ftemp)
-            upper_limit_value = self.snr_interpolator(treat_as_upper_limits_below)
+            self.log_snr_interpolator = interp1d(np.log10(snr), np.log10(ftemp), kind="linear", bounds_error=False, fill_value="extrapolate")
+            upper_limit_value = 10**(
+                self.log_snr_interpolator(np.log10(treat_as_upper_limits_below))
+            )
             # Convert upper_limit_value back to the original flux unit
             if flux_unit == "AB":
                 upper_limit_value = -2.5 * np.log10(upper_limit_value) + 8.9
@@ -1075,8 +1081,8 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
                 temp_flux_array = unyt_array(flux_array, units=self.flux_unit).to("Jy").value
                 temp_sig = unyt_array(sampled_sigma_prime, units=self.flux_unit).to("Jy").value
             snr = (temp_flux_array / temp_sig).value.astype(float)
-            print(type(snr), snr.dtype, snr.shape)
-            print(self.treat_as_upper_limits_below, type(self.treat_as_upper_limits_below))
+            #print(type(snr), snr.dtype, snr.shape)
+            #print(self.treat_as_upper_limits_below, type(self.treat_as_upper_limits_below))
             umask = (snr < self.treat_as_upper_limits_below) | (
                 np.isnan(temp_sig) | np.isnan(temp_flux_array)
             )
@@ -1164,7 +1170,9 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
                     # val is in Jy, convert to AB
                     val = 2.5 / (sig_val * np.log(10))
                 else:
-                    val = self.snr_interpolator(sig_val)
+                    val = 10**self.log_snr_interpolator(
+                        np.log10(sig_val)
+                    )
                     # Find the error at this value
                     val = self.mu_sigma_interpolator(val)
                 sampled_sigma_prime[m] = val
@@ -1203,7 +1211,7 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
                         # Assume it is a sigma value, and calculate
                         # error in the same way as we calculated the SNR
                         # before.
-                        f_b = [self.snr_interpolator(i) for i in asinh_softening_parameter]
+                        f_b = [10**self.log_snr_interpolator(np.log10(i)) for i in asinh_softening_parameter]
                         f_b = unyt_array(f_b, units=self.flux_unit).to(Jy)
 
                     # Convert to asinh magnitude
@@ -1323,9 +1331,19 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
                 upper_limit_flux_behaviour = group.attrs.get(
                     "upper_limit_flux_behaviour", "scatter_limit"
                 )
+                try:
+                    upper_limit_flux_behaviour = float(upper_limit_flux_behaviour)
+                except ValueError:
+                    # If it cannot be converted to float, keep it as a string
+                    pass
                 upper_limit_flux_err_behaviour = group.attrs.get(
                     "upper_limit_flux_err_behaviour", "flux"
                 )
+                try:
+                    upper_limit_flux_err_behaviour = float(upper_limit_flux_err_behaviour)
+                except ValueError:
+                    # If it cannot be converted to float, keep it as a string
+                    pass
                 error_type = group.attrs.get("error_type", "empirical")
                 sigma_clip = group.attrs.get("sigma_clip", 3.0)
                 log_bins = group.attrs.get("log_bins", True)
