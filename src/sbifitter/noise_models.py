@@ -695,6 +695,9 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
         upper_limit_flux_behaviour: str = "scatter_limit",
         upper_limit_flux_err_behaviour: str = "flux",
         max_flux_error: Optional[float] = None,
+        already_binned: bool = False,
+        bin_median_errors=None,
+        bin_std_errors=None,
     ):
         """Uncertainity model from observed data.
 
@@ -739,7 +742,13 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
                 - 'sig_{val}': Find the error at a specific value, e.g., 'sig_1'
                     will find the error at 1 sigma.
             max_flux_error: Maximum flux error to allow. If None, no maximum is applied.
-
+            already_binned: If True, the observed_fluxes and observed_errors are already binned
+            and do not need to be binned again. This is useful for cases where the
+            fluxes and errors are already pre-processed and ready for interpolation.
+            bin_median_errors: Optional pre-computed median errors for each bin.
+                only used if already_binned is True.
+            bin_std_errors: Optional pre-computed standard deviations for each bin.
+                Only used if already_binned is True.
         """
         if len(observed_fluxes) != len(observed_errors):
             raise ValueError("observed_fluxes and observed_errors must have the same length.")
@@ -845,61 +854,64 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
 
         self.max_flux_error = max_flux_error if max_flux_error is not None else np.inf
 
-        if len(fluxes) < min_samples_per_bin * 2:  # Need at least two bins for interpolation
-            raise ValueError(
-                f"Not enough valid data points ({len(fluxes)}) to build the model "
-                f"with min_samples_per_bin={min_samples_per_bin}. "
-                "Consider adjusting min_flux_for_binning or providing more data."
-            )
+        if not already_binned:
+            if len(fluxes) < min_samples_per_bin * 2:  # Need at least two bins for interpolation
+                raise ValueError(
+                    f"Not enough valid data points ({len(fluxes)}) to build the model "
+                    f"with min_samples_per_bin={min_samples_per_bin}. "
+                    "Consider adjusting min_flux_for_binning or providing more data."
+                )
 
-        if flux_bins is None:
-            if log_bins:
-                # Ensure fluxes are positive for log binning
-                positive_flux_mask = fluxes > 0
-                if not np.any(positive_flux_mask):
-                    raise ValueError(
-                        """No positive fluxes available for log binning.
-                        Try linear bins or check data."""
-                    )
-                min_f = np.min(fluxes[positive_flux_mask])
-                max_f = np.max(fluxes[positive_flux_mask])
-                if min_f <= 0:  # Should be caught by positive_flux_mask, but as safeguard
-                    min_f = (
-                        np.partition(fluxes[positive_flux_mask], 1)[1]
-                        if len(fluxes[positive_flux_mask]) > 1
-                        else 1e-9
-                    )
-                flux_bins = np.logspace(np.log10(min_f), np.log10(max_f), num_bins + 1)
-            else:
-                min_f = np.min(fluxes)
-                max_f = np.max(fluxes)
-                flux_bins = np.linspace(min_f, max_f, num_bins + 1)
+            if flux_bins is None:
+                if log_bins:
+                    # Ensure fluxes are positive for log binning
+                    positive_flux_mask = fluxes > 0
+                    if not np.any(positive_flux_mask):
+                        raise ValueError(
+                            """No positive fluxes available for log binning.
+                            Try linear bins or check data."""
+                        )
+                    min_f = np.min(fluxes[positive_flux_mask])
+                    max_f = np.max(fluxes[positive_flux_mask])
+                    if min_f <= 0:  # Should be caught by positive_flux_mask, but as safeguard
+                        min_f = (
+                            np.partition(fluxes[positive_flux_mask], 1)[1]
+                            if len(fluxes[positive_flux_mask]) > 1
+                            else 1e-9
+                        )
+                    flux_bins = np.logspace(np.log10(min_f), np.log10(max_f), num_bins + 1)
+                else:
+                    min_f = np.min(fluxes)
+                    max_f = np.max(fluxes)
+                    flux_bins = np.linspace(min_f, max_f, num_bins + 1)
 
-        self.flux_bins_centers: List[float] = []
-        bin_median_errors: List[float] = []
-        bin_std_errors: List[float] = []
+            self.flux_bins_centers: List[float] = []
+            bin_median_errors: List[float] = []
+            bin_std_errors: List[float] = []
 
-        for i in range(len(flux_bins) - 1):
-            low_f, high_f = flux_bins[i], flux_bins[i + 1]
-            # Ensure the last bin includes the maximum value
-            if i == len(flux_bins) - 2:
-                mask = (fluxes >= low_f) & (fluxes <= high_f)
-            else:
-                mask = (fluxes >= low_f) & (fluxes < high_f)
+            for i in range(len(flux_bins) - 1):
+                low_f, high_f = flux_bins[i], flux_bins[i + 1]
+                # Ensure the last bin includes the maximum value
+                if i == len(flux_bins) - 2:
+                    mask = (fluxes >= low_f) & (fluxes <= high_f)
+                else:
+                    mask = (fluxes >= low_f) & (fluxes < high_f)
 
-            errors_in_bin = errors[mask]
+                errors_in_bin = errors[mask]
 
-            if len(errors_in_bin) >= min_samples_per_bin:
-                self.flux_bins_centers.append(low_f + (high_f - low_f) / 2.0)  # Bin center
-                bin_median_errors.append(np.median(errors_in_bin))
-                bin_std_errors.append(np.std(errors_in_bin))
+                if len(errors_in_bin) >= min_samples_per_bin:
+                    self.flux_bins_centers.append(low_f + (high_f - low_f) / 2.0)  # Bin center
+                    bin_median_errors.append(np.median(errors_in_bin))
+                    bin_std_errors.append(np.std(errors_in_bin))
 
-        if len(self.flux_bins_centers) < 2:  # Need at least two points for interpolation
-            raise ValueError(
-                f"Could not create enough valid bins ({len(self.flux_bins_centers)}) "
-                f"for interpolation with min_samples_per_bin={min_samples_per_bin}. "
-                "Try reducing num_bins, adjusting flux_bins, or min_flux_for_binning."
-            )
+            if len(self.flux_bins_centers) < 2:  # Need at least two points for interpolation
+                raise ValueError(
+                    f"Could not create enough valid bins ({len(self.flux_bins_centers)}) "
+                    f"for interpolation with min_samples_per_bin={min_samples_per_bin}. "
+                    "Try reducing num_bins, adjusting flux_bins, or min_flux_for_binning."
+                )
+        else:
+            self.flux_bins_centers = flux_bins
 
         self.flux_bins_centers = np.array(self.flux_bins_centers)
         # Store the flux range for which the model is considered valid
@@ -1286,6 +1298,7 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
                 group = f[group_name]
                 flux_bins_centers = group["flux_bins_centers"][:]
                 mu_sigma_values = group["mu_sigma_values"][:]
+                sigma_sigma_values = group["sigma_sigma_values"][:]
                 num_bins = group.attrs["num_bins"]
                 flux_unit = group.attrs["flux_unit"]
                 min_flux_error = group.attrs["min_flux_error"]
@@ -1309,7 +1322,7 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
 
                 model = cls(
                     observed_fluxes=flux_bins_centers,
-                    observed_errors=mu_sigma_values,
+                    observed_errors=np.zeros_like(flux_bins_centers),  # Dummy
                     num_bins=num_bins,
                     flux_bins=flux_bins_centers,
                     log_bins=log_bins,
@@ -1325,6 +1338,9 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
                     max_flux_error=max_flux_error,
                     interpolation_flux_unit=interpolation_flux_unit,
                     min_flux_for_binning=min_flux_for_binning,
+                    already_binned=True,
+                    bin_median_errors=mu_sigma_values,
+                    bin_std_errors=sigma_sigma_values,
                 )
                 output[group_name] = model
 
