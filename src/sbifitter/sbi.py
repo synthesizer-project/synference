@@ -37,10 +37,11 @@ from ili.utils.samplers import (
 from ili.validation.metrics import PlotSinglePosterior, PosteriorCoverage
 from ili.validation.runner import ValidationRunner
 from joblib import dump, load
+from matplotlib.patches import FancyArrowPatch
 from optuna.trial import TrialState
 from scipy import stats
 from sklearn.preprocessing import StandardScaler
-from tqdm import tqdm
+from tqdm import tqdm, trange
 from unyt import Jy, nJy, unyt_array, unyt_quantity
 
 # astropy, scipy, matplotlib, tqdm, synthesizer, unyt, h5py, numpy,
@@ -57,6 +58,7 @@ from .utils import (
     f_jy_err_to_asinh,
     f_jy_to_asinh,
     load_grid_from_hdf5,
+    optimize_sfh_xlimit,
 )
 
 code_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -2125,7 +2127,9 @@ class SBI_Fitter:
             )
             feature_array[missing_mask] = feature_array_flags["missing_flux_value"]
         else:
-            print(f"Removing {np.sum(missing_mask)} observations with missing data.")
+            nmiss = np.sum(missing_mask)
+            if nmiss > 0:
+                print(f"Removing {nmiss} observations with missing data.")
             feature_array = feature_array[
                 :, ~missing_mask.any(axis=0)
             ]  # Remove columns with missing data
@@ -2155,6 +2159,8 @@ class SBI_Fitter:
         return_feature_array: bool = False,
         recover_SEDs: bool = False,
         plot_SEDs: bool = False,
+        check_out_of_distribution: bool = True,
+        simulator: Optional[GalaxySimulator] = None,
     ):
         """Infer posteriors for observational data.
 
@@ -2199,7 +2205,13 @@ class SBI_Fitter:
             model and recover the SEDs from the posterior samples.
         plot_SEDs : bool
             If True, plot the recovered SEDs. This will only work if recover_seds is True.
-
+        check_out_of_distribution : bool
+            If True, check if the feature array is in distribution using the
+            robust Mahalanobis method. This will raise an error if any row is out of
+            distribution. If False, no check is performed.
+        simulator : Optional[GalaxySimulator]
+            simulator: A GalaxySimulator object to use for generating the SED. Optional.
+            Will attempt to create one from the grid if not provided, or use the existing one.
 
         Returns:
         -------
@@ -2216,9 +2228,10 @@ class SBI_Fitter:
             override_transformations=override_transformations,
         )
 
-        self.test_in_distributon(
-            feature_array, direction="in", method="robust_mahalanobis", confidence=0.99
-        )
+        if check_out_of_distribution:
+            self.test_in_distributon(
+                feature_array, direction="in", method="robust_mahalanobis", confidence=0.99
+            )
 
         if return_feature_array:
             # If return_feature_array is True, return the feature array and the mask
@@ -2235,7 +2248,7 @@ class SBI_Fitter:
         print("Obtained posterior samples.")
 
         # Rearrange into correct shape for quantiles
-        samples = samples.transpose(2, 0, 1)
+        samples_quant = samples.transpose(2, 0, 1)
 
         if append_to_input:
             # Append the quantiles to the input DataFrame
@@ -2244,21 +2257,33 @@ class SBI_Fitter:
             table = Table()
         # Do quantiles, get column names from self.simple_fitted_parameter_names
         for i, param in enumerate(self.simple_fitted_parameter_names):
-            samples_i = samples[i, :, :]
+            samples_i = samples_quant[i, :, :]
             samples_q = np.quantile(samples_i, quantiles, axis=1)
             for j, quant in enumerate(samples_q):
                 table[f"{param}_{int(quantiles[j] * 100)}"] = np.nan
                 table[f"{param}_{int(quantiles[j] * 100)}"][~obs_mask] = quant
 
         if recover_SEDs:
-            for x_test in observations:
-                fnu_quantiles, wav, phot_fnu_draws, phot_wav = self.recover_SED(
-                    X_test=x_test,
-                    samples=samples,
-                    n_samples=num_samples,
+            if not hasattr(self, "simulator"):
+                raise RuntimeError(
+                    "No simulator found. Please create a simulator first or set recover_SEDs to False."  # noqa: E501
+                )
+
+            samples_sed = np.transpose(samples_quant, (1, 2, 0))
+            for pos, (obs_i, samples_i) in tqdm(
+                enumerate(zip(feature_array, samples_sed)),
+                total=len(feature_array),
+                desc="Recovering SEDs from posterior samples...",
+            ):
+                fnu_quantiles, wav, phot_fnu_draws, phot_wav, fig = self.recover_SED(
+                    X_test=obs_i,
+                    samples=samples_i,
+                    num_samples=num_samples,
                     sample_method=sample_method,
                     sample_kwargs=sample_kwargs,
                     plot=plot_SEDs,
+                    plot_name=f"{self.name}_SED_{pos}",
+                    simulator=simulator,
                 )
 
         return table
@@ -2841,6 +2866,7 @@ class SBI_Fitter:
         use_existing_indices: bool = True,
         evaluate_model: bool = True,
         save_method: str = "joblib",
+        num_posterior_draws_per_sample: int = 1000,
     ) -> tuple:
         """Run a single SBI training instance.
 
@@ -2904,6 +2930,8 @@ class SBI_Fitter:
                 Computes metrics like log probability and PIT.
             save_method: Method to save the model. Either 'torch', 'pickle',
                 'joblib' or 'h5py'. h5py not implented for model posteriors.
+            num_posterior_draws_per_sample: Number of posterior draws per sample
+                for computing metrics and diagnostic plots from the validation set.
 
         Returns:
             A tuple containing the posterior distribution and training statistics.
@@ -2914,17 +2942,17 @@ class SBI_Fitter:
         out_dir = os.path.join(os.path.abspath(out_dir), self.name)
 
         if name_append == "timestamp":
-            name_append = f"_{self._timestamp}"
+            name_append = f"{self._timestamp}"
 
-        print(f"{out_dir}/{self.name}{name_append}_params.pkl")
+        print(f"{out_dir}/{self.name}_{name_append}_params.pkl")
         run = False
-        if os.path.exists(f"{out_dir}/{self.name}{name_append}_params.pkl") and save_model:
+        if os.path.exists(f"{out_dir}/{self.name}_{name_append}_params.pkl") and save_model:
             if load_existing_model:
                 print(
-                    f"Loading existing model from {out_dir}/{self.name}{name_append}_params.pkl"  # noqa: E501
+                    f"Loading existing model from {out_dir}/{self.name}_{name_append}_params.pkl"  # noqa: E501
                 )
                 posterior, stats, params = self.load_model_from_pkl(
-                    f"{out_dir}/{self.name}{name_append}_posterior.pkl",
+                    f"{out_dir}/{self.name}_{name_append}_posterior.pkl",
                     set_self=set_self,
                 )
                 # return posterior, stats
@@ -3205,7 +3233,7 @@ class SBI_Fitter:
                 nets=nets,
                 train_args=train_args,
                 out_dir=out_dir if save_model else None,
-                name=f"{self.name}{name_append}_",
+                name=f"{self.name}_{name_append}_",
                 device=self.device,
             )
 
@@ -3281,7 +3309,7 @@ class SBI_Fitter:
                     if isinstance(value, torch.Tensor):
                         param_dict[key] = value.cpu().numpy()
 
-                save_path = f"{out_dir}/{self.name}{name_append}_params.pkl"
+                save_path = f"{out_dir}/{self.name}_{name_append}_params.pkl"
                 if save_method == "torch":
                     with open(save_path, "wb") as f:
                         torch.save(
@@ -3326,21 +3354,6 @@ class SBI_Fitter:
             X_scaled = self._X_train
             y_scaled = self._y_train
 
-        if evaluate_model:
-            metrics_path = f"{out_dir}/{self.name}{name_append}_metrics.json"
-            if not os.path.exists(metrics_path):
-                print("Evaluating model...")
-                metrics = self.evaluate_model(
-                    posteriors=posteriors,
-                    X_test=X_test,
-                    y_test=y_test,
-                )
-
-                # dump metrics to json file
-                metrics_path = f"{out_dir}/{self.name}{name_append}_metrics.json"
-                with open(metrics_path, "w") as f:
-                    json.dump(metrics, f, indent=4)
-
         if plot:
             if learning_type == "offline":
                 # Deal with the sampling method.
@@ -3357,6 +3370,7 @@ class SBI_Fitter:
                     stats=stats,
                     sample_method=sample_method,
                     posteriors=posteriors,
+                    num_samples=num_posterior_draws_per_sample,
                 )
             else:
                 self.plot_diagnostics(
@@ -3365,7 +3379,28 @@ class SBI_Fitter:
                     sample_method=sample_method,
                     posteriors=posteriors,
                     online=True,
+                    num_samples=num_posterior_draws_per_sample,
                 )
+
+        if evaluate_model:
+            metrics_path = f"{out_dir}/{self.name}_{name_append}_metrics.json"
+
+            samples_path = f"{out_dir}/online/plots/{name_append}/validation_samples.npy"
+            samples = samples_path if os.path.isfile(samples_path) else None
+            if not os.path.exists(metrics_path):
+                print("Evaluating model...")
+                metrics = self.evaluate_model(
+                    posteriors=posteriors,
+                    X_test=X_test,
+                    y_test=y_test,
+                    samples=samples,
+                    num_samples=num_posterior_draws_per_sample,
+                )
+
+                # dump metrics to json file
+                metrics_path = f"{out_dir}/{self.name}_{name_append}_metrics.json"
+                with open(metrics_path, "w") as f:
+                    json.dump(metrics, f, indent=4)
 
         return posteriors, stats
 
@@ -3504,9 +3539,11 @@ class SBI_Fitter:
         try:
             simulator = GalaxySimulator.from_grid(grid_path, **default_kwargs)
         except ValueError:
-            print("""Could not recreate simulator from grid. This model \
-                    may not be compatible. A GalaxySimulator object can \
-                    be provided manually to recover the SED.""")
+            print(
+                "Could not recreate simulator from grid. This model"
+                " may not be compatible. A GalaxySimulator object can"
+                " be provided manually to recover the SED."
+            )
             return None
 
         removed_params = flags.get("parameters_to_remove", [])
@@ -3529,7 +3566,7 @@ class SBI_Fitter:
         self,
         X_test: np.ndarray,
         samples: np.ndarray = None,
-        n_samples=1000,
+        num_samples=1000,
         sample_method: str = "direct",
         sample_kwargs: dict = {},
         posteriors=None,
@@ -3541,7 +3578,7 @@ class SBI_Fitter:
         true_parameters=[],
         plot_name=None,
         plots_dir=f"{code_path}/models/name/plots/",
-        sample_color="violet",
+        sample_color="darkorchid",
         param_labels=None,
         plot_closest_draw_to={},
     ):
@@ -3551,7 +3588,7 @@ class SBI_Fitter:
             X_test: The input observation to recover the SED for.
             samples: Samples from the posterior distribution.
                 if None, samples will be drawn from the posterior.
-            n_samples: Number of samples to draw from the posterior.
+            num_samples: Number of samples to draw from the posterior.
             sample_method: Method to sample from the posterior if samples is None.
                 Either 'direct' or 'emcee'.
             sample_kwargs: Additional keyword arguments for sampling.
@@ -3569,6 +3606,7 @@ class SBI_Fitter:
             plot_closest_draw_to: Dictionary of parameters and values
                 to plot closest draws. E.g. if you want to plot the closest draw
                 for a specific redshift, or mass, to see degeneracies in the posteriors.
+
         """
         if posteriors is None:
             posteriors = self.posteriors
@@ -3577,7 +3615,8 @@ class SBI_Fitter:
             marginalized_parameters = {}
 
         if simulator is None:
-            self.recreate_simulator_from_grid(set_self=True)
+            if not self.has_simulator:
+                self.recreate_simulator_from_grid(set_self=True)
 
             if not hasattr(self, "simulator"):
                 raise ValueError("Simulator must be provided or set in the object.")
@@ -3595,7 +3634,7 @@ class SBI_Fitter:
             samples = self.sample_posterior(
                 X_test=[X_test],
                 sample_method=sample_method,
-                num_samples=n_samples,
+                num_samples=num_samples,
                 posteriors=posteriors,
                 sample_kwargs=sample_kwargs,
             )
@@ -3612,7 +3651,8 @@ class SBI_Fitter:
         counter = 0
         if isinstance(simulator, GalaxySimulator):
             simulator.output_type = ["photo_fnu", "fnu", "sfh"]
-            for i in range(n_samples):
+            simulator.out_flux_unit = "nJy"
+            for i in trange(num_samples, desc="Running simulator on samples"):
                 params = {
                     self.simple_fitted_parameter_names[j]: samples[i, j]
                     for j in range(len(self.fitted_parameter_names))
@@ -3626,6 +3666,8 @@ class SBI_Fitter:
                     filters = output["filters"]
                 wav_draws.append(output["fnu_wav"])
                 fnu_draws.append(output["fnu"])
+                if np.sum(np.isnan(output["fnu"])) > 0:
+                    print(f"Warning! NaN values found in fnu draw {i}.", output["fnu"])
                 phot_fnu_draws.append(output["photo_fnu"])
                 sfh.append(output["sfh"])
                 if np.isnan(output["sfh"]).any():
@@ -3637,7 +3679,8 @@ class SBI_Fitter:
         phot_fnu_draws = np.array(phot_fnu_draws)
         wav_draws = np.array(wav_draws)
         sfh = np.array(sfh)
-        print(f"Number of NaN SFH: {counter}")
+        if counter > 0:
+            print(f"Number of NaN SFH: {counter}")
 
         extra_indexes = []
         extra_labels = []
@@ -3659,30 +3702,41 @@ class SBI_Fitter:
                     extra_indexes.append(closest_index)
                     extra_labels.append(f"{key}={value}")
 
-        fnu_quantiles = np.quantile(fnu_draws, [0.16, 0.5, 0.84], axis=0)
-        phot_fnu_quantiles = np.quantile(phot_fnu_draws, [0.16, 0.5, 0.84], axis=0)
+        fnu_quantiles = np.nanquantile(fnu_draws, [0.16, 0.5, 0.84], axis=0)
+        phot_fnu_quantiles = np.nanquantile(phot_fnu_draws, [0.16, 0.5, 0.84], axis=0)
         sfh_quantiles = np.nanquantile(sfh, [0.16, 0.5, 0.84], axis=0)
-        wav = np.mean(wav_draws, axis=0)
+        wav = np.nanmean(wav_draws, axis=0)
+
+        # Convert fnu_quantiles
+        if phot_unit == "AB":
+            # Convert to AB mag
+            fnu_quantiles = -2.5 * np.log10(fnu_quantiles) + 31.4
+            phot_fnu_quantiles = -2.5 * np.log10(phot_fnu_quantiles) + 31.4
+            fnu_draws = -2.5 * np.log10(fnu_draws) + 31.4
+        else:
+            fnu_quantiles = fnu_quantiles.to(phot_unit)
+            phot_fnu_quantiles = phot_fnu_quantiles.to(phot_unit)
+            fnu_draws = fnu_draws.to(phot_unit)
+
         plot_sfh = True
         if plot:
             fig = plt.Figure(figsize=(8, 6), dpi=200, constrained_layout=True)
-            gridspec = fig.add_gridspec(2, len(self.fitted_parameter_names), height_ratios=[1, 0.6])
+            ngrid = len(self.fitted_parameter_names) // 5 + 1
+            gridspec = fig.add_gridspec(1 + ngrid, 5, height_ratios=[1] + [0.4] * ngrid)
             ax = fig.add_subplot(gridspec[0, :])
 
             if plot_sfh:
                 # inset axes for SFH inside ax
-                inset_ax = fig.add_axes([0.71, 0.55, 0.25, 0.25])
+                inset_ax = fig.add_axes([0.78, 0.65, 0.18, 0.18])
                 # plot the SFH
-                # temp
-                time = output["sfh_time"]
                 inset_ax.plot(
-                    time,
+                    output["sfh_time"],
                     sfh_quantiles[1],
                     label="Median SFH",
                     color=sample_color,
                 )
                 inset_ax.fill_between(
-                    time,
+                    output["sfh_time"],
                     sfh_quantiles[0],
                     sfh_quantiles[2],
                     alpha=0.5,
@@ -3690,7 +3744,8 @@ class SBI_Fitter:
                     color=sample_color,
                 )
                 # Don't let the time go beyond 0
-                inset_ax.set_xlim(0, 1000)
+                new_lim = optimize_sfh_xlimit(inset_ax)
+                inset_ax.set_xlim(0, new_lim)
                 inset_ax.set_xlabel("Lookback Time (Myr)", fontsize=10)
                 inset_ax.set_ylabel(r"M$_{\odot} \rm \ yr^{-1}$", fontsize=10)
                 # Reduced xlabel size
@@ -3713,8 +3768,9 @@ class SBI_Fitter:
                 color=sample_color,
                 zorder=7,
             )
+
             for f, lam in zip(fnu_draws, wav_draws):
-                ax.plot(lam, f, color="violet", alpha=0.05, lw=0.2, zorder=5)
+                ax.plot(lam, f, color=sample_color, alpha=0.01, lw=0.14, zorder=5)
 
             if len(extra_indexes) > 0:
                 for i, index in enumerate(extra_indexes):
@@ -3734,9 +3790,8 @@ class SBI_Fitter:
 
             # Try and match filters names to feature names
             # and plot the photometry we have been given
-            filter_codes = [i.split("/")[-1] for i in filters.filter_codes]
-
-            if true_parameters is not None:
+            # filter_codes = [i.split("/")[-1] for i in filters.filter_codes]
+            if true_parameters is not None and len(true_parameters) > 0:
                 # make dict
                 true_parameters_dict = {
                     self.simple_fitted_parameter_names[j]: true_parameters[j]
@@ -3778,7 +3833,7 @@ class SBI_Fitter:
             labelled = False
             phots = []
 
-            for pos, filter in enumerate(filter_codes):
+            for pos, filter in enumerate(filters.filter_codes):
                 index = self.feature_names.index(filter)
                 phot = X_test[index]
                 phots.append(phot)
@@ -3789,7 +3844,7 @@ class SBI_Fitter:
             show_lims = phots > (median_phot + max_phot_diff)
             phots[show_lims] = median_phot + max_phot_diff
 
-            for pos, filter in enumerate(filter_codes):
+            for pos, filter in enumerate(filters.filter_codes):
                 if filter in self.feature_names:
                     if f"unc_{filter}" in self.feature_names:
                         # Get the index of the filter
@@ -3802,7 +3857,6 @@ class SBI_Fitter:
                     if show_lims[pos]:
                         # phot = median_phot + max_phot_diff
                         # Plot a downward arrow patch
-                        from matplotlib.patches import FancyArrowPatch
 
                         phot = median_phot + max_phot_diff
                         ax.add_patch(
@@ -3840,7 +3894,7 @@ class SBI_Fitter:
                                 markersize=5,
                                 linestyle="None",
                             )
-                    labelled = True
+                        labelled = True
 
                 # Plot the photometry we have drawn from the posterior
 
@@ -3871,12 +3925,12 @@ class SBI_Fitter:
             min_x, max_x = filters.get_non_zero_lam_lims()
 
             phots = np.array(phots)
-            max_phot = 1.01 * np.nanmax(phots[phots < 35])
+            max_phot = 1.03 * np.nanmax(phots[phots < 35])
 
             ax.set_xlim(min_x, max_x)
             fnu_lam_mask = (wav > min_x) & (wav < max_x)
-            max_f = min(1.01 * np.nanmax(fnu_quantiles[2][fnu_lam_mask]), max_phot)
-            min_f = 0.99 * np.nanmin(fnu_quantiles[0][fnu_lam_mask])
+            max_f = min(1.03 * np.nanmax(fnu_quantiles[2][fnu_lam_mask]), max_phot)
+            min_f = 0.97 * np.nanmin(fnu_quantiles[0][fnu_lam_mask])
 
             ax.set_ylim(min_f, max_f)
             ax.legend(fontsize=8, loc="upper left")
@@ -3891,7 +3945,13 @@ class SBI_Fitter:
 
             # Add a row of axis underneath and plot histograms of parameters
             for i, param in enumerate(param_labels):
-                ax = fig.add_subplot(gridspec[1, i])
+                if i > 4:
+                    jax = (1 + i // 5) % 5
+                    iax = i % 5
+                else:
+                    jax = 1
+                    iax = i
+                ax = fig.add_subplot(gridspec[jax, iax])
                 ax.hist(
                     samples[:, i],
                     bins=50,
@@ -3918,15 +3978,28 @@ class SBI_Fitter:
                             linestyle="--",
                             label=extra_labels[j],
                         )
+                percentiles = np.nanpercentile(samples[:, i], [16, 50, 84])
+                upper = percentiles[2] - percentiles[1]
+                lower = percentiles[1] - percentiles[0]
+                ax.text(
+                    0.04,
+                    0.96,
+                    f"${percentiles[1]:.2f}^{{+{upper:.2f}}}_{{-{lower:.2f}}}$",
+                    transform=ax.transAxes,
+                    fontsize=8,
+                    verticalalignment="top",
+                    horizontalalignment="left",
+                    bbox=dict(boxstyle="round", facecolor="white", alpha=0.8),
+                )
 
             if plot_name is None:
                 plot_name = f"{self.name}_SED_{self._timestamp}.png"
             fig.savefig(os.path.join(plots_dir, plot_name), dpi=200)
 
-            return fig
-
         else:
-            return fnu_quantiles, wav, phot_fnu_draws, phot_wav
+            fig = None
+
+        return fnu_quantiles, wav, phot_fnu_draws, phot_wav, fig
 
     def sample_posterior(
         self,
@@ -3972,12 +4045,10 @@ class SBI_Fitter:
             sampler = VISampler
         else:
             raise ValueError("Invalid sample method. Use 'direct', 'emcee'/'mcmc', 'pyro' or 'vi'.")
-
         sampler = sampler(posteriors, **sample_kwargs)
 
         # Properly check dimensionality and shape
         X_test_array = np.asarray(X_test)  # Ensure it's a numpy array
-
         # Handle single sample case
         if X_test_array.ndim == 1 or (X_test_array.ndim == 2 and X_test_array.shape[0] == 1):
             return sample_with_timeout(sampler, num_samples, X_test_array, timeout_seconds_per_test)
@@ -3991,7 +4062,7 @@ class SBI_Fitter:
         # Draw samples from the posterior
         samples = np.zeros((len(X_test_array), num_samples, shape[1]))
         samples[0] = test_sample  # First sample is already drawn
-        for i in tqdm(range(1, len(X_test_array)), desc="Sampling from posterior"):
+        for i in trange(1, len(X_test_array), desc="Sampling from posterior"):
             try:
                 samples[i] = sample_with_timeout(
                     sampler,
@@ -4020,6 +4091,7 @@ class SBI_Fitter:
         verbose: bool = True,
         samples=None,
         independent_metrics: bool = True,
+        return_samples: bool = False,
     ) -> dict:
         """Evaluate the trained model on test data.
 
@@ -4063,6 +4135,7 @@ class SBI_Fitter:
             samples: Precomputed samples from the posterior. If None, will draw samples
                 from the posterior using the `sample_posterior` method.
             independent_metrics: If True, calculate metrics independently for each parameter.
+            return_samples: If True, return the samples used for evaluation.
 
         Raises:
             ValueError: If posteriors or test data are not provided.
@@ -4083,9 +4156,27 @@ class SBI_Fitter:
             else:
                 raise ValueError("X_test and y_test must be provided or set in the object.")
 
-        if samples is None:
+        if isinstance(samples, str):
+            # Load samples from a file
+            if samples.endswith(".npy"):
+                samples = np.load(samples)
+            elif samples.endswith(".pt") or samples.endswith(".pth"):
+                samples = torch.load(samples).numpy()
+            else:
+                raise ValueError("Unsupported file format for samples. Use .npy or .pt/.pth.")
+
+        elif samples is None:
             # Draw samples from the posterior
             samples = self.sample_posterior(X_test, num_samples=num_samples, posteriors=posteriors)
+
+        assert samples.ndim == 3, (
+            "Samples must have shape (num_objects, num_samples, num_parameters)."
+        )
+        assert samples.shape[0] == len(X_test), "Samples must match the number of test samples."
+        if samples.shape[1] != num_samples:
+            raise ValueError(
+                f"Samples must have {num_samples} samples per test sample, but got {samples.shape[1]}."  # noqa E501
+            )
 
         # Calculate basic metrics
         mean_pred = np.mean(samples, axis=1)
@@ -4110,7 +4201,7 @@ class SBI_Fitter:
         log_dpit_max = -0.5 * np.log(dpit_max)
 
         # has shape (200, 1000, 6)
-        # need n_samples, n_sims, n_dims).
+        # need num_samples, n_sims, n_dims).
         tarp_samples = np.transpose(samples, (1, 0, 2))
 
         # Calculate metrics
@@ -4145,12 +4236,12 @@ class SBI_Fitter:
             full_metrics = []
 
             for metric in metrics:
-                print(metric, type(metrics[metric]))
+                # print(metric, type(metrics[metric]))
                 if (
                     isinstance(metrics[metric], (np.ndarray, list, torch.Tensor, jnp.ndarray))
                     and hasattr(metrics[metric], "__len__")
                     and len(metrics[metric]) == len(self.fitted_parameter_names)
-                ):  
+                ):
                     try:
                         metric = metric.tolist()
                         metrics[metric] = metrics[metric].tolist()
@@ -4228,7 +4319,10 @@ class SBI_Fitter:
             if isinstance(metrics[key], (np.float32, np.float64)):
                 metrics[key] = float(metrics[key])
 
-        return metrics
+        if return_samples:
+            return metrics, samples
+        else:
+            return metrics
 
     def plot_diagnostics(
         self,
@@ -4241,6 +4335,7 @@ class SBI_Fitter:
         sample_method: str = "direct",
         posteriors: object = None,
         online: bool = False,
+        num_samples: int = 1000,
     ) -> None:
         """Plot the diagnostics of the SBI model.
 
@@ -4255,6 +4350,8 @@ class SBI_Fitter:
                 'pyro', or 'vi'.
             posteriors: List of posterior distributions. If None, will use self.posteriors
             online: If True, will not plot the posterior and coverage.
+            num_samples: Number of samples to draw from the posterior for plotting for
+            each test sample. Samples will be saved in the plots_dir.
         """
         plots_dir = plots_dir.replace("name", self.name)
         if not os.path.exists(plots_dir):
@@ -4290,6 +4387,7 @@ class SBI_Fitter:
                 plots_dir=plots_dir,
                 sample_method=sample_method,
                 posteriors=posteriors,
+                num_samples=num_samples,
             )
 
         # Plot the coverage
@@ -4299,6 +4397,7 @@ class SBI_Fitter:
             plots_dir=plots_dir,
             sample_method=sample_method,
             posteriors=posteriors,
+            num_samples=num_samples,
         )
 
     def plot_loss(
@@ -4723,8 +4822,15 @@ class SBI_Fitter:
             labels=self.simple_fitted_parameter_names,
             plot_list=plot_list,
             out_dir=plots_dir,
+            save_samples=True,
             **sample_kwargs,
         )
+
+        # samples dir is
+        samples_path = f"{plots_dir}/single_samples.npy"
+        # move file to validation_samples.npy
+        if os.path.exists(samples_path):
+            os.rename(samples_path, f"{plots_dir}/validation_samples.npy")
 
         if posteriors is None:
             posteriors = self.posteriors
@@ -4946,7 +5052,7 @@ class SBI_Fitter:
         """Get the current date and time as a string."""
         return datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    def generate_pairs_from_simulator(self, n_samples=1000):
+    def generate_pairs_from_simulator(self, num_samples=1000):
         """Generate pairs of data from the simulator."""
         if not self.has_simulator:
             raise ValueError("No simulator found. Please provide a simulator.")
@@ -4957,7 +5063,7 @@ class SBI_Fitter:
         if self._prior is None:
             raise ValueError("No prior found. Please provide a prior.")
 
-        samples = self._prior.sample_n(n_samples)
+        samples = self._prior.sample_n(num_samples)
 
         phot = []
         for i in range(len(samples)):
@@ -4987,9 +5093,9 @@ class MissingPhotometryHandler:
         Parameters:
         -----------
         training_photometry : np.ndarray
-            Training set photometry with shape (n_samples, n_bands)
+            Training set photometry with shape (num_samples, n_bands)
         training_parameters : np.ndarray
-            Training set parameters with shape (n_samples, n_params)
+            Training set parameters with shape (num_samples, n_params)
         posterior_estimator : callable, optional
             SBI model that returns posterior for a given SED
         run_params : dict, optional
@@ -5530,14 +5636,14 @@ class Simformer_Fitter(SBI_Fitter):
             from .simformer import GalaxyPhotometryTask as task_func
 
         if name_append == "timestamp":
-            name_append = f"_{self._timestamp}"
+            name_append = f"{self._timestamp}"
 
         out_path = f"{code_path}/models/{self.name}/{self.name}{name_append}_posterior.pkl"
         if load_existing_model and os.path.exists(out_path):
             print(f"Loading existing model from {out_path}")
             trained_score_model, meta = self.load_model_from_pkl(
                 model_dir=f"{code_path}/models/{self.name}/",
-                model_name=f"{self.name}{name_append}_posterior",
+                model_name=f"{self.name}_{name_append}_posterior",
                 set_self=set_self,
             )
             run = True
@@ -5663,7 +5769,7 @@ class Simformer_Fitter(SBI_Fitter):
             num_evaluations=25,
             rng_seed=random_seed,
             plots_dir=f"{code_path}/models/{self.name}/plots/{name_append}/",
-            metric_path=f"{code_path}/models/{self.name}/{self.name}{name_append}_metrics.json",
+            metric_path=f"{code_path}/models/{self.name}/{self.name}_{name_append}_metrics.json",
         )
 
     def load_model_from_pkl(
@@ -5736,6 +5842,9 @@ class Simformer_Fitter(SBI_Fitter):
 
         if not os.path.exists(output_folder):
             os.makedirs(output_folder)
+
+        if len(name_append) == 0 and name_append[0] != "_":
+            name_append = f"_{name_append}"
 
         file_name = os.path.join(output_folder, f"{self.name}{name_append}_posterior.pkl")
 
@@ -6131,7 +6240,7 @@ class Simformer_Fitter(SBI_Fitter):
         """
 
         nbatches = int(np.ceil(X_test.shape[0] / batch_size))
-        for batch_idx in tqdm(range(nbatches), desc="Sampling from posterior"):
+        for batch_idx in trange(nbatches, desc="Sampling from posterior"):
             start_idx = batch_idx * batch_size
             end_idx = min((batch_idx + 1) * batch_size, X_test.shape[0])
             x_batch = jnp.array(X_test[start_idx:end_idx], dtype=jnp.float32)
