@@ -17,6 +17,7 @@ from dill.source import getsource
 from matplotlib.ticker import FuncFormatter, ScalarFormatter
 from scipy.linalg import inv
 from scipy.stats import qmc
+
 try:
     from synthesizer.conversions import lnu_to_fnu
     from synthesizer.emission_models import EmissionModel
@@ -27,9 +28,10 @@ try:
     from synthesizer.parametric import SFH, Galaxy, Stars, ZDist
     from synthesizer.particle.stars import sample_sfzh
     from synthesizer.pipeline import Pipeline
+
     synthesizer_available = True
-except Exception as e:
-    print('Synthesizer dependencies not installed. Only the SBI functions will be available.')
+except Exception:
+    print("Synthesizer dependencies not installed. Only the SBI functions will be available.")
     synthesizer_available = False
 
 from tqdm import tqdm
@@ -80,21 +82,46 @@ UNIT_DICT = {
 if not synthesizer_available:
     # Make dummy classes for type checking
     class SFH:
+        """Dummy class for SFH to allow type checking without synthesizer installed."""
+
         class Common:
+            """Dummy class."""
+
             pass
+
     class ZDist:
+        """Dummy class."""
+
         class Common:
+            """Dummy class."""
+
             pass
+
     class EmissionModel:
+        """Dummy class."""
+
         pass
+
     class Galaxy:
+        """Dummy class."""
+
         pass
+
     class Grid:
+        """Dummy class."""
+
         pass
+
     class Instrument:
+        """Dummy class."""
+
         pass
+
     class Pipeline:
+        """Dummy class."""
+
         pass
+
 
 def calculate_muv(galaxy, cosmo=Planck18):
     """Calculate the MUV magnitude of a galaxy.
@@ -3961,6 +3988,7 @@ class GalaxySimulator(object):
         noise_models: Union[None, Dict[str, EmpiricalUncertaintyModel]] = None,
         fixed_params: dict = None,
         photometry_to_remove=None,
+        ignore_params: list = None,
     ) -> None:
         """Parameters
 
@@ -4036,6 +4064,8 @@ class GalaxySimulator(object):
             This is used to remove specific filters from the output.
             If None, no photometry is removed. Default is None.
             Should match filter codes in the instrument filters.
+        ignore_params : list
+            List of parameters which are sampled which won't be checked for use against the model.
 
         """
         if fixed_params is None:
@@ -4052,6 +4082,8 @@ class GalaxySimulator(object):
             photometry_to_remove = []
         if not isinstance(required_keys, list):
             raise TypeError(f"required_keys must be a list. Got {type(required_keys)} instead.")
+        if ignore_params is None:
+            ignore_params = []
 
         assert isinstance(grid, Grid), f"Grid must be a subclass of Grid. Got {type(grid)} instead."
         self.grid = grid
@@ -4076,6 +4108,7 @@ class GalaxySimulator(object):
         self.normalize_method = normalize_method
         self.fixed_params = fixed_params
         self.depths = depths
+        self.ignore_params = ignore_params
 
         if len(photometry_to_remove) > 0:
             filter_codes = instrument.filters.filter_codes
@@ -4512,10 +4545,13 @@ class GalaxySimulator(object):
                 if key in self.emitter_params[param]:
                     found = True
                     break
+                if key in self.ignore_params:
+                    found = True
+                    break
             if not found:
+                print(f"Emitter params are {self.emitter_params}")
                 raise ValueError(
-                    f"""Parameter {key} not found in emitter params.
-                    Cannot create photometry."""
+                    f"Parameter {key} not found in emitter params.Cannot create photometry."
                 )
 
             else:
@@ -4523,10 +4559,10 @@ class GalaxySimulator(object):
 
         # Check we understand all the parameters
 
-        assert (
-            len(found_params) == self.num_emitter_params
-        ), f"""Found {len(found_params)} parameters but expected
-            {self.num_emitter_params}. Cannot create photometry."""
+        assert len(found_params) - len(self.ignore_params) == self.num_emitter_params, (
+            f"Found {len(found_params)} parameters but expected {self.num_emitter_params}."
+            "Cannot create photometry."
+        )
 
         stellar_keys = {}
         if "stellar" in self.emitter_params:
@@ -4576,14 +4612,14 @@ class GalaxySimulator(object):
 
         if "lnu" in self.output_type:
             fluxes = spec.lnu
-            outputs["lnu"] = fluxes
+            outputs["lnu"] = copy.deepcopy(fluxes)
 
         if "photo_lnu" in self.output_type:
             fluxes = galaxy.stars.spectra[self.emission_model_key].get_photo_lnu(
                 self.instrument.filters
             )
             fluxes = fluxes.photo_lnu
-            outputs["photo_lnu"] = fluxes
+            outputs["photo_lnu"] = copy.deepcopy(fluxes)
 
         if "fnu" in self.output_type or "photo_fnu" in self.output_type:
             # Apply IGM and distance
@@ -4593,13 +4629,14 @@ class GalaxySimulator(object):
                 fluxes = galaxy.stars.spectra[self.emission_model_key].get_photo_fnu(
                     self.instrument.filters
                 )
-                outputs["photo_fnu"] = fluxes.photo_fnu
-                outputs["photo_wav"] = fluxes.filters.pivot_lams
+                outputs["photo_fnu"] = copy.deepcopy(fluxes.photo_fnu)
+                outputs["photo_wav"] = copy.deepcopy(fluxes.filters.pivot_lams)
 
-                fluxes = galaxy.stars.spectra[self.emission_model_key].fnu
-                outputs["fnu"] = fluxes
-                outputs["fnu_wav"] = galaxy.stars.spectra[self.emission_model_key].lam * (
-                    1 + galaxy.redshift
+                fluxes = galaxy.stars.spectra[self.emission_model_key]
+                outputs["fnu"] = copy.deepcopy(fluxes.fnu)
+                # print(np.sum(np.isnan(fluxes)), np.sum(fluxes == 0))
+                outputs["fnu_wav"] = copy.deepcopy(
+                    galaxy.stars.spectra[self.emission_model_key].lam * (1 + galaxy.redshift)
                 )
 
         if self.out_flux_unit == "AB":
@@ -4609,9 +4646,11 @@ class GalaxySimulator(object):
 
             if "photo_fnu" in self.output_type:
                 fluxes = convert(outputs["photo_fnu"])
-                outputs["photo_fnu"] = fluxes
+                outputs["photo_fnu"] = copy.deepcopy(fluxes)
             if "fnu" in self.output_type:
                 fluxes = convert(outputs["fnu"])
+                # turn inf to nan
+                fluxes[np.isinf(fluxes)] = 99
                 outputs["fnu"] = fluxes
         elif self.out_flux_unit == "asinh":
             raise NotImplementedError(
@@ -4620,9 +4659,9 @@ class GalaxySimulator(object):
             )
         else:
             if "photo_fnu" in self.output_type:
-                outputs["photo_fnu"] = fluxes.to(self.out_flux_unit).value
+                outputs["photo_fnu"] = outputs["photo_fnu"].to(self.out_flux_unit).value
             if "fnu" in self.output_type:
-                outputs["fnu"] = fluxes.to(self.out_flux_unit).value
+                outputs["fnu"] = outputs["fnu"].to(self.out_flux_unit).value
 
         if len(self.output_type) == 1:
             fluxes = outputs[self.output_type[0]]
