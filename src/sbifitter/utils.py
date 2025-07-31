@@ -1434,6 +1434,72 @@ def compare_methods_feature_importance(base_distribution, observations, feature_
     return results
 
 
+def optimize_sfh_xlimit(ax, mass_threshold=0.001, buffer_fraction=0.2):
+    """Stolen from EXPANSE.
+
+    Optimizes the x-axis limits of a matplotlib plot containing SFR histories
+    to focus on periods after each galaxy has formed a certain fraction of its final mass.
+    Calculates cumulative mass from SFR data.
+
+    Parameters:
+    -----------
+    ax : matplotlib.axes.Axes
+        The axes object containing the SFR plots (SFR/yr vs time)
+    mass_threshold : float, optional
+        Fraction of final stellar mass to use as threshold (default: 0.01 for 1%)
+    buffer_fraction : float, optional
+        Fraction of the active time range to add as buffer (default: 0.1)
+
+    Returns:
+    --------
+    float
+        The optimal maximum x value for the plot
+    """
+    # Get all lines from the plot
+    lines = ax.get_lines()
+    if not lines:
+        raise ValueError("No lines found in the plot")
+
+    # Initialize variables to track the earliest time reaching mass threshold
+    earliest_activity = 0
+
+    # Check each line
+    for line in lines:
+        # Get the x and y data
+        xdata = line.get_xdata()
+        ydata = line.get_ydata()  # This is SFR/yr
+
+        # Calculate time intervals (assuming uniform spacing)
+        dt = np.abs(xdata[1] - xdata[0])
+
+        # Calculate cumulative mass formed
+        # Integrate SFR from observation time (x=0) backwards
+        # Remember: x-axis is negative lookback time, so we need to flip the integration
+        cumulative_mass = np.cumsum(ydata[::-1] * dt)[::-1]
+
+        # Normalize by total mass formed
+        total_mass = cumulative_mass[0]  # Mass at observation time
+        normalized_mass = cumulative_mass / total_mass
+
+        # Find indices where normalized mass exceeds threshold
+        active_indices = np.where(normalized_mass >= mass_threshold)[0]
+
+        if len(active_indices) > 0:
+            # Find the earliest time reaching threshold for this line
+            earliest_this_line = xdata[active_indices[-1]]  # Using -1 since time goes backwards
+
+            earliest_activity = max(earliest_activity, earliest_this_line)
+
+    if earliest_activity == 0:
+        raise ValueError("No galaxies found reaching the mass threshold")
+
+    # Add buffer to the range
+    buffer = abs(earliest_activity) * buffer_fraction
+    new_xlimit = earliest_activity + buffer
+
+    return new_xlimit
+
+
 # Example usage
 if __name__ == "__main__":
     # Generate sample data with known feature importance
