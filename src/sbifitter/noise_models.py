@@ -1,8 +1,10 @@
 """Noise models for photometric fluxes."""
 
 import copy
+from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
+import h5py  # Import h5py at the top level
 import matplotlib.pyplot as plt
 import numpy as np
 from astropy import units as u
@@ -14,7 +16,7 @@ from unyt import Jy, Unit, unyt_array
 from .utils import f_jy_err_to_asinh, f_jy_to_asinh
 
 
-class UncertaintyModel:
+class UncertaintyModel(ABC):
     """base class for uncertainty models.
 
     This class defines the interface for uncertainty models that can
@@ -41,38 +43,51 @@ class UncertaintyModel:
         """
         self.per_filter = per_filter
         self.return_noise = return_noise
-
         self.parameters = kwargs
 
+    def apply_scalings(
+        self,
+        flux: Union[np.ndarray, unyt_array],
+        flux_error: Union[np.ndarray, unyt_array],
+        **kwargs,
+    ) -> Tuple[Union[np.ndarray, unyt_array], Union[np.ndarray, unyt_array]]:
+        """Apply model-specific scalings (units, limits) without scattering."""
+        raise NotImplementedError("This method should be implemented in subclasses.")
+
+    @abstractmethod
     def apply_noise_to_flux(self):
         """Apply noise to the flux based on the model."""
         pass
 
-    def _phot_ab_to_jy(self, flux: float) -> unyt_array:
+    @staticmethod
+    def _phot_ab_to_jy(flux: float) -> unyt_array:
         """Convert AB magnitude to Jy flux."""
         return 10 ** (-0.4 * (flux + 8.9)) * Jy
 
-    def _phot_jy_to_ab(self, flux: unyt_array) -> float:
+    @staticmethod
+    def _phot_jy_to_ab(flux: unyt_array) -> float:
         """Convert Jy flux to AB magnitude."""
         return -2.5 * np.log10(flux.to(Jy).value) + 8.9
 
-    def _phot_err_ab_to_jy(self, flux: unyt_array, error: np.ndarray) -> unyt_array:
+    @staticmethod
+    def _phot_err_ab_to_jy(flux: unyt_array, error: np.ndarray) -> unyt_array:
         """Convert AB magnitude error to Jy flux error."""
         flux = flux.to(Jy)
         return (np.log(10) * flux * error) / 2.5
 
-    def _phot_err_jy_to_ab(self, flux: unyt_array, error: unyt_array) -> np.ndarray:
+    @staticmethod
+    def _phot_err_jy_to_ab(flux: unyt_array, error: unyt_array) -> np.ndarray:
         """Convert Jy flux error to AB magnitude error."""
         return 2.5 / np.log(10) * (error / flux.to(Jy).value)
 
-    def _phot_jy_to_asinh(
-        self, flux: unyt_array, asinh_softening_parameter: unyt_array
-    ) -> unyt_array:
+    @staticmethod
+    def _phot_jy_to_asinh(flux: unyt_array, asinh_softening_parameter: unyt_array) -> unyt_array:
         """Convert Jy flux to asinh magnitude."""
         return f_jy_to_asinh(flux, asinh_softening_parameter)
 
+    @staticmethod
     def _phot_err_jy_to_asinh(
-        self, flux: unyt_array, error: unyt_array, asinh_softening_parameter: unyt_array
+        flux: unyt_array, error: unyt_array, asinh_softening_parameter: unyt_array
     ) -> unyt_array:
         """Convert Jy flux error to asinh magnitude error."""
         return f_jy_err_to_asinh(flux, error, asinh_softening_parameter)
@@ -175,72 +190,80 @@ class UncertaintyModel:
 
         return model_flux_error
 
-    def serialize_to_hdf5(self, hdf5_file: str, group_name: str):
-        """Serialize the model to an HDF5 file."""
+    @abstractmethod
+    def serialize_to_hdf5(self, hdf5_group: h5py.Group) -> None:
+        """Serializes the model's state into the given HDF5 group."""
+        raise NotImplementedError("This method should be implemented in subclasses.")
+
+    @classmethod
+    @abstractmethod
+    def _from_hdf5_group(cls, hdf5_group: h5py.Group) -> "UncertaintyModel":
+        """Loads a model instance from an HDF5 group."""
         raise NotImplementedError("This method should be implemented in subclasses.")
 
     def __getstate__(self) -> Dict[str, Any]:
-        """Prepare a serializable state dictionary for pickling.
-
-        Converts array-like attributes to basic Python lists.
-        """
+        """Prepare a serializable state dictionary for pickling."""
         state: Dict[str, Any] = {}
-        for attr in self.__dict__:
-            # Use a default value of None if the attribute doesn't exist
-            value = getattr(self, attr, None)
-
-            # Use a single if/elif/else chain to handle conversions
+        for attr, value in self.__dict__.items():
             if isinstance(value, (np.ndarray, unyt_array, Column)):
-                # For any array-like type, convert to a list for serialization
                 state[attr] = np.array(value)
             elif callable(value):
-                # Skip callable attributes (like methods)
                 continue
             else:
-                # Keep all other types (lists, ints, floats, str, etc.) as they are
                 state[attr] = value
-
         return state
 
     def __setstate__(self, state: Dict[str, Any]) -> None:
         """Restore the object's state from a pickled state dictionary."""
-        # get args with inspect
         import inspect
 
-        args = inspect.getfullargspec(self.__init__).args
-        # Filter out 'self' from the args
-        args = [arg for arg in args if arg != "self"]
-        # Create a dictionary with the state values for the init args
-        args = {arg: state.get(arg, None) for arg in args}
+        init_args = inspect.getfullargspec(self.__init__).args
+        init_args.remove("self")
 
-        self.__init__(**args)
+        constructor_state = {arg: state.get(arg) for arg in init_args if arg in state}
+        self.__init__(**constructor_state)
+
+        # Restore other attributes not in constructor
+        for key, value in state.items():
+            if not hasattr(self, key):
+                setattr(self, key, value)
 
 
 class DepthUncertaintyModel(UncertaintyModel):
     """An uncertainty model that applies noise based on a depth value."""
 
     def __init__(self, depth: unyt_array, depth_sigma=5, **kwargs):
-        """Initialize the model with a depth value.
-
-        Args:
-            depth: The depth value to use for noise application.
-            depth_sigma: The standard deviation of the noise to apply.
-            **kwargs: Additional keyword arguments to pass to the parent class.
-        """
+        """Initialize the model with a depth value."""
         self.depth = depth
         self.depth_sigma = depth_sigma
-
         self.sigma = self.depth / self.depth_sigma
 
-        kwargs = {
+        init_kwargs = {
             "depth": self.depth,
             "depth_sigma": self.depth_sigma,
-            "sigma": self.sigma,
             "per_filter": True,
             **kwargs,
         }
+        super().__init__(**init_kwargs)
 
-        super().__init__(**kwargs)
+    def apply_scalings(
+        self,
+        flux: Union[np.ndarray, unyt_array],
+        flux_error: Union[np.ndarray, unyt_array],
+        flux_units: Union[str, Unit] = "AB",
+        out_units: Optional[str] = "Jy",
+    ) -> Tuple[Union[np.ndarray, unyt_array], Union[np.ndarray, unyt_array]]:
+        """Applies unit conversions consistent with the model."""
+        scaled_flux = self.handle_flux_conversion(
+            model_flux=flux, model_flux_units=flux_units, out_units=out_units
+        )
+        scaled_error = self.handle_flux_error_conversion(
+            model_flux=flux,
+            model_flux_units=flux_units,
+            model_flux_error=flux_error,
+            out_units=out_units,
+        )
+        return scaled_flux, scaled_error
 
     def apply_noise_to_flux(
         self,
@@ -251,10 +274,9 @@ class DepthUncertaintyModel(UncertaintyModel):
         flux = self.handle_flux_conversion(
             model_flux=model_flux, model_flux_units=model_flux_units, out_units="Jy"
         )
-
-        noise = np.random.normal(loc=0, scale=self.sigma, size=flux.shape)
-
-        # Add the random values to the repeated photometry
+        noise = (
+            np.random.normal(loc=0, scale=self.sigma.to_value(), size=flux.shape) * self.sigma.units
+        )  # noqa: E501
         output_arr = flux + noise
 
         output_flux = self.handle_flux_conversion(
@@ -264,42 +286,47 @@ class DepthUncertaintyModel(UncertaintyModel):
         )
 
         if self.return_noise:
-            # Noise in this case is self.sigma - the
-            # standard deviation of the Gaussian noise applied
-            #
-            sigma = np.ones(output_flux.shape) * self.sigma
-            sigma = self.handle_flux_error_conversion(
+            sigma_out = np.ones(output_flux.shape) * self.sigma
+            sigma_out = self.handle_flux_error_conversion(
                 model_flux=output_arr,
                 model_flux_units="Jy",
-                model_flux_error=sigma,
+                model_flux_error=sigma_out,
                 out_units=model_flux_units,
             )
-
-            return output_flux, sigma
-
+            return output_flux, sigma_out
         return output_flux
+
+    def serialize_to_hdf5(self, hdf5_group: h5py.Group) -> None:
+        """Serializes the model's state into the given HDF5 group."""
+        hdf5_group.attrs["__class__"] = self.__class__.__name__
+        hdf5_group.attrs["depth_val"] = self.depth.value
+        hdf5_group.attrs["depth_unit"] = str(self.depth.units)
+        hdf5_group.attrs["depth_sigma"] = self.depth_sigma
+        hdf5_group.attrs["per_filter"] = self.per_filter
+        hdf5_group.attrs["return_noise"] = self.return_noise
+
+    @classmethod
+    def _from_hdf5_group(cls, hdf5_group: h5py.Group) -> "DepthUncertaintyModel":
+        """Loads a model instance from an HDF5 group."""
+        depth = unyt_array(hdf5_group.attrs["depth_val"], hdf5_group.attrs["depth_unit"])
+        return cls(
+            depth=depth,
+            depth_sigma=hdf5_group.attrs["depth_sigma"],
+            per_filter=hdf5_group.attrs["per_filter"],
+            return_noise=hdf5_group.attrs["return_noise"],
+        )
 
 
 class DiffusionUncertaintyModel(UncertaintyModel):
-    """A class to model and sample photometric uncertainties based on observations.
-
-    The model estimates p(sigma_X | f_X) as a
-    Gaussian N(mu_sigma_X(f_X), sigma_sigma_X(f_X)),
-
-    It uses a score-based diffusion model to model
-    the uncertanity vector sigma_X, given
-    observed fluxes f_X and errors sigma_X.
-    Based on the Thorp et al. 2025 paper:
-        https://arxiv.org/pdf/2506.12122
-    """
+    """Placeholder for a score-based diffusion uncertainty model."""
 
     def __init__(self, **kwargs):
         """Initialize the diffusion uncertainty model."""
         super().__init__(**kwargs)
-        raise NotImplementedError("DiffusionUncertaintyModel is not implemented yet. ")
+        raise NotImplementedError("DiffusionUncertaintyModel is not implemented yet.")
 
 
-class EmpiricalUncertaintyModel(UncertaintyModel):
+class EmpiricalUncertaintyModel(UncertaintyModel, ABC):
     """A class to model and sample photometric uncertainties based on observations."""
 
     def __init__(
@@ -321,6 +348,8 @@ class EmpiricalUncertaintyModel(UncertaintyModel):
         """
         self.error_type = error_type
         self.extrapolate_uncertanties = extrapolate_uncertanties
+        self.mag: Optional[unyt_array] = None
+        self.mag_err: Optional[unyt_array] = None
 
         return super().__init__(**kwargs)
 
@@ -636,7 +665,7 @@ class AsinhEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
             self.asinh_softening_parameter.to(flux_array.units),
         )
         # Calculate the log of the uncertainty kernel
-        log_sigma = self.sample_uncertainty(true_mag, filter_negative=not self.sample_log_err)
+        log_sigma = self.sample_uncertainty(true_mag, filter_negative=~self.sample_log_err)
 
         if self.sample_log_err:
             sigma = 10**log_sigma
@@ -665,16 +694,33 @@ class AsinhEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
             return noisy_mag[0], sigma[0]
         return noisy_mag, sigma
 
+    def apply_scalings(
+        self,
+        flux: unyt_array,
+        flux_error: unyt_array,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Converts flux and error from Jy to asinh magnitudes space.
+
+        This prepares observational data for direct comparison with the model's
+        internal representation, without applying any noise.
+        """
+        mag = self._phot_jy_to_asinh(flux.to("Jy"), self.asinh_softening_parameter.to("Jy"))
+
+        mag_err = self._phot_err_jy_to_asinh(
+            flux.to("Jy"),
+            flux_error.to("Jy"),
+            self.asinh_softening_parameter.to("Jy"),
+        )
+
+        # Apply min flux error if it's defined
+        if hasattr(self, "min_flux_error") and self.min_flux_error > 0:
+            mag_err[mag_err < self.min_flux_error] = self.min_flux_error
+
+        return mag, mag_err
+
 
 class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
-    """A class to model and sample photometric uncertainties based on observations.
-
-    The model estimates p(sigma_X | f_X) as a
-    Gaussian N(mu_sigma_X(f_X), sigma_sigma_X(f_X)),
-    where mu_sigma_X and sigma_sigma_X are
-    interpolated from binned statistics of
-    observed (sigma_X, f_X) pairs.
-    """
+    """A class to model and sample photometric uncertainties based on observations."""
 
     def __init__(
         self,
@@ -1244,161 +1290,36 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
             return noisy_flux_array[0], sampled_sigma_prime[0]
         return noisy_flux_array, sampled_sigma_prime
 
-    def serialize_to_hdf5(
-        self,
-        hdf5_file: str,
-        group_name: str = "empirical_uncertainty_model",
-        overwrite: bool = False,
-    ) -> None:
-        """Serializes the model to an HDF5 file.
+    def serialize_to_hdf5(self, hdf5_group: h5py.Group) -> None:
+        """Serializes the model's state into the given HDF5 group."""
+        hdf5_group.attrs["__class__"] = self.__class__.__name__
 
-        Args:
-            hdf5_file: Path to the HDF5 file where the model will be saved.
-            group_name: Name of the group in the HDF5 file where the model will be stored.
-            overwrite: If True, overwrite the existing group if it exists.
-        """
-        import h5py
+        # Save binned data used for interpolation
+        hdf5_group.create_dataset("flux_bins_centers", data=self.flux_bins_centers)
+        mu_sigma_values = self.mu_sigma_interpolator(self.flux_bins_centers)
+        sigma_sigma_values = self.sigma_sigma_interpolator(self.flux_bins_centers)
+        hdf5_group.create_dataset("mu_sigma_values", data=mu_sigma_values)
+        hdf5_group.create_dataset("sigma_sigma_values", data=sigma_sigma_values)
 
-        with h5py.File(hdf5_file, "a") as f:
-            if overwrite and group_name in f:
-                del f[group_name]
-            group = f.create_group(group_name)
-            group.create_dataset("flux_bins_centers", data=self.flux_bins_centers)
-            group.create_dataset(
-                "mu_sigma_values",
-                data=self.mu_sigma_interpolator(self.flux_bins_centers),
-            )
-            group.create_dataset(
-                "sigma_sigma_values",
-                data=self.sigma_sigma_interpolator(self.flux_bins_centers),
-            )
-            group.create_dataset(
-                "observed_fluxes",
-                data=self.observed_fluxes,
-                compression="gzip",
-            )
-            group.create_dataset(
-                "observed_errors",
-                data=self.observed_errors,
-                compression="gzip",
-            )
-            group.attrs["num_bins"] = len(self.flux_bins_centers)
-            group.attrs["flux_unit"] = self.flux_unit
-            group.attrs["min_flux_error"] = self.min_flux_error
-            group.attrs["max_flux_error"] = self.max_flux_error
-            group.attrs["upper_limits"] = self.upper_limits
-            group.attrs["error_type"] = self.error_type
-            group.attrs["sigma_clip"] = self.sigma_clip
-            group.attrs["min_samples_per_bin"] = self.min_samples_per_bin
-            group.attrs["log_bins"] = self.log_bins
-            group.attrs["min_flux_for_binning"] = str(self.min_flux_for_binning)
-            group.attrs["interpolation_flux_unit"] = self.interpolation_flux_unit
+        # Save configuration attributes
+        attrs = hdf5_group.attrs
+        attrs["num_bins"] = self.num_bins
+        attrs["flux_unit"] = self.flux_unit
+        attrs["min_flux_error"] = self.min_flux_error
+        attrs["max_flux_error"] = self.max_flux_error
+        attrs["upper_limits"] = self.upper_limits
+        attrs["error_type"] = self.error_type
+        attrs["sigma_clip"] = self.sigma_clip
+        attrs["min_samples_per_bin"] = self.min_samples_per_bin
+        attrs["log_bins"] = self.log_bins
+        attrs["min_flux_for_binning"] = str(self.min_flux_for_binning)
+        attrs["interpolation_flux_unit"] = self.interpolation_flux_unit
 
-            if self.upper_limits:
-                group.attrs["treat_as_upper_limits_below"] = int(self.treat_as_upper_limits_below)
-                group.attrs["upper_limit_value"] = self.upper_limit_value
-                group.attrs["upper_limit_flux_behaviour"] = self.upper_limit_flux_behaviour
-                group.attrs["upper_limit_flux_err_behaviour"] = self.upper_limit_flux_err_behaviour
-
-    @classmethod
-    def deserialize_from_hdf5(cls, hdf5_file: str, group_name: str = "all"):
-        """Deserializes the model from an HDF5 file.
-
-        Args:
-            hdf5_file: Path to the HDF5 file from which the model will be loaded.
-            group_name: Name of the group in the HDF5 file where the model is stored.
-
-        Returns:
-            An instance of EmpiricalUncertaintyModel initialized with the data
-            from the HDF5 file.
-        """
-        import h5py
-
-        output = {}
-        with h5py.File(hdf5_file, "r") as f:
-            if group_name == "all":
-                group_names = list(f.keys())
-            else:
-                group_names = [group_name]
-            for group_name in group_names:
-                group = f[group_name]
-                observed_fluxes = group["observed_fluxes"][:]
-                observed_errors = group["observed_errors"][:]
-                flux_bins_centers = group["flux_bins_centers"][:]
-                mu_sigma_values = group["mu_sigma_values"][:]
-                sigma_sigma_values = group["sigma_sigma_values"][:]
-                num_bins = group.attrs["num_bins"]
-                flux_unit = group.attrs["flux_unit"]
-                min_flux_error = group.attrs["min_flux_error"]
-                max_flux_error = group.attrs["max_flux_error"]
-                upper_limits = group.attrs.get("upper_limits", False)
-                treat_as_upper_limits_below = group.attrs.get("treat_as_upper_limits_below", None)
-                if treat_as_upper_limits_below is not None:
-                    treat_as_upper_limits_below = float(treat_as_upper_limits_below)
-                upper_limit_flux_behaviour = group.attrs.get(
-                    "upper_limit_flux_behaviour", "scatter_limit"
-                )
-                try:
-                    upper_limit_flux_behaviour = float(upper_limit_flux_behaviour)
-                except ValueError:
-                    # If it cannot be converted to float, keep it as a string
-                    pass
-                upper_limit_flux_err_behaviour = group.attrs.get(
-                    "upper_limit_flux_err_behaviour", "flux"
-                )
-                try:
-                    upper_limit_flux_err_behaviour = float(upper_limit_flux_err_behaviour)
-                except ValueError:
-                    # If it cannot be converted to float, keep it as a string
-                    pass
-                error_type = group.attrs.get("error_type", "empirical")
-                sigma_clip = group.attrs.get("sigma_clip", 3.0)
-                log_bins = group.attrs.get("log_bins", True)
-                min_flux_for_binning = group.attrs.get("min_flux_for_binning", None)
-                interpolation_flux_unit = group.attrs.get("interpolation_flux_unit", flux_unit)
-                min_samples_per_bin = group.attrs.get("min_samples_per_bin", 10)
-
-                model = cls(
-                    observed_fluxes=observed_fluxes,
-                    observed_errors=observed_errors,
-                    num_bins=num_bins,
-                    flux_bins=flux_bins_centers,
-                    log_bins=log_bins,
-                    min_samples_per_bin=min_samples_per_bin,
-                    flux_unit=flux_unit,
-                    min_flux_error=min_flux_error,
-                    error_type=error_type,
-                    sigma_clip=sigma_clip,
-                    upper_limits=upper_limits,
-                    treat_as_upper_limits_below=treat_as_upper_limits_below,
-                    upper_limit_flux_behaviour=upper_limit_flux_behaviour,
-                    upper_limit_flux_err_behaviour=upper_limit_flux_err_behaviour,
-                    max_flux_error=max_flux_error,
-                    interpolation_flux_unit=interpolation_flux_unit,
-                    min_flux_for_binning=min_flux_for_binning,
-                    already_binned=True,
-                    bin_median_errors=mu_sigma_values,
-                    bin_std_errors=sigma_sigma_values,
-                )
-                output[group_name] = model
-
-                model.h5_path = hdf5_file
-                model.h5_group_name = group_name
-                # Can assume that if we've been loaded we can throw away the
-                # observed_fluxes and observed_errors, as they are not needed anymore.
-                model.observed_fluxes = None
-                model.observed_errors = None
-                # print('Set for group', group_name, 'in', hdf5_file)
-
-                # force cleanup
-                import gc
-
-                gc.collect()
-
-        if len(output) == 1:
-            return output[group_names[0]]
-
-        return output
+        if self.upper_limits:
+            attrs["treat_as_upper_limits_below"] = self.treat_as_upper_limits_below
+            attrs["upper_limit_value"] = self.upper_limit_value
+            attrs["upper_limit_flux_behaviour"] = self.upper_limit_flux_behaviour
+            attrs["upper_limit_flux_err_behaviour"] = self.upper_limit_flux_err_behaviour
 
     def apply_scalings(
         self, flux: unyt_array, flux_error: unyt_array, out_units: str = None
@@ -1495,6 +1416,111 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
         # print('out', output_flux, output_flux_error)
 
         return output_flux, output_flux_error
+
+    @classmethod
+    def _from_hdf5_group(cls, hdf5_group: h5py.Group) -> "GeneralEmpiricalUncertaintyModel":
+        """Loads a model instance from an HDF5 group."""
+        # Load binned data
+        flux_bins_centers = hdf5_group["flux_bins_centers"][:]
+        mu_sigma_values = hdf5_group["mu_sigma_values"][:]
+        sigma_sigma_values = hdf5_group["sigma_sigma_values"][:]
+
+        # Load configuration from attributes
+        attrs = hdf5_group.attrs
+
+        # Handle potentially stringified 'None'
+        min_flux_for_binning = attrs["min_flux_for_binning"]
+        if min_flux_for_binning == "None":
+            min_flux_for_binning = None
+        else:
+            min_flux_for_binning = float(min_flux_for_binning)
+
+        # Create constructor arguments dictionary
+        constructor_args = {
+            "observed_fluxes": flux_bins_centers,  # Dummy data, will be ignored
+            "observed_errors": mu_sigma_values,  # Dummy data, will be ignored
+            "num_bins": attrs["num_bins"],
+            "flux_bins": flux_bins_centers,
+            "log_bins": attrs["log_bins"],
+            "min_samples_per_bin": attrs["min_samples_per_bin"],
+            "flux_unit": attrs["flux_unit"],
+            "min_flux_error": attrs["min_flux_error"],
+            "error_type": attrs["error_type"],
+            "sigma_clip": attrs["sigma_clip"],
+            "upper_limits": attrs["upper_limits"],
+            "treat_as_upper_limits_below": attrs.get("treat_as_upper_limits_below"),
+            "upper_limit_flux_behaviour": attrs.get("upper_limit_flux_behaviour", "scatter_limit"),
+            "upper_limit_flux_err_behaviour": attrs.get("upper_limit_flux_err_behaviour", "flux"),
+            "max_flux_error": attrs["max_flux_error"],
+            "interpolation_flux_unit": attrs["interpolation_flux_unit"],
+            "min_flux_for_binning": min_flux_for_binning,
+            "already_binned": True,
+            "bin_median_errors": mu_sigma_values,
+            "bin_std_errors": sigma_sigma_values,
+        }
+
+        return cls(**constructor_args)
+
+
+# +++++++++ NEW HDF5 HANDLING FRAMEWORK +++++++++
+
+MODEL_CLASS_REGISTRY = {
+    "DepthUncertaintyModel": DepthUncertaintyModel,
+    "DiffusionUncertaintyModel": DiffusionUncertaintyModel,
+    # "AsinhEmpiricalUncertaintyModel": AsinhEmpiricalUncertaintyModel, # Add if implemented
+    "GeneralEmpiricalUncertaintyModel": GeneralEmpiricalUncertaintyModel,
+}
+
+
+def save_model_to_hdf5(
+    model: UncertaintyModel, filepath: str, group_name: str, overwrite: bool = False
+) -> None:
+    """Saves a supported uncertainty model to an HDF5 file.
+
+    Args:
+        model: An instance of a class derived from UncertaintyModel.
+        filepath: Path to the HDF5 file.
+        group_name: Name of the group to save the model under.
+        overwrite: If True, deletes the group if it already exists.
+    """
+    with h5py.File(filepath, "a") as f:
+        if group_name in f:
+            if overwrite:
+                del f[group_name]
+            else:
+                raise ValueError(
+                    f"Group '{group_name}' already exists in '{filepath}'. "
+                    "Set overwrite=True to replace it."
+                )
+        group = f.create_group(group_name)
+        model.serialize_to_hdf5(group)
+
+
+def load_model_from_hdf5(filepath: str, group_name: str) -> UncertaintyModel:
+    """Factory function to load any supported model from an HDF5 file.
+
+    Args:
+        filepath: Path to the HDF5 file.
+        group_name: Name of the group where the model is stored.
+
+    Returns:
+        An initialized instance of the loaded uncertainty model.
+    """
+    with h5py.File(filepath, "r") as f:
+        if group_name not in f:
+            raise KeyError(f"Group '{group_name}' not found in HDF5 file '{filepath}'.")
+
+        group = f[group_name]
+        class_name = group.attrs.get("__class__")
+
+        if class_name is None:
+            raise TypeError(f"HDF5 group '{group_name}' is missing the '__class__' attribute.")
+
+        if class_name not in MODEL_CLASS_REGISTRY:
+            raise TypeError(f"Unknown model class '{class_name}' found in HDF5 group.")
+
+        model_class = MODEL_CLASS_REGISTRY[class_name]
+        return model_class._from_hdf5_group(group)
 
 
 def create_uncertainity_models_from_EPOCHS_cat(
