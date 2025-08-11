@@ -48,8 +48,9 @@ class Args:
     num_components: int = 10
     scatter_fluxes: float = 1
     include_errors_in_feature_array: bool = True
+    min_flux_error: float = 0.00
     norm_mag_limit: float = 40.0
-    drop_dropouts: bool = True
+    drop_dropouts: bool = False
     drop_dropout_fraction: float = 0.5
     max_rows: int = -1
     parameter_transformations: tuple = ()  # This can be a dict of transformations
@@ -122,6 +123,7 @@ def main_task(args: Args) -> None:
             hdu=args.data_err_hdu,
             save_path=out_dir,
             save=True,
+            min_flux_error=args.min_flux_error,
         )
 
     else:
@@ -184,7 +186,7 @@ def main_task(args: Args) -> None:
     if args.scatter_fluxes > 0 and not args.include_errors_in_feature_array:
         unused_filters = [
             filt
-            for filt in empirical_model_fitter.raw_photometry_names
+            for filt in empirical_model_fitter.raw_observation_names
             if filt not in list(empirical_noise_models.keys())
         ]
     else:
@@ -195,16 +197,19 @@ def main_task(args: Args) -> None:
             for filt in phot_to_remove
         ]
         unused_filters = [
-            filt for filt in unused_filters if filt in empirical_model_fitter.raw_photometry_names
+            filt for filt in unused_filters if filt in empirical_model_fitter.raw_observation_names
         ]
 
-    print('Photometry in grid:', empirical_model_fitter.raw_photometry_names, file=sys.stdout)
-    for filt in empirical_model_fitter.raw_photometry_names:
-        if args.scatter_fluxes > 0 and args.include_errors_in_feature_array and filt not in empirical_noise_models:
+    print("Photometry in grid:", empirical_model_fitter.raw_observation_names, file=sys.stdout)
+    for filt in empirical_model_fitter.raw_observation_names:
+        if (
+            args.scatter_fluxes > 0
+            and args.include_errors_in_feature_array
+            and filt not in empirical_noise_models
+        ):
             unused_filters.append(filt)
 
     print(f"Unused filters: {unused_filters}", file=sys.stdout)
-    
 
     empirical_model_fitter.create_feature_array_from_raw_photometry(
         extra_features=list(args.model_features),
