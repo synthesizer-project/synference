@@ -26,6 +26,7 @@ def load_grid_from_hdf5(
     supp_attr: str = "SupplementaryParameterNames",
     supp_units_attr: str = "SupplementaryParameterUnits",
     phot_unit_attr: str = "PhotometryUnits",
+    spectra_key: str = "Grid/Spectra",
 ) -> dict:
     """Load a grid from an HDF5 file.
 
@@ -48,7 +49,7 @@ def load_grid_from_hdf5(
 
     with h5py.File(hdf5_path, "r") as f:
         # Load the photometry and parameters from the HDF5 file
-        photometry = f[photometry_key][:]
+
         parameters = f[parameters_key][:]
 
         filter_codes = f.attrs[filter_codes_attr]
@@ -60,13 +61,19 @@ def load_grid_from_hdf5(
         parameter_units = f.attrs.get(parameters_units_attr, None)
 
         output = {
-            "photometry": photometry,
             "parameters": parameters,
             "filter_codes": filter_codes,
             "parameter_names": parameter_names,
             "photometry_units": photometry_units,
             "parameter_units": parameter_units,
         }
+
+        if photometry_key in f:
+            photometry = f[photometry_key][:]
+            output["photometry"] = photometry
+        if spectra_key in f:
+            spectra = f[spectra_key][:]
+            output["spectra"] = spectra
 
         # Load supplementary parameters if available
         if supp_key in f:
