@@ -114,7 +114,7 @@ fitter = SBI_Fitter(
     name="online_test",
     simulator=run_simulator,
     parameter_names=inputs,
-    raw_photometry_names=simulator.instrument.filters.filter_codes + ["norm"],
+    raw_observation_names=simulator.instrument.filters.filter_codes + ["norm"],
 )
 
 fitter.run_single_sbi(
