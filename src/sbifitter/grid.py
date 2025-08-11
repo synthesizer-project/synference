@@ -1977,8 +1977,8 @@ class GalaxyBasis:
                 # pipeline.get_spectra() # Switch off so they aren't saved
                 pipeline.get_observed_spectra(self.cosmo)
 
-                # pipeline.get_photometry_luminosities() # Switch off so they aren't saved
-                pipeline.get_photometry_fluxes(self.instrument)
+                if self.instrument.can_do_photometry:
+                    pipeline.get_photometry_fluxes(self.instrument)
 
                 pipeline.add_galaxies(batch_gals)
 
@@ -2345,6 +2345,7 @@ $\\log_{{10}}(M_\\star/M_\\odot)$: {np.log10(mass):.1f}"""
         verbose=False,
         batch_size: int = 40_000,
         parameter_transforms_to_save: dict[str, (str, callable)] = None,
+        cat_type="photometry",
         **extra_analysis_functions,
     ):
         """Convenience method which calls CombinedBasis.
@@ -2426,7 +2427,12 @@ $\\log_{{10}}(M_\\star/M_\\odot)$: {np.log10(mass):.1f}"""
             **extra_analysis_functions,
         )
 
-        combined_basis.create_grid(overwrite=overwrite)
+        if cat_type == "photometry":
+            combined_basis.create_grid(overwrite=overwrite)
+        elif cat_type == "spectra":
+            combined_basis.create_spectral_grid(overwrite=overwrite)
+        else:
+            raise ValueError(f"Unknown catalog type: {cat_type}. Use 'photometry' or 'spectra'.")
 
         out_path = f"{combined_basis.out_dir}/{combined_basis.out_name}"
         if not out_path.endswith(".hdf5"):
@@ -2437,6 +2443,7 @@ $\\log_{{10}}(M_\\star/M_\\odot)$: {np.log10(mass):.1f}"""
             other_info={
                 "emission_model_key": emission_model_key,
                 "timestamp": datetime.now().isoformat(),
+                "cat_type": cat_type,
             },
             parameter_transforms_to_save=parameter_transforms_to_save,
         )
@@ -2742,25 +2749,12 @@ class CombinedBasis:
                                 )
                             )
                         if load_spectra:
-                            # Combine the observed spectra
+                            # Combine the observed spectra (from different files)
                             if "observed_spectra" not in outputs[base.model_name]:
-                                outputs[base.model_name]["observed_spectra"] = {}
-                            if (
-                                self.base_emission_model_keys[i]
-                                not in outputs[base.model_name]["observed_spectra"]
-                            ):
-                                outputs[base.model_name]["observed_spectra"][
-                                    self.base_emission_model_keys[i]
-                                ] = []
-                            outputs[base.model_name]["observed_spectra"][
-                                self.base_emission_model_keys[i]
-                            ] = np.concatenate(
-                                (
-                                    outputs[base.model_name]["observed_spectra"][
-                                        self.base_emission_model_keys[i]
-                                    ],
-                                    observed_spectra,
-                                )
+                                outputs[base.model_name]["observed_spectra"] = []
+
+                            outputs[base.model_name]["observed_spectra"] = np.concatenate(
+                                (outputs[base.model_name]["observed_spectra"], observed_spectra)
                             )
 
                         # Combine supplementary properties
@@ -2808,6 +2802,15 @@ class CombinedBasis:
         overwrite: bool = False,
     ) -> dict:
         """Creates a grid of SEDs for the given Synthesizer outputs.
+
+        This method assumes each input on CombinedBasis, (redshift, mass,
+        and varying parameters) should be combined (e.g. sampling
+        every combination of redshift, mass, and varying parameters) to
+        create the grid. The 'create_full_grid' method instead assumes
+        that the input parameters are already combined, and does not
+        sample every combination. Generally the 'create_full_grid' method
+        is more useful for the case where you have predrawn parameters
+        randomly or from a prior or Latin Hypercube.
 
         Parameters
         ----------
@@ -3123,7 +3126,7 @@ class CombinedBasis:
         if save:
             self.save_grid(out, overload_out_name=out_name, overwrite=overwrite)
 
-    def _validate_grid(self, grid_dict: dict) -> None:
+    def _validate_grid(self, grid_dict: dict, check_type="photometry") -> None:
         """Validate the grid dictionary.
 
         Parameters
@@ -3132,6 +3135,9 @@ class CombinedBasis:
             Dictionary containing the grid data.
             Expected keys are 'photometry', 'parameters', 'parameter_names',
             and 'filter_codes'.
+        check_type : str, optional
+            Type of data to check, either 'photometry' or 'spectra',
+            by default 'photometry'.
 
         Raises:
         ------
@@ -3139,7 +3145,7 @@ class CombinedBasis:
             If any of the required keys are missing or if the data is not expected format.
         """
         required_keys = [
-            "photometry",
+            check_type,
             "parameters",
             "parameter_names",
             "filter_codes",
@@ -3148,8 +3154,8 @@ class CombinedBasis:
             if key not in grid_dict:
                 raise ValueError(f"Missing required key: {key}")
 
-        if not isinstance(grid_dict["photometry"], np.ndarray):
-            raise ValueError("Photometry must be a numpy array.")
+        if not isinstance(grid_dict[check_type], np.ndarray):
+            raise ValueError(f"{check_type} must be a numpy array.")
 
         if not isinstance(grid_dict["parameters"], np.ndarray):
             raise ValueError("Parameters must be a numpy array.")
@@ -3157,16 +3163,16 @@ class CombinedBasis:
         if not isinstance(grid_dict["parameter_names"], list):
             raise ValueError("Parameter names must be a list.")
 
-        if not isinstance(grid_dict["filter_codes"], list):
+        if not isinstance(grid_dict["filter_codes"], (list, np.ndarray)):
             raise ValueError("Filter codes must be a list.")
 
         # Check for NAN/INF in photometry and parameters
 
-        assert not np.any(np.isnan(grid_dict["photometry"])), (
-            "Photometry contains NaN values. Please check the input data."
+        assert not np.any(np.isnan(grid_dict[check_type])), (
+            f"{check_type} contains NaN values. Please check the input data."
         )
-        assert not np.any(np.isinf(grid_dict["photometry"])), (
-            "Photometry contains infinite values. Please check the input data."
+        assert not np.any(np.isinf(grid_dict[check_type])), (
+            f"{check_type} contains infinite values. Please check the input data."
         )
         assert not np.any(np.isnan(grid_dict["parameters"])), (
             "Parameters contain NaN values. Please check the input data."
@@ -3194,7 +3200,8 @@ class CombinedBasis:
         out_name : str, optional
             Name of the output file, by default 'grid.hdf5'
         """
-        self._validate_grid(grid_dict)
+        check_type = "photometry" if "photometry" in grid_dict else "spectra"
+        self._validate_grid(grid_dict, check_type=check_type)
 
         # Check if the output directory exists, if not create it
         if not os.path.exists(self.out_dir):
@@ -3221,9 +3228,12 @@ class CombinedBasis:
             # Create a group for the grid data
             grid_group = f.create_group("Grid")
             # Create datasets for the photometry and parameters
-            grid_group.create_dataset(
-                "Photometry", data=grid_dict["photometry"], compression="gzip"
-            )
+            if "photometry" in grid_dict:
+                grid_group.create_dataset(
+                    "Photometry", data=grid_dict["photometry"], compression="gzip"
+                )
+            if "spectra" in grid_dict:
+                grid_group.create_dataset("Spectra", data=grid_dict["spectra"], compression="gzip")
 
             grid_group.create_dataset(
                 "Parameters", data=grid_dict["parameters"], compression="gzip"
@@ -3491,18 +3501,58 @@ class CombinedBasis:
         """
         with h5py.File(file_path, "r") as f:
             grid_data = {
-                "photometry": f["Grid"]["Photometry"][()],
                 "parameters": f["Grid"]["Parameters"][()],
                 "parameter_names": f.attrs["ParameterNames"],
                 "filter_codes": f.attrs["FilterCodes"],
             }
 
-        self.grid_photometry = grid_data["photometry"]
+            if "Photometry" in f["Grid"]:
+                grid_data["photometry"] = f["Grid"]["Photometry"][()]
+                self.grid_photometry = grid_data["photometry"]
+
+            if "Spectra" in f["Grid"]:
+                grid_data["spectra"] = f["Grid"]["Spectra"][()]
+                self.grid_spectra = grid_data["spectra"]
+
         self.grid_parameters = grid_data["parameters"]
         self.grid_parameter_names = grid_data["parameter_names"]
         self.grid_filter_codes = grid_data["filter_codes"]
 
         return grid_data
+
+    def _validate_bases(self, pipeline_outputs, skip_inst=False) -> None:
+        # ===== VALIDATION =====
+        # Check all bases have the same number of galaxies
+        ngal = len(pipeline_outputs[self.bases[0].model_name]["properties"]["mass"])
+        for i, base in enumerate(self.bases):
+            model_name = base.model_name
+            if len(pipeline_outputs[model_name]["properties"]["mass"]) != ngal:
+                raise ValueError(
+                    f"""Base {i} has different number of galaxies to base 0.
+                    Cannot combine bases with different number of galaxies."""
+                )
+
+        # Validate input arrays
+        for array_name, array in [
+            ("redshifts", self.redshifts),
+            ("log_stellar_masses", self.log_stellar_masses),
+            ("combination_weights", self.combination_weights),
+        ]:
+            if len(array) != ngal:
+                raise ValueError(
+                    f"""{array_name} length {len(array)} does not match
+                    number of galaxies {ngal}."""
+                )
+
+        if not skip_inst:
+            # Validate filters
+            base_filters = self.bases[0].instrument.filters.filter_codes
+            for i, base in enumerate(self.bases):
+                if base.instrument.filters.filter_codes != base_filters:
+                    raise ValueError(
+                        f"""Base {i} has different filters to base 0.
+                        Cannot combine bases with different filters."""
+                    )
 
     def create_full_grid(
         self,
@@ -3510,6 +3560,7 @@ class CombinedBasis:
         save: bool = True,
         overload_out_name: str = "",
         overwrite: bool = False,
+        spectral_mode=False,
     ) -> None:
         """Create a complete grid of SEDs by combining galaxy bases.
 
@@ -3537,39 +3588,12 @@ class CombinedBasis:
             )
 
         # Load base model data
-        pipeline_outputs = self.load_bases()
+        pipeline_outputs = self.load_bases(load_spectra=spectral_mode)
 
-        # ===== VALIDATION =====
-        # Check all bases have the same number of galaxies
-        ngal = len(pipeline_outputs[self.bases[0].model_name]["properties"]["mass"])
-        for i, base in enumerate(self.bases):
-            model_name = base.model_name
-            if len(pipeline_outputs[model_name]["properties"]["mass"]) != ngal:
-                raise ValueError(
-                    f"""Base {i} has different number of galaxies to base 0.
-                    Cannot combine bases with different number of galaxies."""
-                )
+        self._validate_bases(pipeline_outputs, skip_inst=spectral_mode)
 
-        # Validate input arrays
-        for array_name, array in [
-            ("redshifts", self.redshifts),
-            ("log_stellar_masses", self.log_stellar_masses),
-            ("combination_weights", self.combination_weights),
-        ]:
-            if len(array) != ngal:
-                raise ValueError(
-                    f"""{array_name} length {len(array)} does not match
-                    number of galaxies {ngal}."""
-                )
-
-        # Validate filters
         base_filters = self.bases[0].instrument.filters.filter_codes
-        for i, base in enumerate(self.bases):
-            if base.instrument.filters.filter_codes != base_filters:
-                raise ValueError(
-                    f"""Base {i} has different filters to base 0.
-                    Cannot combine bases with different filters."""
-                )
+        ngal = len(pipeline_outputs[self.bases[0].model_name]["properties"]["mass"])
 
         # Determine which filters to use
         if override_instrument is not None:
@@ -3694,12 +3718,21 @@ class CombinedBasis:
                     else scaling_factors
                 )
 
-                # Get photometry for all filters and scale it
-                photometry = np.array(
-                    [model_output["observed_photometry"][code][pos] for code in filter_codes],
-                    dtype=np.float32,
-                )
-                scaled_phot = photometry * scaling_factors
+                if not spectral_mode:
+                    # Get photometry for all filters and scale it
+                    photometry = np.array(
+                        [model_output["observed_photometry"][code][pos] for code in filter_codes],
+                        dtype=np.float32,
+                    )
+                    scaled_phot = photometry * scaling_factors
+                else:
+                    # For spectral mode, use the observed spectra
+                    scaled_phot = np.array(
+                        [model_output["observed_spectra"][pos]],
+                        dtype=np.float32,
+                    )
+                    # Scale the spectra by the scaling factor
+                    scaled_phot = scaled_phot * scaling_factors[:, np.newaxis]
 
                 # Extract parameters for this base
                 params_dict = {}
@@ -3755,6 +3788,7 @@ class CombinedBasis:
 
                 # Use photometry directly
                 output = base["photometry"]
+                output = np.squeeze(output)
                 output_array = output[:, np.newaxis] if output.ndim == 1 else output
 
                 # Create parameter array
@@ -3809,7 +3843,8 @@ class CombinedBasis:
                 num_combinations = len(combinations)
 
                 # Create output arrays
-                output_array = np.zeros((len(filter_codes), num_combinations))
+                n = len(filter_codes) if not spectral_mode else base_data[0]["photometry"].shape[1]
+                output_array = np.zeros((n, num_combinations))
                 params_array = np.zeros((len(param_columns), num_combinations))
                 supp_array = np.zeros((len(supp_param_keys), num_combinations))
                 param_units = []
@@ -3892,7 +3927,10 @@ class CombinedBasis:
         print(f"Combined outputs shape: {combined_outputs.shape}")
         print(f"Combined parameters shape: {combined_params.shape}")
         print(f"Combined supplementary parameters shape: {combined_supp_params.shape}")
-        print(f"Filter codes: {filter_codes}")
+        if not spectral_mode:
+            print(f"Filter codes: {filter_codes}")
+        else:
+            print("Spectral mode enabled, using wavelengths as filter codes.")
         print(f"Parameter names: {param_columns}")
         print(f"Parameter units: {param_units}")
 
@@ -3908,10 +3946,11 @@ class CombinedBasis:
             f"Expected {len(param_columns)}, got {len(param_units)}."
         )
 
-        assert combined_outputs.shape[0] == len(filter_codes), (
-            "Output photometry shape does not match number of filters."
-            f"Expected {len(filter_codes)}, got {combined_outputs.shape[0]}."
-        )
+        if not spectral_mode:
+            assert combined_outputs.shape[0] == len(filter_codes), (
+                "Output photometry shape does not match number of filters."
+                f"Expected {len(filter_codes)}, got {combined_outputs.shape[0]}."
+            )
 
         assert combined_params.shape[0] == len(param_columns), (
             "Output parameters shape does not match number of parameter columns."
@@ -3925,10 +3964,8 @@ class CombinedBasis:
 
         # Create output dictionary
         out = {
-            "photometry": combined_outputs,
             "parameters": combined_params,
             "parameter_names": param_columns,
-            "filter_codes": filter_codes,
             "supplementary_parameters": combined_supp_params,
             "supplementary_parameter_names": supp_param_keys,
             "supplementary_parameter_units": supp_param_units_list,
@@ -3936,10 +3973,20 @@ class CombinedBasis:
         }
 
         # Update object attributes
-        self.grid_photometry = combined_outputs
+        if spectral_mode:
+            out["spectra"] = combined_outputs
+            self.grid_spectra = combined_outputs
+            # 'Grid filter codes' can just be the wavelength array here
+            self.grid_filter_codes = model_output["wavelengths"].to("um").value
+            out["filter_codes"] = self.grid_filter_codes
+        else:
+            out["photometry"] = combined_outputs
+            out["filter_codes"] = filter_codes
+            self.grid_photometry = combined_outputs
+            self.grid_filter_codes = filter_codes
+
         self.grid_parameters = combined_params
         self.grid_parameter_names = param_columns
-        self.grid_filter_codes = filter_codes
         self.grid_supplementary_parameters = combined_supp_params
         self.grid_supplementary_parameter_names = supp_param_keys
         self.grid_supplementary_parameter_units = supp_param_units_list
@@ -3948,6 +3995,40 @@ class CombinedBasis:
         # Save results if requested
         if save:
             self.save_grid(out, overload_out_name=overload_out_name, overwrite=overwrite)
+
+    def create_spectral_grid(
+        self,
+        save: bool = True,
+        overload_out_name: str = "",
+        overwrite: bool = False,
+    ) -> dict:
+        """Creates a parameter grid for spectroscopic observations.
+
+        Wrapper for `create_full_grid`, but specifically for spectroscopic outputs,
+        to match e.g. NIRSpec IFU, or DESI etc. The only spectral sampling
+        currently supported is the one used in the instrument/grid combination.
+
+        Parameters
+        ----------
+        save : bool, optional
+            If True, saves the grid to a file.
+        overload_out_name : str, optional
+            If provided, overrides the output name for the grid.
+        overwrite : bool, optional
+            If True, overwrites the existing grid file if it exists.
+
+        Returns:
+        -------
+        dict
+            A dictionary containing the grid of SEDs, photometry, and properties.
+        """
+        return self.create_full_grid(
+            override_instrument=None,
+            save=save,
+            overload_out_name=overload_out_name,
+            overwrite=overwrite,
+            spectral_mode=True,
+        )
 
 
 class GalaxySimulator(object):
@@ -4559,10 +4640,10 @@ class GalaxySimulator(object):
 
         # Check we understand all the parameters
 
-        assert len(found_params) - len(self.ignore_params) == self.num_emitter_params, (
-            f"Found {len(found_params)} parameters but expected {self.num_emitter_params}."
-            "Cannot create photometry."
-        )
+        # assert len(found_params) - len(self.ignore_params) >= self.num_emitter_params, (
+        #    f"Found {len(found_params)} parameters but expected {self.num_emitter_params}."
+        #    "Cannot create photometry."
+        # )
 
         stellar_keys = {}
         if "stellar" in self.emitter_params:

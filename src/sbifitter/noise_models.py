@@ -847,8 +847,14 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
             snr = snr[order]
             ftemp = ftemp[order]
 
-            self.log_snr_interpolator = interp1d(np.log10(snr), np.log10(ftemp), kind="linear", bounds_error=False, fill_value="extrapolate")
-            upper_limit_value = 10**(
+            self.log_snr_interpolator = interp1d(
+                np.log10(snr),
+                np.log10(ftemp),
+                kind="linear",
+                bounds_error=False,
+                fill_value="extrapolate",
+            )
+            upper_limit_value = 10 ** (
                 self.log_snr_interpolator(np.log10(treat_as_upper_limits_below))
             )
             # Convert upper_limit_value back to the original flux unit
@@ -1081,8 +1087,8 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
                 temp_flux_array = unyt_array(flux_array, units=self.flux_unit).to("Jy").value
                 temp_sig = unyt_array(sampled_sigma_prime, units=self.flux_unit).to("Jy").value
             snr = (temp_flux_array / temp_sig).value.astype(float)
-            #print(type(snr), snr.dtype, snr.shape)
-            #print(self.treat_as_upper_limits_below, type(self.treat_as_upper_limits_below))
+            # print(type(snr), snr.dtype, snr.shape)
+            # print(self.treat_as_upper_limits_below, type(self.treat_as_upper_limits_below))
             umask = (snr < self.treat_as_upper_limits_below) | (
                 np.isnan(temp_sig) | np.isnan(temp_flux_array)
             )
@@ -1170,9 +1176,7 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
                     # val is in Jy, convert to AB
                     val = 2.5 / (sig_val * np.log(10))
                 else:
-                    val = 10**self.log_snr_interpolator(
-                        np.log10(sig_val)
-                    )
+                    val = 10 ** self.log_snr_interpolator(np.log10(sig_val))
                     # Find the error at this value
                     val = self.mu_sigma_interpolator(val)
                 sampled_sigma_prime[m] = val
@@ -1211,7 +1215,10 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
                         # Assume it is a sigma value, and calculate
                         # error in the same way as we calculated the SNR
                         # before.
-                        f_b = [10**self.log_snr_interpolator(np.log10(i)) for i in asinh_softening_parameter]
+                        f_b = [
+                            10 ** self.log_snr_interpolator(np.log10(i))
+                            for i in asinh_softening_parameter
+                        ]
                         f_b = unyt_array(f_b, units=self.flux_unit).to(Jy)
 
                     # Convert to asinh magnitude
@@ -1375,10 +1382,119 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
                 )
                 output[group_name] = model
 
+                model.h5_path = hdf5_file
+                model.h5_group_name = group_name
+                # Can assume that if we've been loaded we can throw away the
+                # observed_fluxes and observed_errors, as they are not needed anymore.
+                model.observed_fluxes = None
+                model.observed_errors = None
+                # print('Set for group', group_name, 'in', hdf5_file)
+
+                # force cleanup
+                import gc
+
+                gc.collect()
+
         if len(output) == 1:
             return output[group_names[0]]
 
         return output
+
+    def apply_scalings(
+        self, flux: unyt_array, flux_error: unyt_array, out_units: str = None
+    ) -> Tuple[unyt_array, unyt_array]:
+        """Applies the transformation (unit conversion, applying min/max limits) to the flux/error.
+
+        Can apply minimum and maximum flux error limits, and unit conversion if necessary.
+        Can apply handling of lower limits if set.
+
+        Parameters
+        ----------
+        flux : unyt_array
+            The flux values to which the scaling will be applied.
+        flux_error : unyt_array
+            The flux error values to which the scaling will be applied.
+
+        Returns:
+        -------
+        Tuple[unyt_array, unyt_array]
+            The scaled flux and flux error.
+        """
+        output_flux = np.zeros(flux.shape, dtype=float)
+        output_flux_error = np.zeros(flux_error.shape, dtype=float)
+
+        to_convert_mask = np.ones(flux.shape, dtype=bool)
+        if self.treat_as_upper_limits_below is not None:
+            # If upper limits are set, treat fluxes below the threshold as upper limits
+            # Calculate SNR, and apply upper limit condition.
+            temp_flux = flux.to("Jy").value
+            temp_error = flux_error.to("Jy").value
+
+            snr = temp_flux / temp_error
+            umask = snr < self.treat_as_upper_limits_below
+
+            # print('num', np.sum(umask), 'upper limits out of', len(umask))
+
+            if self.upper_limit_flux_behaviour == "scatter_limit":
+                scatter_lim = self.sigma_sigma_interpolator(self.upper_limit_value)
+                samples = stats.truncnorm.rvs(
+                    loc=0, scale=scatter_lim, a=-3, b=3, size=np.sum(umask)
+                )
+                output_flux[umask] = self.upper_limit_value + samples
+            elif self.upper_limit_flux_behaviour == "upper_limit":
+                output_flux[umask] = self.upper_limit_value
+            elif isinstance(self.upper_limit_flux_behaviour, (int, float)):
+                # If it is a float, use it as the upper limit value
+                output_flux[umask] = float(self.upper_limit_flux_behaviour)
+            else:
+                raise ValueError(
+                    f"""Unknown upper_limit_flux_behaviour:
+                    {self.upper_limit_flux_behaviour}
+                    Must be 'scatter_limit', 'upper_limit', or a float/int value."""
+                )
+            if self.upper_limit_flux_err_behaviour == "flux":
+                val_lim = self.mu_sigma_interpolator(self.upper_limit_value)
+                output_flux_error[umask] = val_lim
+            elif self.upper_limit_flux_err_behaviour == "upper_limit":
+                output_flux_error[umask] = self.upper_limit_value
+            elif self.upper_limit_flux_err_behaviour == "max":
+                output_flux_error[umask] = self.max_flux_error
+            elif self.upper_limit_flux_err_behaviour.startswith("sig_"):
+                sig_val = float(self.upper_limit_flux_err_behaviour.split("_")[1])
+                if self.flux_unit == "AB":
+                    # val is in Jy, convert to AB
+                    val = 2.5 / (sig_val * np.log(10))
+                else:
+                    val = 10 ** self.log_snr_interpolator(np.log10(sig_val))
+                    # Find the error at this value
+                    val = self.mu_sigma_interpolator(val)
+                output_flux_error[umask] = val
+            to_convert_mask[umask] = False
+
+        if out_units is not None:
+            if out_units == "AB":
+                temp_e = 2.5 / np.log(10) * (flux_error.to("Jy").value / flux.to("Jy").value)
+                temp_f = -2.5 * np.log10(flux.to("Jy").value) + 8.9
+            elif out_units == "asinh":
+                # Convert to asinh magnitude
+                temp_f, temp_e = f_jy_err_to_asinh(
+                    flux.to("Jy").value,
+                    flux_error.to("Jy").value,
+                    f_b=self.asinh_softening_parameter,
+                )
+            else:
+                temp_e = flux.to(out_units).value
+                temp_f = flux_error.to(out_units).value
+        output_flux[to_convert_mask] = temp_f[to_convert_mask]
+        output_flux_error[to_convert_mask] = temp_e[to_convert_mask]
+        # Apply minimum and maximum flux error limits
+        output_flux_error[output_flux_error < self.min_flux_error] = self.min_flux_error
+        if self.max_flux_error is not None:
+            output_flux_error[output_flux_error > self.max_flux_error] = self.max_flux_error
+
+        # print('out', output_flux, output_flux_error)
+
+        return output_flux, output_flux_error
 
 
 def create_uncertainity_models_from_EPOCHS_cat(

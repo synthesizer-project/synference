@@ -626,7 +626,7 @@ class TestSBIFitter:
         fitter.create_feature_array_from_raw_photometry(normed_flux_units=nJy)
 
         # Test including errors
-        depths = np.array([29] * len(fitter.raw_photometry_names))
+        depths = np.array([29] * len(fitter.raw_observation_names))
         depths = (10 ** (-0.4 * (depths - 8.9))) / 5 * Jy
         fitter.create_feature_array_from_raw_photometry(scatter_fluxes=True, depths=depths)
 
@@ -643,7 +643,7 @@ class TestSBIFitter:
 
         # Test including a specific variety of missing bands
         missing_flux_options = np.random.randint(
-            0, 1, (5, len(fitter.raw_photometry_names))
+            0, 1, (5, len(fitter.raw_observation_names))
         ).astype(bool)
         fitter.create_feature_array_from_raw_photometry(
             simulate_missing_fluxes=True,
@@ -655,7 +655,7 @@ class TestSBIFitter:
 
         # Test removing a feature
         fitter.create_feature_array_from_raw_photometry(
-            photometry_to_remove=[fitter.raw_photometry_names[0]]
+            photometry_to_remove=[fitter.raw_observation_names[0]]
         )
 
         # Test removing a feature that does not exist
