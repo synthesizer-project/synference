@@ -46,7 +46,7 @@ class Args:
     hidden_features: int = 64
     num_transforms: int = 6
     num_components: int = 10
-    scatter_fluxes: float = 10.0
+    scatter_fluxes: float = 1
     include_errors_in_feature_array: bool = True
     norm_mag_limit: float = 40.0
     drop_dropouts: bool = True
@@ -64,6 +64,9 @@ class Args:
     norm_method: str = None
     device: str = "cuda:0"
     simformer: bool = False  # If True, use SimFormer for training
+    n_optimize_jobs: int = 1  # Number of parallel jobs for optimization
+    n_trials: int = 100  # Number of trials for optimization
+    optimize: bool = False  # If True, run Optuna optimization
 
 
 parser.add_arguments(Args, dest="args")
@@ -115,7 +118,7 @@ def main_task(args: Args) -> None:
             args.data_err_file,
             bands,
             new_band_names,
-            plot=True,
+            plot=False,
             hdu=args.data_err_hdu,
             save_path=out_dir,
             save=True,
@@ -215,7 +218,7 @@ def main_task(args: Args) -> None:
         norm_mag_limit=args.norm_mag_limit,
         drop_dropouts=args.drop_dropouts,
         drop_dropout_fraction=args.drop_dropout_fraction,
-        parameters_to_add=args.parameters_to_add,
+        parameters_to_add=args.parameters_to_add[0].split(",") if args.parameters_to_add else [],
         parameter_transformations=parameter_transformations,
         max_rows=args.max_rows,
     )
@@ -228,6 +231,41 @@ def main_task(args: Args) -> None:
     # dx = 2 * (v75 - v25) / (n ** (1 / 3))
     empirical_model_fitter.plot_histogram_feature_array(bins="scott")
     empirical_model_fitter.plot_histogram_parameter_array(bins="scott")
+
+    if args.simformer and args.optimize:
+        raise NotImplementedError(
+            "SimFormer optimization is not implemented yet. Please set --optimize=False.")
+
+    if args.optimize:
+        num_name = "num_components" if args.model_types == "mdn" else "num_transforms"
+        train_params = dict(
+            study_name = f'{args.model_name}{args.name_append}',
+            suggested_hyperparameters = {
+                "learning_rate": [1e-6, 1e-3],
+                "hidden_features": [12, 500],
+                num_name: [2, 20],
+                "training_batch_size": [32, 128],
+                "stop_after_epochs": [10, 30],
+                "clip_max_norm": [0.1, 5.0],
+                "validation_fraction": [0.1, 0.3],
+            },
+            fixed_hyperparameters = {
+                "n_nets": args.n_nets, 
+                "model_type": args.model_types,
+                "backend": args.backend,
+                "engine": args.engine,
+            },
+            n_trials =args.n_trials,
+            n_jobs = args.n_optimize_jobs,
+            random_seed = 42,
+            verbose = True,
+            persistent_storage = False,
+            score_metrics=["log_prob", "tarp"],
+            direction=["maximize", "minimize"],
+            timeout_minutes_trial_sampling = 15.0,
+        )
+
+        empirical_model_fitter.optimize_sbi(**train_params)
 
     if not args.simformer:
         args = dict(
