@@ -339,6 +339,7 @@ class SBI_Fitter:
                 else:
                     raise ValueError(
                         f"Can't add {param} to parameter array - not found in supplementary parameters."  # noqa: E501
+                        f" Available parameters: {self.supplementary_parameter_names}"  # noqa: E501
                     )
 
         if n_scatters > 1:
@@ -2746,6 +2747,7 @@ class SBI_Fitter:
             plot=False,
             verbose=verbose,
             evaluate_model=False,
+            load_existing_model=False,
             **parameters,
         )
 
@@ -2762,8 +2764,12 @@ class SBI_Fitter:
             )
 
         # Set the signal handler
-        old_handler = signal.signal(signal.SIGALRM, timeout_handler)
-        signal.alarm(int(timeout_seconds))
+        try:
+            old_handler = signal.signal(signal.SIGALRM, timeout_handler)
+            signal.alarm(int(timeout_seconds))
+        except ValueError:
+            # If signal.alarm is not available (e.g., on Windows), we skip the timeout
+            old_handler = None
 
         try:
             if isinstance(score, str):
@@ -2800,7 +2806,8 @@ class SBI_Fitter:
             signal.alarm(0)  # Disable the alarm
             raise e
         finally:
-            signal.signal(signal.SIGALRM, old_handler)
+            if old_handler is not None:
+                signal.signal(signal.SIGALRM, old_handler)
 
     def run_single_sbi(
         self,
