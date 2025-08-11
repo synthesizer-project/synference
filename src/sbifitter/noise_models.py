@@ -1,5 +1,6 @@
 """Noise models for photometric fluxes."""
 
+import copy
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import matplotlib.pyplot as plt
@@ -694,6 +695,9 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
         upper_limit_flux_behaviour: str = "scatter_limit",
         upper_limit_flux_err_behaviour: str = "flux",
         max_flux_error: Optional[float] = None,
+        already_binned: bool = False,
+        bin_median_errors=None,
+        bin_std_errors=None,
     ):
         """Uncertainity model from observed data.
 
@@ -738,7 +742,13 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
                 - 'sig_{val}': Find the error at a specific value, e.g., 'sig_1'
                     will find the error at 1 sigma.
             max_flux_error: Maximum flux error to allow. If None, no maximum is applied.
-
+            already_binned: If True, the observed_fluxes and observed_errors are already binned
+            and do not need to be binned again. This is useful for cases where the
+            fluxes and errors are already pre-processed and ready for interpolation.
+            bin_median_errors: Optional pre-computed median errors for each bin.
+                only used if already_binned is True.
+            bin_std_errors: Optional pre-computed standard deviations for each bin.
+                Only used if already_binned is True.
         """
         if len(observed_fluxes) != len(observed_errors):
             raise ValueError("observed_fluxes and observed_errors must have the same length.")
@@ -749,6 +759,8 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
         self.num_bins = num_bins
         self.flux_bins = flux_bins
         self.log_bins = log_bins
+        if min_flux_for_binning == "None":
+            min_flux_for_binning = None
         self.min_flux_for_binning = min_flux_for_binning
         self.min_samples_per_bin = min_samples_per_bin
         self.flux_unit = flux_unit
@@ -814,8 +826,6 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
                 "If upper_limits is True, treat_as_upper_limits_below must be provided."
             )
 
-        self.max_observed_flux_err = np.max(errors)
-
         self.upper_limits = upper_limits
         self.treat_as_upper_limits_below = treat_as_upper_limits_below
         self.upper_limit_flux_behaviour = upper_limit_flux_behaviour
@@ -830,8 +840,23 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
                 ftemp = fluxes
                 etemp = errors
 
-            self.snr_interpolator = interp1d(ftemp / etemp, ftemp)
-            upper_limit_value = self.snr_interpolator(treat_as_upper_limits_below)
+            self.snr_x = ftemp / etemp  # Calculate SNR
+            self.snr_y = ftemp.copy()  # Copy fluxes for SNR interpolation
+            snr = ftemp / etemp
+            order = np.argsort(snr)
+            snr = snr[order]
+            ftemp = ftemp[order]
+
+            self.log_snr_interpolator = interp1d(
+                np.log10(snr),
+                np.log10(ftemp),
+                kind="linear",
+                bounds_error=False,
+                fill_value="extrapolate",
+            )
+            upper_limit_value = 10 ** (
+                self.log_snr_interpolator(np.log10(treat_as_upper_limits_below))
+            )
             # Convert upper_limit_value back to the original flux unit
             if flux_unit == "AB":
                 upper_limit_value = -2.5 * np.log10(upper_limit_value) + 8.9
@@ -842,61 +867,64 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
 
         self.max_flux_error = max_flux_error if max_flux_error is not None else np.inf
 
-        if len(fluxes) < min_samples_per_bin * 2:  # Need at least two bins for interpolation
-            raise ValueError(
-                f"Not enough valid data points ({len(fluxes)}) to build the model "
-                f"with min_samples_per_bin={min_samples_per_bin}. "
-                "Consider adjusting min_flux_for_binning or providing more data."
-            )
+        if not already_binned:
+            if len(fluxes) < min_samples_per_bin * 2:  # Need at least two bins for interpolation
+                raise ValueError(
+                    f"Not enough valid data points ({len(fluxes)}) to build the model "
+                    f"with min_samples_per_bin={min_samples_per_bin}. "
+                    "Consider adjusting min_flux_for_binning or providing more data."
+                )
 
-        if flux_bins is None:
-            if log_bins:
-                # Ensure fluxes are positive for log binning
-                positive_flux_mask = fluxes > 0
-                if not np.any(positive_flux_mask):
-                    raise ValueError(
-                        """No positive fluxes available for log binning.
-                        Try linear bins or check data."""
-                    )
-                min_f = np.min(fluxes[positive_flux_mask])
-                max_f = np.max(fluxes[positive_flux_mask])
-                if min_f <= 0:  # Should be caught by positive_flux_mask, but as safeguard
-                    min_f = (
-                        np.partition(fluxes[positive_flux_mask], 1)[1]
-                        if len(fluxes[positive_flux_mask]) > 1
-                        else 1e-9
-                    )
-                flux_bins = np.logspace(np.log10(min_f), np.log10(max_f), num_bins + 1)
-            else:
-                min_f = np.min(fluxes)
-                max_f = np.max(fluxes)
-                flux_bins = np.linspace(min_f, max_f, num_bins + 1)
+            if flux_bins is None:
+                if log_bins:
+                    # Ensure fluxes are positive for log binning
+                    positive_flux_mask = fluxes > 0
+                    if not np.any(positive_flux_mask):
+                        raise ValueError(
+                            """No positive fluxes available for log binning.
+                            Try linear bins or check data."""
+                        )
+                    min_f = np.min(fluxes[positive_flux_mask])
+                    max_f = np.max(fluxes[positive_flux_mask])
+                    if min_f <= 0:  # Should be caught by positive_flux_mask, but as safeguard
+                        min_f = (
+                            np.partition(fluxes[positive_flux_mask], 1)[1]
+                            if len(fluxes[positive_flux_mask]) > 1
+                            else 1e-9
+                        )
+                    flux_bins = np.logspace(np.log10(min_f), np.log10(max_f), num_bins + 1)
+                else:
+                    min_f = np.min(fluxes)
+                    max_f = np.max(fluxes)
+                    flux_bins = np.linspace(min_f, max_f, num_bins + 1)
 
-        self.flux_bins_centers: List[float] = []
-        bin_median_errors: List[float] = []
-        bin_std_errors: List[float] = []
+            self.flux_bins_centers: List[float] = []
+            bin_median_errors: List[float] = []
+            bin_std_errors: List[float] = []
 
-        for i in range(len(flux_bins) - 1):
-            low_f, high_f = flux_bins[i], flux_bins[i + 1]
-            # Ensure the last bin includes the maximum value
-            if i == len(flux_bins) - 2:
-                mask = (fluxes >= low_f) & (fluxes <= high_f)
-            else:
-                mask = (fluxes >= low_f) & (fluxes < high_f)
+            for i in range(len(flux_bins) - 1):
+                low_f, high_f = flux_bins[i], flux_bins[i + 1]
+                # Ensure the last bin includes the maximum value
+                if i == len(flux_bins) - 2:
+                    mask = (fluxes >= low_f) & (fluxes <= high_f)
+                else:
+                    mask = (fluxes >= low_f) & (fluxes < high_f)
 
-            errors_in_bin = errors[mask]
+                errors_in_bin = errors[mask]
 
-            if len(errors_in_bin) >= min_samples_per_bin:
-                self.flux_bins_centers.append(low_f + (high_f - low_f) / 2.0)  # Bin center
-                bin_median_errors.append(np.median(errors_in_bin))
-                bin_std_errors.append(np.std(errors_in_bin))
+                if len(errors_in_bin) >= min_samples_per_bin:
+                    self.flux_bins_centers.append(low_f + (high_f - low_f) / 2.0)  # Bin center
+                    bin_median_errors.append(np.median(errors_in_bin))
+                    bin_std_errors.append(np.std(errors_in_bin))
 
-        if len(self.flux_bins_centers) < 2:  # Need at least two points for interpolation
-            raise ValueError(
-                f"Could not create enough valid bins ({len(self.flux_bins_centers)}) "
-                f"for interpolation with min_samples_per_bin={min_samples_per_bin}. "
-                "Try reducing num_bins, adjusting flux_bins, or min_flux_for_binning."
-            )
+            if len(self.flux_bins_centers) < 2:  # Need at least two points for interpolation
+                raise ValueError(
+                    f"Could not create enough valid bins ({len(self.flux_bins_centers)}) "
+                    f"for interpolation with min_samples_per_bin={min_samples_per_bin}. "
+                    "Try reducing num_bins, adjusting flux_bins, or min_flux_for_binning."
+                )
+        else:
+            self.flux_bins_centers = flux_bins
 
         self.flux_bins_centers = np.array(self.flux_bins_centers)
         # Store the flux range for which the model is considered valid
@@ -1012,7 +1040,7 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
             asinh transformation.
 
         """
-        true_flux = true_flux.copy()
+        true_flux = copy.deepcopy(true_flux)
 
         if out_units == "asinh":
             assert asinh_softening_parameter is not None, (
@@ -1058,8 +1086,10 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
             else:
                 temp_flux_array = unyt_array(flux_array, units=self.flux_unit).to("Jy").value
                 temp_sig = unyt_array(sampled_sigma_prime, units=self.flux_unit).to("Jy").value
-
-            umask = (temp_flux_array / temp_sig < self.treat_as_upper_limits_below) | (
+            snr = (temp_flux_array / temp_sig).value.astype(float)
+            # print(type(snr), snr.dtype, snr.shape)
+            # print(self.treat_as_upper_limits_below, type(self.treat_as_upper_limits_below))
+            umask = (snr < self.treat_as_upper_limits_below) | (
                 np.isnan(temp_sig) | np.isnan(temp_flux_array)
             )
             # print(umask)
@@ -1112,14 +1142,9 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
                 | np.isnan(temp_sigma_prime)
             )  # Ensure we mask out NaNs and infinities
 
-            # set max to
-            val_lim = self.mu_sigma_interpolator(
-                self.upper_limit_value
-            )  # Use the interpolated sigma for the upper limit value but include scatter
-            scatter_lim = self.sigma_sigma_interpolator(self.upper_limit_value)
-
             # Set upper limit flux behaviour
             if self.upper_limit_flux_behaviour == "scatter_limit":
+                scatter_lim = self.sigma_sigma_interpolator(self.upper_limit_value)
                 samples = stats.truncnorm.rvs(loc=0, scale=scatter_lim, a=-3, b=3, size=np.sum(m))
                 noisy_flux_array[m] = self.upper_limit_value + samples
             elif self.upper_limit_flux_behaviour == "upper_limit":
@@ -1136,6 +1161,9 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
 
             # Set upper limit flux error behaviour
             if self.upper_limit_flux_err_behaviour == "flux":
+                val_lim = self.mu_sigma_interpolator(
+                    self.upper_limit_value
+                )  # Use the interpolated sigma for the upper limit value but include scatter
                 sampled_sigma_prime[m] = val_lim
             elif self.upper_limit_flux_err_behaviour == "upper_limit":
                 sampled_sigma_prime[m] = self.upper_limit_value
@@ -1148,7 +1176,7 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
                     # val is in Jy, convert to AB
                     val = 2.5 / (sig_val * np.log(10))
                 else:
-                    val = self.snr_interpolator(sig_val)
+                    val = 10 ** self.log_snr_interpolator(np.log10(sig_val))
                     # Find the error at this value
                     val = self.mu_sigma_interpolator(val)
                 sampled_sigma_prime[m] = val
@@ -1187,7 +1215,10 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
                         # Assume it is a sigma value, and calculate
                         # error in the same way as we calculated the SNR
                         # before.
-                        f_b = [self.snr_interpolator(i) for i in asinh_softening_parameter]
+                        f_b = [
+                            10 ** self.log_snr_interpolator(np.log10(i))
+                            for i in asinh_softening_parameter
+                        ]
                         f_b = unyt_array(f_b, units=self.flux_unit).to(Jy)
 
                     # Convert to asinh magnitude
@@ -1213,16 +1244,24 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
             return noisy_flux_array[0], sampled_sigma_prime[0]
         return noisy_flux_array, sampled_sigma_prime
 
-    def serialize_to_hdf5(self, hdf5_file: str, group_name: str = "empirical_uncertainty_model"):
+    def serialize_to_hdf5(
+        self,
+        hdf5_file: str,
+        group_name: str = "empirical_uncertainty_model",
+        overwrite: bool = False,
+    ) -> None:
         """Serializes the model to an HDF5 file.
 
         Args:
             hdf5_file: Path to the HDF5 file where the model will be saved.
             group_name: Name of the group in the HDF5 file where the model will be stored.
+            overwrite: If True, overwrite the existing group if it exists.
         """
         import h5py
 
         with h5py.File(hdf5_file, "a") as f:
+            if overwrite and group_name in f:
+                del f[group_name]
             group = f.create_group(group_name)
             group.create_dataset("flux_bins_centers", data=self.flux_bins_centers)
             group.create_dataset(
@@ -1233,6 +1272,16 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
                 "sigma_sigma_values",
                 data=self.sigma_sigma_interpolator(self.flux_bins_centers),
             )
+            group.create_dataset(
+                "observed_fluxes",
+                data=self.observed_fluxes,
+                compression="gzip",
+            )
+            group.create_dataset(
+                "observed_errors",
+                data=self.observed_errors,
+                compression="gzip",
+            )
             group.attrs["num_bins"] = len(self.flux_bins_centers)
             group.attrs["flux_unit"] = self.flux_unit
             group.attrs["min_flux_error"] = self.min_flux_error
@@ -1240,15 +1289,19 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
             group.attrs["upper_limits"] = self.upper_limits
             group.attrs["error_type"] = self.error_type
             group.attrs["sigma_clip"] = self.sigma_clip
+            group.attrs["min_samples_per_bin"] = self.min_samples_per_bin
+            group.attrs["log_bins"] = self.log_bins
+            group.attrs["min_flux_for_binning"] = str(self.min_flux_for_binning)
+            group.attrs["interpolation_flux_unit"] = self.interpolation_flux_unit
 
             if self.upper_limits:
-                group.attrs["treat_as_upper_limits_below"] = self.treat_as_upper_limits_below
+                group.attrs["treat_as_upper_limits_below"] = int(self.treat_as_upper_limits_below)
                 group.attrs["upper_limit_value"] = self.upper_limit_value
                 group.attrs["upper_limit_flux_behaviour"] = self.upper_limit_flux_behaviour
                 group.attrs["upper_limit_flux_err_behaviour"] = self.upper_limit_flux_err_behaviour
 
     @classmethod
-    def deserialize_from_hdf5(cls, hdf5_file: str, group_name: str = "empirical_uncertainty_model"):
+    def deserialize_from_hdf5(cls, hdf5_file: str, group_name: str = "all"):
         """Deserializes the model from an HDF5 file.
 
         Args:
@@ -1261,42 +1314,187 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
         """
         import h5py
 
+        output = {}
         with h5py.File(hdf5_file, "r") as f:
-            group = f[group_name]
-            flux_bins_centers = group["flux_bins_centers"][:]
-            mu_sigma_values = group["mu_sigma_values"][:]
-            num_bins = group.attrs["num_bins"]
-            flux_unit = group.attrs["flux_unit"]
-            min_flux_error = group.attrs["min_flux_error"]
-            max_flux_error = group.attrs["max_flux_error"]
-            upper_limits = group.attrs.get("upper_limits", False)
-            treat_as_upper_limits_below = group.attrs.get("treat_as_upper_limits_below", None)
-            upper_limit_flux_behaviour = group.attrs.get(
-                "upper_limit_flux_behaviour", "scatter_limit"
-            )
-            upper_limit_flux_err_behaviour = group.attrs.get(
-                "upper_limit_flux_err_behaviour", "flux"
-            )
+            if group_name == "all":
+                group_names = list(f.keys())
+            else:
+                group_names = [group_name]
+            for group_name in group_names:
+                group = f[group_name]
+                observed_fluxes = group["observed_fluxes"][:]
+                observed_errors = group["observed_errors"][:]
+                flux_bins_centers = group["flux_bins_centers"][:]
+                mu_sigma_values = group["mu_sigma_values"][:]
+                sigma_sigma_values = group["sigma_sigma_values"][:]
+                num_bins = group.attrs["num_bins"]
+                flux_unit = group.attrs["flux_unit"]
+                min_flux_error = group.attrs["min_flux_error"]
+                max_flux_error = group.attrs["max_flux_error"]
+                upper_limits = group.attrs.get("upper_limits", False)
+                treat_as_upper_limits_below = group.attrs.get("treat_as_upper_limits_below", None)
+                if treat_as_upper_limits_below is not None:
+                    treat_as_upper_limits_below = float(treat_as_upper_limits_below)
+                upper_limit_flux_behaviour = group.attrs.get(
+                    "upper_limit_flux_behaviour", "scatter_limit"
+                )
+                try:
+                    upper_limit_flux_behaviour = float(upper_limit_flux_behaviour)
+                except ValueError:
+                    # If it cannot be converted to float, keep it as a string
+                    pass
+                upper_limit_flux_err_behaviour = group.attrs.get(
+                    "upper_limit_flux_err_behaviour", "flux"
+                )
+                try:
+                    upper_limit_flux_err_behaviour = float(upper_limit_flux_err_behaviour)
+                except ValueError:
+                    # If it cannot be converted to float, keep it as a string
+                    pass
+                error_type = group.attrs.get("error_type", "empirical")
+                sigma_clip = group.attrs.get("sigma_clip", 3.0)
+                log_bins = group.attrs.get("log_bins", True)
+                min_flux_for_binning = group.attrs.get("min_flux_for_binning", None)
+                interpolation_flux_unit = group.attrs.get("interpolation_flux_unit", flux_unit)
+                min_samples_per_bin = group.attrs.get("min_samples_per_bin", 10)
 
-        model = cls(
-            observed_fluxes=flux_bins_centers,
-            observed_errors=mu_sigma_values,
-            num_bins=num_bins,
-            flux_bins=flux_bins_centers,
-            log_bins=False,  # Assuming linear bins for deserialization
-            min_samples_per_bin=1,  # Default value, can be adjusted later
-            flux_unit=flux_unit,
-            min_flux_error=min_flux_error,
-            error_type="empirical",  # Default value, can be adjusted later
-            sigma_clip=3.0,  # Default value, can be adjusted later
-            upper_limits=upper_limits,
-            treat_as_upper_limits_below=treat_as_upper_limits_below,
-            upper_limit_flux_behaviour=upper_limit_flux_behaviour,
-            upper_limit_flux_err_behaviour=upper_limit_flux_err_behaviour,
-            max_flux_error=max_flux_error,
-        )
+                model = cls(
+                    observed_fluxes=observed_fluxes,
+                    observed_errors=observed_errors,
+                    num_bins=num_bins,
+                    flux_bins=flux_bins_centers,
+                    log_bins=log_bins,
+                    min_samples_per_bin=min_samples_per_bin,
+                    flux_unit=flux_unit,
+                    min_flux_error=min_flux_error,
+                    error_type=error_type,
+                    sigma_clip=sigma_clip,
+                    upper_limits=upper_limits,
+                    treat_as_upper_limits_below=treat_as_upper_limits_below,
+                    upper_limit_flux_behaviour=upper_limit_flux_behaviour,
+                    upper_limit_flux_err_behaviour=upper_limit_flux_err_behaviour,
+                    max_flux_error=max_flux_error,
+                    interpolation_flux_unit=interpolation_flux_unit,
+                    min_flux_for_binning=min_flux_for_binning,
+                    already_binned=True,
+                    bin_median_errors=mu_sigma_values,
+                    bin_std_errors=sigma_sigma_values,
+                )
+                output[group_name] = model
 
-        return model
+                model.h5_path = hdf5_file
+                model.h5_group_name = group_name
+                # Can assume that if we've been loaded we can throw away the
+                # observed_fluxes and observed_errors, as they are not needed anymore.
+                model.observed_fluxes = None
+                model.observed_errors = None
+                # print('Set for group', group_name, 'in', hdf5_file)
+
+                # force cleanup
+                import gc
+
+                gc.collect()
+
+        if len(output) == 1:
+            return output[group_names[0]]
+
+        return output
+
+    def apply_scalings(
+        self, flux: unyt_array, flux_error: unyt_array, out_units: str = None
+    ) -> Tuple[unyt_array, unyt_array]:
+        """Applies the transformation (unit conversion, applying min/max limits) to the flux/error.
+
+        Can apply minimum and maximum flux error limits, and unit conversion if necessary.
+        Can apply handling of lower limits if set.
+
+        Parameters
+        ----------
+        flux : unyt_array
+            The flux values to which the scaling will be applied.
+        flux_error : unyt_array
+            The flux error values to which the scaling will be applied.
+
+        Returns:
+        -------
+        Tuple[unyt_array, unyt_array]
+            The scaled flux and flux error.
+        """
+        output_flux = np.zeros(flux.shape, dtype=float)
+        output_flux_error = np.zeros(flux_error.shape, dtype=float)
+
+        to_convert_mask = np.ones(flux.shape, dtype=bool)
+        if self.treat_as_upper_limits_below is not None:
+            # If upper limits are set, treat fluxes below the threshold as upper limits
+            # Calculate SNR, and apply upper limit condition.
+            temp_flux = flux.to("Jy").value
+            temp_error = flux_error.to("Jy").value
+
+            snr = temp_flux / temp_error
+            umask = snr < self.treat_as_upper_limits_below
+
+            # print('num', np.sum(umask), 'upper limits out of', len(umask))
+
+            if self.upper_limit_flux_behaviour == "scatter_limit":
+                scatter_lim = self.sigma_sigma_interpolator(self.upper_limit_value)
+                samples = stats.truncnorm.rvs(
+                    loc=0, scale=scatter_lim, a=-3, b=3, size=np.sum(umask)
+                )
+                output_flux[umask] = self.upper_limit_value + samples
+            elif self.upper_limit_flux_behaviour == "upper_limit":
+                output_flux[umask] = self.upper_limit_value
+            elif isinstance(self.upper_limit_flux_behaviour, (int, float)):
+                # If it is a float, use it as the upper limit value
+                output_flux[umask] = float(self.upper_limit_flux_behaviour)
+            else:
+                raise ValueError(
+                    f"""Unknown upper_limit_flux_behaviour:
+                    {self.upper_limit_flux_behaviour}
+                    Must be 'scatter_limit', 'upper_limit', or a float/int value."""
+                )
+            if self.upper_limit_flux_err_behaviour == "flux":
+                val_lim = self.mu_sigma_interpolator(self.upper_limit_value)
+                output_flux_error[umask] = val_lim
+            elif self.upper_limit_flux_err_behaviour == "upper_limit":
+                output_flux_error[umask] = self.upper_limit_value
+            elif self.upper_limit_flux_err_behaviour == "max":
+                output_flux_error[umask] = self.max_flux_error
+            elif self.upper_limit_flux_err_behaviour.startswith("sig_"):
+                sig_val = float(self.upper_limit_flux_err_behaviour.split("_")[1])
+                if self.flux_unit == "AB":
+                    # val is in Jy, convert to AB
+                    val = 2.5 / (sig_val * np.log(10))
+                else:
+                    val = 10 ** self.log_snr_interpolator(np.log10(sig_val))
+                    # Find the error at this value
+                    val = self.mu_sigma_interpolator(val)
+                output_flux_error[umask] = val
+            to_convert_mask[umask] = False
+
+        if out_units is not None:
+            if out_units == "AB":
+                temp_e = 2.5 / np.log(10) * (flux_error.to("Jy").value / flux.to("Jy").value)
+                temp_f = -2.5 * np.log10(flux.to("Jy").value) + 8.9
+            elif out_units == "asinh":
+                # Convert to asinh magnitude
+                temp_f, temp_e = f_jy_err_to_asinh(
+                    flux.to("Jy").value,
+                    flux_error.to("Jy").value,
+                    f_b=self.asinh_softening_parameter,
+                )
+            else:
+                temp_e = flux.to(out_units).value
+                temp_f = flux_error.to(out_units).value
+        output_flux[to_convert_mask] = temp_f[to_convert_mask]
+        output_flux_error[to_convert_mask] = temp_e[to_convert_mask]
+        # Apply minimum and maximum flux error limits
+        output_flux_error[output_flux_error < self.min_flux_error] = self.min_flux_error
+        if self.max_flux_error is not None:
+            output_flux_error[output_flux_error > self.max_flux_error] = self.max_flux_error
+
+        # print('out', output_flux, output_flux_error)
+
+        return output_flux, output_flux_error
 
 
 def create_uncertainity_models_from_EPOCHS_cat(
