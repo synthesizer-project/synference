@@ -721,7 +721,6 @@ class SBI_Fitter:
         flux_units: str = "AB",
         return_errors: bool = False,
         normed_flux_units: str = "AB",
-        asinh_softening_parameters: Union[List[unyt_array], List[float]] = None,
     ):
         """Apply empirical noise models to the photometry array.
 
@@ -738,10 +737,6 @@ class SBI_Fitter:
             flux_units: The units of the fluxes in the photometry array.
             return_errors: Whether to return the errors as well.
             normed_flux_units: The units of the fluxes after normalization.
-            asinh_softening_parameters: If normed_flux_units is 'asinh',
-                this can be a list of unyt_arrays with the same length as the number of
-                filters. These parameters are used to apply the asinh normalization.
-
 
         Returns:
             The photometry array with applied noise models.
@@ -1230,6 +1225,9 @@ class SBI_Fitter:
                 If a dict, it should map filter names to the softening parameters.
                 Or it can be 'SNR_{level} to set it from the noise model
                 or depths.
+                NOTE: NOT USED if Depth models are used for scattering fluxes.
+                MAY END UP DEPRECATING THIS AND DEPTH ARRAY ENTIRELY IN FAVOUR OF
+                A NOISE MODEL CLASS.
             max_rows: int, default -1.
                 The maximum number of rows to return in the feature array.
                 If -1, all rows are returned. If >0 and len(feature_array) > max_rows,
@@ -1383,7 +1381,6 @@ class SBI_Fitter:
                     return_errors=True,
                     flux_units=phot.units,
                     normed_flux_units=normed_flux_units,
-                    asinh_softening_parameters=asinh_softening_parameter,
                 )
                 converted = True
 
@@ -2860,6 +2857,22 @@ class SBI_Fitter:
         - validation_fraction: Fraction of the training set to use for validation.
         - stop_after_epochs: Number of epochs without improvement before stopping.
         - clip_max_norm: Maximum norm for gradient clipping.
+
+        Parameters:
+        ----------
+        - study_name: Name of the Optuna study.
+        - suggested_hyperparameters: Dictionary of hyperparameters to suggest.
+            Keys are hyperparameter names and values are lists of possible values.
+        - fixed_hyperparameters: Dictionary of hyperparameters to fix.
+            Keys are hyperparameter names and values are fixed values.
+        - n_trials: Number of trials to run in the optimization.
+        - n_jobs: Number of parallel jobs to run.
+            Note that Optuna uses the threading backend, not true parallelism,
+            so the Python GIL can still be a bottleneck. See
+            https://optuna.readthedocs.io/en/stable/faq.html#how-can-i-parallelize-optimization
+            for discussion.
+        - random_seed: Random seed for reproducibility.
+        - verbose: Whether to print progress and results.
         - persistent_storage: Whether to use persistent storage for the study.
         - out_dir: Directory to save the study results.
         - score_metrics: Metrics to use for scoring the trials. Either a string
@@ -2868,7 +2881,6 @@ class SBI_Fitter:
             or a list of directions if using multi-objective optimization.
         - timeout_minutes_trial_sampling: Timeout in minutes for each trial sampling.
             e.g. if sampling gets stuck, will prune this trial.
-
 
         """
         if not self.has_features and not self.has_simulator:
