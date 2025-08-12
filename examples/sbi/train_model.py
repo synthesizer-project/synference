@@ -240,13 +240,18 @@ def main_task(args: Args) -> None:
 
     if args.simformer and args.optimize:
         raise NotImplementedError(
-            "SimFormer optimization is not implemented yet. Please set --optimize=False.")
+            "SimFormer optimization is not implemented yet. Please set --optimize=False."
+        )
 
     if args.optimize:
+        if args.simformer:
+            raise NotImplementedError(
+                "Optimization for SimFormer is not implemented yet. Please set --optimize=False."
+            )
         num_name = "num_components" if args.model_types == "mdn" else "num_transforms"
         train_params = dict(
-            study_name = f'{args.model_name}{args.name_append}',
-            suggested_hyperparameters = {
+            study_name=f"{args.model_name}{args.name_append}",
+            suggested_hyperparameters={
                 "learning_rate": [1e-6, 1e-3],
                 "hidden_features": [12, 500],
                 num_name: [2, 20],
@@ -255,20 +260,20 @@ def main_task(args: Args) -> None:
                 "clip_max_norm": [0.1, 5.0],
                 "validation_fraction": [0.1, 0.3],
             },
-            fixed_hyperparameters = {
-                "n_nets": args.n_nets, 
+            fixed_hyperparameters={
+                "n_nets": args.n_nets,
                 "model_type": args.model_types,
                 "backend": args.backend,
                 "engine": args.engine,
             },
-            n_trials =args.n_trials,
-            n_jobs = args.n_optimize_jobs,
-            random_seed = 42,
-            verbose = True,
-            persistent_storage = False,
+            n_trials=args.n_trials,
+            n_jobs=args.n_optimize_jobs,
+            random_seed=42,
+            verbose=True,
+            persistent_storage=False,
             score_metrics=["log_prob", "tarp"],
             direction=["maximize", "minimize"],
-            timeout_minutes_trial_sampling = 15.0,
+            timeout_minutes_trial_sampling=15.0,
         )
 
         empirical_model_fitter.optimize_sbi(**train_params)
