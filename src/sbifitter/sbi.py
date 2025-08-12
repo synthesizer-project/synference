@@ -63,6 +63,7 @@ from .utils import (
     f_jy_to_asinh,
     load_grid_from_hdf5,
     optimize_sfh_xlimit,
+    make_serializable,
 )
 
 code_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -632,6 +633,83 @@ class SBI_Fitter:
             return output_arr, phot_errors
 
         return output_arr
+
+    def save_state(self,
+                   out_dir,
+                   name_append='',
+                   save_method='joblib',
+                   has_grid=True,
+                   **extras,
+    ):
+
+        param_dict = {
+            "feature_names": self.feature_names,
+            "feature_units": self.feature_units,
+            "fitted_parameter_units": self.fitted_parameter_units,
+            "fitted_parameter_names": self.fitted_parameter_names,
+            "timestamp": self._timestamp,
+            "prior": self._prior,
+            "grid_path": self.grid_path,
+            "name": self.name,
+            "has_simulator":self.has_simulator,
+        }
+
+        if has_grid:
+            param_dict["feature_array_flags"] = self.feature_array_flags
+            param_dict["feature_array"] = self.feature_array
+            param_dict["parameter_array"] = self.fitted_parameter_array
+
+        param_dict.update(extras)
+
+        # convery any torch tensors to numpy arrays on the cpu for compatibility
+        param_dict = make_serializable(param_dict,  allowed_types=[np.ndarray])
+        
+        if len(name_append) > 0 and name_append[0] != '_':
+            name_append = f'_{name_append}'
+
+        save_path = f"{out_dir}/{self.name}{name_append}_params.pkl"
+        if save_method == "torch":
+            with open(save_path, "wb") as f:
+                torch.save(
+                    param_dict,
+                    save_path,
+                )
+        elif save_method == "pickle":
+            with open(save_path, "wb") as f:
+                pickle.dump(
+                    param_dict,
+                    f,
+                    protocol=pickle.HIGHEST_PROTOCOL,
+                )
+        elif save_method == "joblib":
+            from joblib import dump
+
+            dump(param_dict, save_path, compress=3)
+        elif save_method == "hdf5":
+            import h5py
+
+            save_path = save_path.replace(".pkl", ".h5")
+
+            with h5py.File(save_path, "w") as f:
+                for key, value in param_dict.items():
+                    if isinstance(value, np.ndarray):
+                        f.create_dataset(key, data=value)
+                    elif isinstance(value, torch.Tensor):
+                        f.create_dataset(key, data=value.cpu().numpy())
+                    else:
+                        f.attrs[key] = value
+        elif save_method == "hickle":
+            save_path = save_path.replace(".pkl", ".h5")
+            import hickle
+
+            hickle.dump(param_dict, save_path, mode="w", compression="gzip")
+
+        else:
+            raise ValueError("Invalid save method. Use 'torch', 'pickle' or 'joblib'.")
+
+        print(f'Saved model parameters to {save_path}.')
+
+                
 
     def _apply_empirical_noise_models(
         self,
@@ -1294,6 +1372,7 @@ class SBI_Fitter:
             elif empirical_noise_models is not None:
                 print(f"""Using empirical noise models with {scatter_fluxes} scatters per row.""")
                 self.empirical_noise_models = empirical_noise_models
+
 
                 phot, phot_errors = self._apply_empirical_noise_models(
                     phot,
@@ -2062,10 +2141,10 @@ class SBI_Fitter:
         if len(self.feature_array_flags) == 0:
             raise ValueError("No feature array flags found. Please create the feature array first.")
 
-        if not getattr(self, "has_features", False):
-            raise RuntimeError(
-                "The feature creation pipeline has not been initialized. Please run `create_feature_array_from_raw_photometry` first."  # noqa: E501
-            )
+        #if not getattr(self, "has_features", False):
+        #    raise RuntimeError(
+        #    )
+        #        "The feature creation pipeline has not been initialized. Please run `create_feature_array_from_raw_photometry` first."  # noqa: E501
 
         feature_array_flags = self.feature_array_flags
 
@@ -2244,10 +2323,13 @@ class SBI_Fitter:
         # Check if the flux units match the training data
         training_flux_units = feature_array_flags["normed_flux_units"]
 
+        print('empirical_noise_models', feature_array_flags['empirical_noise_models'])
+        print(feature_array_flags)
+
         if feature_array_flags["empirical_noise_models"] is not None:
             for model_name, key in feature_array_flags["empirical_noise_models"].items():
                 if isinstance(key, tuple):
-                    print("Loading noise models from HDF5. ")
+                    print("Loading noise models from HDF5.")
                     path, group_name = key
                     empirical_model = GeneralEmpiricalUncertaintyModel.deserialize_from_hdf5(
                         path, group_name
@@ -2318,9 +2400,6 @@ class SBI_Fitter:
             num = np.sum(mask)
             if num > 0:
                 print(f"Replacing {num} NaN or Inf values with {missing_data_flag}.")
-            feature_array = feature_array[
-                :, ~mask.any(axis=0)
-            ]  # Remove columns with NaN or Inf values
             removed_data[mask.any(axis=0)] = True
 
         missing_mask = feature_array == missing_data_flag
@@ -2335,10 +2414,9 @@ class SBI_Fitter:
             nmiss = np.sum(missing_mask)
             if nmiss > 0:
                 print(f"Removing {nmiss} observations with missing data.")
-            feature_array = feature_array[
-                :, ~missing_mask.any(axis=0)
-            ]  # Remove columns with missing data
             removed_data[missing_mask.any(axis=0)] = True
+
+        feature_array = feature_array[:, ~removed_data]
 
         mask = feature_array > feature_array_flags["norm_mag_limit"]
         feature_array[mask] = feature_array_flags["norm_mag_limit"]
@@ -2401,6 +2479,7 @@ class SBI_Fitter:
         plot_SEDs: bool = False,
         check_out_of_distribution: bool = True,
         simulator: Optional[GalaxySimulator] = None,
+        **kwargs,
     ):
         """Infer posteriors for observational data.
 
@@ -2452,6 +2531,7 @@ class SBI_Fitter:
         simulator : Optional[GalaxySimulator]
             simulator: A GalaxySimulator object to use for generating the SED. Optional.
             Will attempt to create one from the grid if not provided, or use the existing one.
+        **kwargs: Optional params - only used internally for simformer model.
 
         Returns:
         -------
@@ -2477,13 +2557,24 @@ class SBI_Fitter:
             # If return_feature_array is True, return the feature array and the mask
             return feature_array, obs_mask
 
-        samples = self.sample_posterior(
-            X_test=feature_array,
-            sample_method=sample_method,
-            sample_kwargs=sample_kwargs,
-            num_samples=num_samples,
-            timeout_seconds_per_test=timeout_seconds_per_row,
-        )
+        if isinstance(self, Simformer_Fitter):
+            samples = self.sample_posterior(
+                X_test=feature_array,
+                num_samples=num_samples,
+                **kwargs,
+            )
+            samples_quant = samples
+    
+        else:
+            samples = self.sample_posterior(
+                X_test=feature_array,
+                sample_method=sample_method,
+                sample_kwargs=sample_kwargs,
+                num_samples=num_samples,
+                timeout_seconds_per_test=timeout_seconds_per_row,
+            )
+
+            samples_quant = samples.transpose(2, 0, 1)
 
         print("Obtained posterior samples.")
         # Rearrange into correct shape for quantiles
@@ -3563,18 +3654,9 @@ class SBI_Fitter:
                 "ensemble_model_types": ensemble_model_types,
                 "ensemble_model_args": ensemble_model_args,
                 "n_nets": n_nets,
-                "feature_names": self.feature_names,
-                "feature_units": self.feature_units,
-                "fitted_parameter_units": self.fitted_parameter_units,
-                "fitted_parameter_names": self.fitted_parameter_names,
                 "train_args": train_args,
                 "stats": stats,
-                "timestamp": self._timestamp,
-                "prior": self._prior,
-                "grid_path": self.grid_path,
-                "name": self.name,
             }
-            array_dict = {}
 
             if learning_type == "online" or initial_training_from_grid:
                 param_dict["simulator"] = simulator
@@ -3585,76 +3667,19 @@ class SBI_Fitter:
 
             if learning_type == "offline":
                 param_dict["train_fraction"] = train_test_fraction
-                param_dict["feature_array_flags"] = self.feature_array_flags
+                param_dict["test_indices"] = test_indices
+                param_dict["train_indices"] = train_indices
+  
 
-                array_dict["test_indices"] = test_indices
-                array_dict["train_indices"] = train_indices
-                array_dict["feature_array"] = self.feature_array
-                array_dict["parameter_array"] = self.fitted_parameter_array
+            self.save_state(
+                out_dir=out_dir,
+                name_append=name_append,
+                save_method=save_method,
+                has_grid=learning_type == "offline" or initial_training_from_grid,
+                **param_dict,
+            )
 
-            # convery any torch tensors to numpy arrays on the cpu for compatibility
-            for key, value in param_dict.items():
-                if isinstance(value, torch.Tensor):
-                    param_dict[key] = value.cpu().numpy()
-            for key, value in array_dict.items():
-                if isinstance(value, torch.Tensor):
-                    array_dict[key] = value.cpu().numpy()
-
-            save_path = f"{out_dir}/{self.name}_{name_append}_params.pkl"
-            save_array_path = f"{out_dir}/{self.name}_{name_append}_arrays.pkl"
-            if save_method == "torch":
-                with open(save_path, "wb") as f:
-                    torch.save(
-                        param_dict,
-                        save_path,
-                    )
-                with open(save_array_path, "wb") as f:
-                    torch.save(
-                        array_dict,
-                        save_array_path,
-                    )
-            elif save_method == "pickle":
-                with open(save_path, "wb") as f:
-                    pickle.dump(
-                        param_dict,
-                        f,
-                        protocol=pickle.HIGHEST_PROTOCOL,
-                    )
-                with open(save_array_path, "wb") as f:
-                    pickle.dump(
-                        array_dict,
-                        f,
-                        protocol=pickle.HIGHEST_PROTOCOL,
-                    )
-            elif save_method == "joblib":
-                from joblib import dump
-
-                dump(param_dict, save_path, compress=3)
-                dump(array_dict, save_array_path, compress=3)
-            elif save_method == "hdf5":
-                import h5py
-
-                save_path = save_path.replace(".pkl", ".h5")
-
-                with h5py.File(save_path, "w") as f:
-                    for key, value in param_dict.items():
-                        if isinstance(value, np.ndarray):
-                            f.create_dataset(key, data=value)
-                        elif isinstance(value, torch.Tensor):
-                            f.create_dataset(key, data=value.cpu().numpy())
-                        else:
-                            f.attrs[key] = value
-            elif save_method == "hickle":
-                save_path = save_path.replace(".pkl", ".h5")
-                save_array_path = save_array_path.replace(".pkl", ".h5")
-                import hickle
-
-                hickle.dump(param_dict, save_path, mode="w", compression="gzip")
-                hickle.dump(array_dict, save_array_path, mode="w", compression="gzip")
-
-            else:
-                raise ValueError("Invalid save method. Use 'torch', 'pickle' or 'joblib'.")
-
+            
         if plot:
             if learning_type == "offline":
                 # Deal with the sampling method.
@@ -3700,8 +3725,11 @@ class SBI_Fitter:
 
                 # dump metrics to json file
                 metrics_path = f"{out_dir}/{self.name}_{name_append}_metrics.json"
-                with open(metrics_path, "w") as f:
-                    json.dump(metrics, f, indent=4)
+                try:
+                    with open(metrics_path, "w") as f:
+                        json.dump(metrics, f, indent=4)
+                except Exception as e:
+                    print(f"Error saving metrics to {metrics_path}: {e}")
 
         return posteriors, stats
 
@@ -4316,6 +4344,7 @@ class SBI_Fitter:
         posteriors: object = None,
         num_samples: int = 1000,
         timeout_seconds_per_test=30,
+        **kwargs,
     ) -> np.ndarray:
         """Sample from the posterior distribution.
 
@@ -4536,6 +4565,8 @@ class SBI_Fitter:
         except Exception:
             pass
 
+        metrics = make_serializable(metrics)
+
         if verbose:
             # print a nicely formatted table of the metrics.
             # For metrics which are per parameter, print as a table
@@ -4617,15 +4648,7 @@ class SBI_Fitter:
 
             print("=" * 60)
         # convert numpy arrays to lists for JSON serialization
-        for key in metrics:
-            if isinstance(metrics[key], np.ndarray):
-                metrics[key] = metrics[key].tolist()
-            if isinstance(metrics[key], torch.Tensor):
-                metrics[key] = metrics[key].cpu().numpy().tolist()
-            if isinstance(metrics[key], list):
-                metrics[key] = [float(x) for x in metrics[key]]
-            if isinstance(metrics[key], (np.float32, np.float64)):
-                metrics[key] = float(metrics[key])
+                
 
         if return_samples:
             return metrics, samples
@@ -6016,12 +6039,16 @@ class Simformer_Fitter(SBI_Fitter):
         if name_append == "timestamp":
             name_append = f"{self._timestamp}"
 
+        if len(name_append) > 0 and name_append[0] != '_':
+            name_append = f'_{name_append}'
+
+
         out_path = f"{code_path}/models/{self.name}/{self.name}{name_append}_posterior.pkl"
         if load_existing_model and os.path.exists(out_path):
             print(f"Loading existing model from {out_path}")
             trained_score_model, meta = self.load_model_from_pkl(
                 model_dir=f"{code_path}/models/{self.name}/",
-                model_name=f"{self.name}_{name_append}_posterior",
+                model_name=f"{self.name}{name_append}_posterior",
                 set_self=set_self,
             )
             run = True
@@ -6033,12 +6060,14 @@ class Simformer_Fitter(SBI_Fitter):
         if self.has_simulator:
             print("Using online simulator for training.")
             simulator_function = self.simulator
+            learning_type = 'online'
         else:
             print("Using pre-generated samples for training.")
             assert self.feature_array is not None, (
                 "Feature array must be provided for pre-generated samples."
             )
             simulator_function = None
+            learning_type = 'offline'
 
         if not self.has_simulator:
             # Split the dataset into training and validation sets.
@@ -6128,6 +6157,7 @@ class Simformer_Fitter(SBI_Fitter):
                 "train_test_fraction": train_test_fraction,
                 "attention_mask_type": attention_mask_type,
                 "has_simulator": self.has_simulator,
+                "learning_type": learning_type,
             },
         )
 
@@ -6166,6 +6196,9 @@ class Simformer_Fitter(SBI_Fitter):
         """
         from .simformer import load_full_model
 
+        if not model_name.endswith('_posterior'):
+            model_name = f'{model_name}_posterior'
+
         model, meta, task = load_full_model(
             model_dir,
             model_name,
@@ -6175,6 +6208,24 @@ class Simformer_Fitter(SBI_Fitter):
             self.simformer_task = task
             self.posteriors = model
 
+            for item in meta:
+                val = meta[item]
+                if isinstance(val, list):
+                    try:
+                        if val[0] not in [str, np.str_]:
+                            val = np.array(val)
+                    except:
+                        pass
+                if isinstance(val, np.ndarray):
+                    try:
+                        if np.ndim(val) < 2:
+                            val = list(val)
+                    except:
+                        pass
+                setattr(self, item, val)
+
+            model.has_features = True
+        
         return model, meta
 
     def save_model_to_pkl(
@@ -6182,7 +6233,7 @@ class Simformer_Fitter(SBI_Fitter):
         task=None,
         posteriors=None,
         name_append="",
-        output_folder: str = f"{code_path}/models/name/",
+        out_dir: str = f"{code_path}/models/name/",
         save_method="joblib",
         **extras,
     ):
@@ -6197,7 +6248,7 @@ class Simformer_Fitter(SBI_Fitter):
         name_append : str, optional
             String to append to the model name in the output file.
             Default is an empty string.
-        output_folder : str, optional
+        out_dir : str, optional
             Directory to save the model files.
             Default is f"{code_path}/models/name/".
         save_method : str, optional
@@ -6216,15 +6267,15 @@ class Simformer_Fitter(SBI_Fitter):
         if task is None or posteriors is None:
             raise ValueError("Task and posteriors must be provided.")
 
-        output_folder = output_folder.replace("name", self.name)
+        out_dir = out_dir.replace("name", self.name)
 
-        if not os.path.exists(output_folder):
-            os.makedirs(output_folder)
+        if not os.path.exists(out_dir):
+            os.makedirs(out_dir)
 
-        if len(name_append) == 0 and name_append[0] != "_":
+        if len(name_append) > 0 and name_append[0] != "_":
             name_append = f"_{name_append}"
 
-        file_name = os.path.join(output_folder, f"{self.name}{name_append}_posterior.pkl")
+        file_name = os.path.join(out_dir, f"{self.name}{name_append}_posterior.pkl")
 
         if save_method == "torch":
             from torch import save
@@ -6265,35 +6316,21 @@ class Simformer_Fitter(SBI_Fitter):
             "prior_dict": task.prior_dist.prior_ranges,
             "param_names_ordered": task.param_names_ordered,
             "backend": task.backend,
-            "timestamp": self._timestamp,
-            "name": self.name,
-            "grid_path": self.grid_path,
-            "feature_names": self.feature_names,
-            "fitted_parameter_names": self.fitted_parameter_names,
-            "has_simulator": self.has_simulator,
         }
 
         save_dict.update(extras)
 
         # Move the posteriors to CPU and convert to numpy if needed. Saves problems recreating
         # the arrays later
-        for key in save_dict.keys():
-            if isinstance(save_dict[key], torch.Tensor):
-                save_dict[key] = save_dict[key].cpu().numpy()
+        save_dict = make_serializable(save_dict, allowed_types=[np.ndarray])
 
-        param_path = os.path.join(output_folder, f"{self.name}{name_append}_params.pkl")
-
-        if save_method == "torch":
-            from torch import save
-
-            save(save_dict, param_path)
-        elif save_method == "joblib":
-            dump(save_dict, param_path, compress=3)
-        elif save_method == "pickle":
-            with open(param_path, "wb") as f:
-                pickle.dump(save_dict, f)
-        elif save_method == "hdf5":
-            raise NotImplementedError("HDF5 saving is not implemented yet.")
+        self.save_state(
+            out_dir=out_dir,
+            name_append=name_append,
+            save_method=save_method,
+            has_grid=~self.has_simulator,
+            **save_dict,
+        )
 
     def plot_diagnostics(
         self,
@@ -6369,8 +6406,11 @@ class Simformer_Fitter(SBI_Fitter):
         if not os.path.exists(os.path.dirname(metrics_path)):
             os.makedirs(os.path.dirname(metrics_path))
 
-        with open(metrics_path, "w") as f:
-            json.dump(metrics, f, indent=4)
+        try:
+            with open(metrics_path, "w") as f:
+                json.dump(metrics, f, indent=4)
+        except Exception as e:
+            print(f"Error saving metrics to {metrics_path}: {e}")
 
         self.plot_sample_accuracy(
             num_samples=num_samples,
@@ -6571,6 +6611,7 @@ class Simformer_Fitter(SBI_Fitter):
         rng_seed: int = 42,
         attention_mask: Union[str, np.ndarray] = "full",
         batch_size: int = 100,
+        **kwargs,
     ):
         """Sample from the posterior distribution.
 
@@ -6699,3 +6740,54 @@ class Simformer_Fitter(SBI_Fitter):
     def optimize_sbi(self):
         """Optimize the SBI model."""
         raise NotImplementedError("Simformer_Fitter does not implement optimize_sbi method. ")
+
+    def fit_catalogue(self,
+        observations: Union[Table, pd.DataFrame],
+        columns_to_feature_names: dict = None,
+        flux_units: Union[str, unyt_quantity, None] = None,
+        missing_data_flag: Any = -99,
+        quantiles: list = [0.16, 0.5, 0.84],
+        num_samples: int = 1000,
+        override_transformations: dict = {},
+        append_to_input: bool = True,
+        return_feature_array: bool = False,
+        recover_SEDs: bool = False,
+        plot_SEDs: bool = False,
+        check_out_of_distribution: bool = True,
+        simulator: Optional[GalaxySimulator] = None,
+        rng_seed: int = 42,
+        attention_mask: Union[str, np.ndarray] = "full",
+        batch_size: int = 100,
+        ):
+        '''
+        Wrapper for fit_catalogue in parent.
+
+        To Do: Better attention mask.
+
+        '''
+
+        sample_method: str = "direct"
+        sample_kwargs: dict = {}
+        timeout_seconds_per_row: int = 5
+
+        return super().fit_catalogue(
+            observations=observations,
+            columns_to_feature_names=columns_to_feature_names,
+            flux_units=flux_units,
+            missing_data_flag=missing_data_flag,
+            quantiles=quantiles,
+            num_samples=num_samples,
+            override_transformations=override_transformations,
+            append_to_input=append_to_input,
+            return_feature_array=return_feature_array,
+            recover_SEDs=recover_SEDs,
+            plot_SEDs=plot_SEDs,
+            check_out_of_distribution=check_out_of_distribution,
+            simulator=simulator,
+            sample_method=sample_method,
+            sample_kwargs=sample_kwargs,
+            timeout_seconds_per_row=timeout_seconds_per_row,
+            rng_seed=rng_seed,
+            attention_mask=attention_mask,
+            batch_size=batch_size,
+        )
