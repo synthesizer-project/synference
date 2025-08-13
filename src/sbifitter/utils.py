@@ -6,7 +6,7 @@ import os
 import pickle
 import re
 import sys
-from typing import Dict, List, Union
+from typing import Dict, List, Union, Any
 
 import h5py
 import matplotlib.pyplot as plt
@@ -1559,3 +1559,189 @@ if __name__ == "__main__":
     comparison_results = compare_methods_feature_importance(
         base_data, observations, feature_names=feature_names
     )
+
+
+
+def make_serializable(obj: Any, allowed_types=None) -> Any:
+    """
+    Recursively convert a nested dictionary/object to be JSON serializable.
+    
+    Handles common scientific computing types:
+    - NumPy arrays and scalars
+    - PyTorch tensors  
+    - JAX arrays
+    - TensorFlow tensors
+    - Pandas Series/DataFrames
+    - Complex numbers
+    - Sets
+    - Bytes
+    - Custom objects with __dict__
+    
+    Args:
+        obj: The object to make serializable
+        
+    Returns:
+        A JSON-serializable version of the input object
+    """
+    
+    # Handle None and basic JSON-serializable types
+
+    allowed_type = [str, int, float, bool]
+
+    if allowed_types is not None:
+        allowed_type.extend(allowed_types)
+
+    allowed_type = tuple(allowed_type)
+
+    if obj is None or isinstance(obj, allowed_type):
+        return obj
+    
+    # Handle dictionaries recursively
+    if isinstance(obj, dict):
+        return {str(k): make_serializable(v, allowed_types=allowed_types) for k, v in obj.items()}
+    
+    # Handle lists and tuples recursively
+    if isinstance(obj, (list, tuple)):
+        return [make_serializable(item, allowed_types=allowed_types) for item in obj]
+    
+    # Handle sets
+    if isinstance(obj, set):
+        return list(obj)
+    
+    # Handle bytes
+    if isinstance(obj, bytes):
+        try:
+            return obj.decode('utf-8')
+        except UnicodeDecodeError:
+            return obj.hex()
+    
+    # Handle complex numbers
+    if isinstance(obj, complex):
+        return {"real": obj.real, "imag": obj.imag, "_type": "complex"}
+    
+    # Try to import and handle NumPy types
+    try:
+        import numpy as np
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.floating):
+            return float(obj)
+        if isinstance(obj, np.bool_):
+            return bool(obj)
+        if isinstance(obj, np.complexfloating):
+            return {"real": float(obj.real), "imag": float(obj.imag), "_type": "complex"}
+    except ImportError:
+        pass
+    
+    # Try to handle PyTorch tensors
+    try:
+        import torch
+        if isinstance(obj, torch.Tensor):
+            return obj.detach().cpu().numpy().tolist()
+    except ImportError:
+        pass
+    
+    # Try to handle JAX arrays
+    try:
+        import jax.numpy as jnp
+        if hasattr(obj, '__array__') and hasattr(obj, 'shape'):  # JAX array duck typing
+            try:
+                return jnp.asarray(obj).tolist()
+            except:
+                pass
+    except ImportError:
+        pass
+    
+    # Try to handle TensorFlow tensors
+    try:
+        import tensorflow as tf
+        if isinstance(obj, tf.Tensor):
+            return obj.numpy().tolist()
+        if isinstance(obj, tf.Variable):
+            return obj.numpy().tolist()
+    except ImportError:
+        pass
+    
+    # Try to handle Pandas objects
+    try:
+        import pandas as pd
+        if isinstance(obj, pd.Series):
+            return obj.tolist()
+        if isinstance(obj, pd.DataFrame):
+            return obj.to_dict('records')
+        if isinstance(obj, pd.Index):
+            return obj.tolist()
+        if pd.isna(obj):  # Handle pandas NA values
+            return None
+    except ImportError:
+        pass
+    
+    # Handle datetime objects
+    try:
+        from datetime import datetime, date, time
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        if isinstance(obj, date):
+            return obj.isoformat()
+        if isinstance(obj, time):
+            return obj.isoformat()
+    except ImportError:
+        pass
+    
+    # Handle Decimal objects
+    try:
+        from decimal import Decimal
+        if isinstance(obj, Decimal):
+            return float(obj)
+    except ImportError:
+        pass
+    
+    # Handle pathlib Path objects
+    try:
+        from pathlib import Path
+        if isinstance(obj, Path):
+            return str(obj)
+    except ImportError:
+        pass
+    
+    # Handle UUID objects
+    try:
+        from uuid import UUID
+        if isinstance(obj, UUID):
+            return str(obj)
+    except ImportError:
+        pass
+    
+    # Handle custom objects with __dict__ attribute
+    if hasattr(obj, '__dict__'):
+        return make_serializable(obj.__dict__, allowed_types=allowed_types)
+    
+    # Handle objects with a .tolist() method (catch-all for array-like objects)
+    if hasattr(obj, 'tolist') and callable(getattr(obj, 'tolist')):
+        try:
+            return obj.tolist()
+        except:
+            pass
+    
+    # Handle objects with .item() method (scalar array-like objects)
+    if hasattr(obj, 'item') and callable(getattr(obj, 'item')):
+        try:
+            return obj.item()
+        except:
+            pass
+    
+    # Handle iterables as a last resort (but not strings which are already handled)
+    try:
+        if hasattr(obj, '__iter__') and not isinstance(obj, (str, bytes)):
+            return [make_serializable(item, allowed_types=allowed_types) for item in obj]
+    except (TypeError, ValueError):
+        pass
+    
+    # If all else fails, convert to string representation
+    # This ensures the function doesn't crash on unknown types
+    try:
+        return str(obj)
+    except:
+        return f"<unserializable object of type {type(obj).__name__}>"
