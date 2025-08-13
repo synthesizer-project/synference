@@ -5870,7 +5870,16 @@ class ModelComparison:
 
 
 class Simformer_Fitter(SBI_Fitter):
-    """Simformer Fitter for SBI models."""
+    """Simformer Fitter for SBI models.
+
+    This class implements the Simformer architecture for SBI tasks.
+
+    To Do:
+    - Ensure more inherited methods actually work with Simformer.
+    - Implement TARP and other metrics which are native to LtU-ILI.
+    - Ensure methods to act on real observations and recover photometry work.
+
+    """
 
     def __init__(self, name: str = "simformer_fitter", **kwargs):
         """Initialize the Simformer Fitter."""
