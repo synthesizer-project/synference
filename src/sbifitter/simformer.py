@@ -456,6 +456,10 @@ def load_full_model(dir_path, model_id, simulator=None):
         print(f'not found {e}')
         meta = {}
         task = None
+    except (EOFError, AttributeError):
+        print(f'Pickle corrupted?')
+        meta = {}
+        task = None
 
     if isinstance(model, tuple):
         model = model[0]
