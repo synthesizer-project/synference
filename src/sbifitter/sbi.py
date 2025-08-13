@@ -662,7 +662,7 @@ class SBI_Fitter:
         param_dict.update(extras)
 
         # convery any torch tensors to numpy arrays on the cpu for compatibility
-        param_dict = make_serializable(param_dict,  allowed_types=[np.ndarray])
+        param_dict = make_serializable(param_dict,  allowed_types=[np.ndarray, UncertaintyModel])
         
         if len(name_append) > 0 and name_append[0] != '_':
             name_append = f'_{name_append}'
@@ -770,7 +770,7 @@ class SBI_Fitter:
 
                 # Apply the model to the photometry array
                 flux = scattered_photometry_s[pos, :].copy()
-                noisy_flux, sampled_sigma = noise_model.apply_noise_to_flux(
+                noisy_flux, sampled_sigma = noise_model.apply_noise(
                     flux,
                     true_flux_units=flux_units,
                     out_units=normed_flux_units,
@@ -1831,17 +1831,6 @@ class SBI_Fitter:
             print("---------------------------------------------")
 
         # Save all method inputs on self
-        paths = {}
-        # This serailizes a path to the empirical noise models if set.
-        if empirical_noise_models is not None:
-            for k, v in empirical_noise_models.items():
-                path = getattr(v, "h5_path", None)
-                group_name = getattr(v, "h5_group_name", None)
-                if path is not None and group_name is not None:
-                    paths[k] = (path, group_name)
-
-        if len(paths) == 0:
-            paths = None
 
         self.feature_array_flags = {
             "normalize_method": normalize_method,
@@ -1849,7 +1838,7 @@ class SBI_Fitter:
             "normed_flux_units": normed_flux_units,
             "normalization_unit": normalization_unit,
             "scatter_fluxes": scatter_fluxes,
-            "empirical_noise_models": paths,
+            "empirical_noise_models": empirical_noise_models,
             "depths": depths,
             "include_errors_in_feature_array": include_errors_in_feature_array,
             "min_flux_pc_error": min_flux_pc_error,
@@ -2164,7 +2153,6 @@ class SBI_Fitter:
         feature_names_to_columns = {v: k for k, v in columns_to_feature_names.items()}
 
         # feature_names_to_columns should be e.g. {'HST.ACS_WFC.F606W': 'F606W'}
-        print(feature_names_to_columns)
 
         if not self.feature_array_flags["simulate_missing_fluxes"]:
             # Should have a column for every photometry filter in the training data
@@ -2320,8 +2308,6 @@ class SBI_Fitter:
         # Check if the flux units match the training data
         training_flux_units = feature_array_flags["normed_flux_units"]
 
-        print('empirical_noise_models', feature_array_flags['empirical_noise_models'])
-        print(feature_array_flags)
 
         if feature_array_flags["empirical_noise_models"] is not None:
             for model_name, key in feature_array_flags["empirical_noise_models"].items():
@@ -2354,9 +2340,10 @@ class SBI_Fitter:
                             eindex = self.feature_names.index(ecol)
                     error_column = feature_array[eindex, :]
                     new_flux, new_error = empirical_model.apply_scalings(
-                        unyt_array(flux_column, units=flux_units),
-                        unyt_array(error_column, units=flux_units),
-                        feature_array_flags["normed_flux_units"],
+                        flux_column,
+                        error_column,
+                        true_flux_units=flux_units,
+                        out_units=feature_array_flags["normed_flux_units"],
                     )
                     feature_array[index, :] = new_flux
                     feature_array[eindex, :] = new_error
@@ -6061,7 +6048,7 @@ class Simformer_Fitter(SBI_Fitter):
             trained_score_model, meta = self.load_model_from_pkl(
                 model_dir=f"{code_path}/models/{self.name}/",
                 model_name=f"{self.name}{name_append}_posterior",
-                set_self=set_self,
+                set_self=False,
             )
             run = True
         else:
@@ -6234,6 +6221,10 @@ class Simformer_Fitter(SBI_Fitter):
                             val = list(val)
                     except:
                         pass
+
+                if item == 'feature_array_flags':
+                    print('Skipping')
+                    continue
                 setattr(self, item, val)
 
             model.has_features = True
