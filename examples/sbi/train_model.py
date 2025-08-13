@@ -211,6 +211,7 @@ def main_task(args: Args) -> None:
 
     print(f"Unused filters: {unused_filters}", file=sys.stdout)
 
+    print(empirical_noise_models)
     empirical_model_fitter.create_feature_array_from_raw_photometry(
         extra_features=list(args.model_features),
         normalize_method=args.norm_method,
