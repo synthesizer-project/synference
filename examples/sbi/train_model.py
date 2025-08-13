@@ -10,7 +10,7 @@ import torch
 from astropy.table import Table
 from simple_parsing import ArgumentParser
 
-from sbifitter import SBI_Fitter, Simformer_Fitter, create_uncertainity_models_from_EPOCHS_cat
+from sbifitter import SBI_Fitter, Simformer_Fitter, create_uncertainty_models_from_EPOCHS_cat
 
 try:
     mp.set_start_method("spawn", force=True)
@@ -68,6 +68,7 @@ class Args:
     n_optimize_jobs: int = 1  # Number of parallel jobs for optimization
     n_trials: int = 100  # Number of trials for optimization
     optimize: bool = False  # If True, run Optuna optimization
+    noise_model_class: str = "general"  # Type of noise model to use - general, depth or asinh.
 
 
 parser.add_arguments(Args, dest="args")
@@ -115,15 +116,16 @@ def main_task(args: Args) -> None:
         if not os.path.exists(out_dir):
             os.makedirs(out_dir, exist_ok=True)
 
-        empirical_noise_models = create_uncertainity_models_from_EPOCHS_cat(
+        empirical_noise_models = create_uncertainty_models_from_EPOCHS_cat(
             args.data_err_file,
             bands,
             new_band_names,
-            plot=False,
+            plot=True,
             hdu=args.data_err_hdu,
             save_path=out_dir,
             save=True,
             min_flux_error=args.min_flux_error,
+            model_class=args.noise_model_class,
         )
 
     else:
