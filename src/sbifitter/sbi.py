@@ -2893,6 +2893,9 @@ class SBI_Fitter:
 
         out_dir = os.path.join(os.path.abspath(out_dir), self.name)
 
+        if not os.path.exists(out_dir):
+            os.makedirs(out_dir)
+
         if isinstance(direction, (list, tuple)):
             directions = copy.deepcopy(direction)
             direction = None
