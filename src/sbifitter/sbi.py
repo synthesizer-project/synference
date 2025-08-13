@@ -49,8 +49,9 @@ from unyt import Jy, nJy, um, unyt_array, unyt_quantity
 from .grid import CombinedBasis, GalaxySimulator
 from .noise_models import (
     EmpiricalUncertaintyModel,
-    GeneralEmpiricalUncertaintyModel,
     UncertaintyModel,
+    load_unc_model_from_hdf5,
+    save_unc_model_to_hdf5,
 )
 from .utils import (
     FilterArithmeticParser,
@@ -62,8 +63,8 @@ from .utils import (
     f_jy_err_to_asinh,
     f_jy_to_asinh,
     load_grid_from_hdf5,
-    optimize_sfh_xlimit,
     make_serializable,
+    optimize_sfh_xlimit,
 )
 
 code_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -634,14 +635,15 @@ class SBI_Fitter:
 
         return output_arr
 
-    def save_state(self,
-                   out_dir,
-                   name_append='',
-                   save_method='joblib',
-                   has_grid=True,
-                   **extras,
+    def save_state(
+        self,
+        out_dir,
+        name_append="",
+        save_method="joblib",
+        has_grid=True,
+        **extras,
     ):
-
+        """Save the state of the SBI fitter to a file."""
         param_dict = {
             "feature_names": self.feature_names,
             "feature_units": self.feature_units,
@@ -651,23 +653,35 @@ class SBI_Fitter:
             "prior": self._prior,
             "grid_path": self.grid_path,
             "name": self.name,
-            "has_simulator":self.has_simulator,
+            "has_simulator": self.has_simulator,
         }
+
+        if len(name_append) > 0 and name_append[0] != "_":
+            name_append = f"_{name_append}"
+
+        save_path = f"{out_dir}/{self.name}{name_append}_params.pkl"
 
         if has_grid:
             param_dict["feature_array_flags"] = self.feature_array_flags
             param_dict["feature_array"] = self.feature_array
             param_dict["parameter_array"] = self.fitted_parameter_array
 
+            if (
+                "empirical_noise_models" in param_dict
+                and param_dict["feature_array_flags"]["empirical_noise_models"]
+            ):
+                noise_models = param_dict["feature_array_flags"].pop("empirical_noise_models")
+                noise_model_path = save_path.replace(".pkl", "_empirical_noise_models.h5")
+                param_dict["empirical_noise_models"] = {}
+                for key, model in noise_models.items():
+                    save_unc_model_to_hdf5(model, noise_model_path, key, overwrite=True)
+                    param_dict["empirical_noise_models"][key] = noise_model_path
+
         param_dict.update(extras)
 
         # convery any torch tensors to numpy arrays on the cpu for compatibility
-        param_dict = make_serializable(param_dict,  allowed_types=[np.ndarray, UncertaintyModel])
-        
-        if len(name_append) > 0 and name_append[0] != '_':
-            name_append = f'_{name_append}'
+        param_dict = make_serializable(param_dict, allowed_types=[np.ndarray, UncertaintyModel])
 
-        save_path = f"{out_dir}/{self.name}{name_append}_params.pkl"
         if save_method == "torch":
             with open(save_path, "wb") as f:
                 torch.save(
@@ -707,9 +721,7 @@ class SBI_Fitter:
         else:
             raise ValueError("Invalid save method. Use 'torch', 'pickle' or 'joblib'.")
 
-        print(f'Saved model parameters to {save_path}.')
-
-                
+        print(f"Saved model parameters to {save_path}.")
 
     def _apply_empirical_noise_models(
         self,
@@ -1370,7 +1382,6 @@ class SBI_Fitter:
             elif empirical_noise_models is not None:
                 print(f"""Using empirical noise models with {scatter_fluxes} scatters per row.""")
                 self.empirical_noise_models = empirical_noise_models
-
 
                 phot, phot_errors = self._apply_empirical_noise_models(
                     phot,
@@ -2127,7 +2138,7 @@ class SBI_Fitter:
         if len(self.feature_array_flags) == 0:
             raise ValueError("No feature array flags found. Please create the feature array first.")
 
-        #if not getattr(self, "has_features", False):
+        # if not getattr(self, "has_features", False):
         #    raise RuntimeError(
         #    )
         #        "The feature creation pipeline has not been initialized. Please run `create_feature_array_from_raw_photometry` first."  # noqa: E501
@@ -2308,15 +2319,11 @@ class SBI_Fitter:
         # Check if the flux units match the training data
         training_flux_units = feature_array_flags["normed_flux_units"]
 
-
         if feature_array_flags["empirical_noise_models"] is not None:
             for model_name, key in feature_array_flags["empirical_noise_models"].items():
                 if isinstance(key, tuple):
                     print("Loading noise models from HDF5.")
-                    path, group_name = key
-                    empirical_model = GeneralEmpiricalUncertaintyModel.deserialize_from_hdf5(
-                        path, group_name
-                    )
+                    empirical_model = load_unc_model_from_hdf5(filepath=key, group=model_name)
                 elif isinstance(key, UncertaintyModel):
                     empirical_model = key
                 else:
@@ -2548,7 +2555,7 @@ class SBI_Fitter:
                 **kwargs,
             )
             samples_quant = samples
-    
+
         else:
             samples = self.sample_posterior(
                 X_test=feature_array,
@@ -3668,7 +3675,6 @@ class SBI_Fitter:
                 param_dict["train_fraction"] = train_test_fraction
                 param_dict["test_indices"] = test_indices
                 param_dict["train_indices"] = train_indices
-  
 
             self.save_state(
                 out_dir=out_dir,
@@ -3678,7 +3684,6 @@ class SBI_Fitter:
                 **param_dict,
             )
 
-            
         if plot:
             if learning_type == "offline":
                 # Deal with the sampling method.
@@ -4647,7 +4652,6 @@ class SBI_Fitter:
 
             print("=" * 60)
         # convert numpy arrays to lists for JSON serialization
-                
 
         if return_samples:
             return metrics, samples
@@ -6047,9 +6051,8 @@ class Simformer_Fitter(SBI_Fitter):
         if name_append == "timestamp":
             name_append = f"{self._timestamp}"
 
-        if len(name_append) > 0 and name_append[0] != '_':
-            name_append = f'_{name_append}'
-
+        if len(name_append) > 0 and name_append[0] != "_":
+            name_append = f"_{name_append}"
 
         out_path = f"{code_path}/models/{self.name}/{self.name}{name_append}_posterior.pkl"
         if load_existing_model and os.path.exists(out_path):
@@ -6068,14 +6071,14 @@ class Simformer_Fitter(SBI_Fitter):
         if self.has_simulator:
             print("Using online simulator for training.")
             simulator_function = self.simulator
-            learning_type = 'online'
+            learning_type = "online"
         else:
             print("Using pre-generated samples for training.")
             assert self.feature_array is not None, (
                 "Feature array must be provided for pre-generated samples."
             )
             simulator_function = None
-            learning_type = 'offline'
+            learning_type = "offline"
 
         if not self.has_simulator:
             # Split the dataset into training and validation sets.
@@ -6204,8 +6207,8 @@ class Simformer_Fitter(SBI_Fitter):
         """
         from .simformer import load_full_model
 
-        if not model_name.endswith('_posterior'):
-            model_name = f'{model_name}_posterior'
+        if not model_name.endswith("_posterior"):
+            model_name = f"{model_name}_posterior"
 
         model, meta, task = load_full_model(
             model_dir,
@@ -6222,22 +6225,22 @@ class Simformer_Fitter(SBI_Fitter):
                     try:
                         if val[0] not in [str, np.str_]:
                             val = np.array(val)
-                    except:
+                    except Exception:
                         pass
                 if isinstance(val, np.ndarray):
                     try:
                         if np.ndim(val) < 2:
                             val = list(val)
-                    except:
+                    except Exception:
                         pass
 
-                if item == 'feature_array_flags':
-                    print('Skipping')
+                if item == "feature_array_flags":
+                    print("Skipping")
                     continue
                 setattr(self, item, val)
 
             model.has_features = True
-        
+
         return model, meta
 
     def save_model_to_pkl(
@@ -6753,7 +6756,8 @@ class Simformer_Fitter(SBI_Fitter):
         """Optimize the SBI model."""
         raise NotImplementedError("Simformer_Fitter does not implement optimize_sbi method. ")
 
-    def fit_catalogue(self,
+    def fit_catalogue(
+        self,
         observations: Union[Table, pd.DataFrame],
         columns_to_feature_names: dict = None,
         flux_units: Union[str, unyt_quantity, None] = None,
@@ -6770,14 +6774,12 @@ class Simformer_Fitter(SBI_Fitter):
         rng_seed: int = 42,
         attention_mask: Union[str, np.ndarray] = "full",
         batch_size: int = 100,
-        ):
-        '''
-        Wrapper for fit_catalogue in parent.
+    ):
+        """Wrapper for fit_catalogue in parent.
 
         To Do: Better attention mask.
 
-        '''
-
+        """
         sample_method: str = "direct"
         sample_kwargs: dict = {}
         timeout_seconds_per_row: int = 5

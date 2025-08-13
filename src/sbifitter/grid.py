@@ -217,7 +217,7 @@ def calculate_colour(
                     filters = FilterCollection(filters=[filter])
                 else:
                     filters = FilterCollection(filter_codes=[filter_code])
-                galaxy.stars.get_photo_fluxes(filters)
+                galaxy.stars.get_photo_fnu(filters)
             except ValueError:
                 raise ValueError(
                     "Filter '{filter_code}' is not available in the "

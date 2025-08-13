@@ -742,7 +742,7 @@ class TestSuppFunctions:
         test_parametric_galaxy.get_observed_spectra(cosmo=Planck18)
         filter_codes = ["JWST/NIRCam.F444W", "JWST/NIRCam.F115W"]
         filters = FilterCollection(filter_codes=filter_codes)
-        test_parametric_galaxy.get_photo_fluxes(filters)
+        test_parametric_galaxy.get_photo_fnu(filters)
         return test_parametric_galaxy
 
     def test_calculate_muv(self, test_galaxy):
