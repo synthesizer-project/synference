@@ -1,1529 +1,658 @@
-"""Noise models for photometric fluxes."""
+"""
+Noise models for simulating photometric fluxes and uncertainties.
 
-import copy
+This module provides a robust and serializable framework for creating and
+applying various photometric noise models.
+"""
+import warnings
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
-import h5py  # Import h5py at the top level
+import h5py
 import matplotlib.pyplot as plt
 import numpy as np
 from astropy import units as u
-from astropy.table import Column, Table
+from astropy.table import Table
 from scipy import stats
 from scipy.interpolate import interp1d
-from unyt import Jy, Unit, unyt_array
+from unyt import Jy, Unit, unyt_array, nJy
 
-from .utils import f_jy_err_to_asinh, f_jy_to_asinh
+from .utils import f_jy_to_asinh, f_jy_err_to_asinh
 
+# =============================================================================
+# BASE CLASSES
+# =============================================================================
 
 class UncertaintyModel(ABC):
-    """base class for uncertainty models.
+    """
+    Abstract base class for photometric noise models.
 
-    This class defines the interface for uncertainty models that can
-    apply noise to fluxes based on a given model.
-
-    Attributes:
-        per_filter (bool): If True, the model applies noise per filter.
-            If False, it applies noise to the entire flux vector.
-            Default is True.
-        return_noise (bool): If True, the model returns the noise applied to the flux.
+    This class defines the common interface and provides static helper methods
+    for photometric unit conversions. It is not meant to be instantiated directly.
     """
 
-    per_filter: bool = True
-    return_noise: bool = False
-
-    def __init__(self, per_filter: bool = True, return_noise: bool = False, **kwargs):
-        """Initialize the uncertainty model.
-
-        Args:
-            per_filter: If True, the model applies noise per filter.
-                        If False, it applies noise to the entire flux vector.
-            return_noise: If True, the model returns the noise applied to the flux.
-            **kwargs: Additional keyword arguments to pass to the model.
-        """
-        self.per_filter = per_filter
+    def __init__(self, return_noise: bool = False, **kwargs: Any) -> None:
         self.return_noise = return_noise
-        self.parameters = kwargs
-
-    def apply_scalings(
-        self,
-        flux: Union[np.ndarray, unyt_array],
-        flux_error: Union[np.ndarray, unyt_array],
-        **kwargs,
-    ) -> Tuple[Union[np.ndarray, unyt_array], Union[np.ndarray, unyt_array]]:
-        """Apply model-specific scalings (units, limits) without scattering."""
-        raise NotImplementedError("This method should be implemented in subclasses.")
 
     @abstractmethod
-    def apply_noise_to_flux(self):
-        """Apply noise to the flux based on the model."""
+    def apply_noise(self, flux: np.ndarray | unyt_array) -> Union[
+        np.ndarray | unyt_array,
+        Tuple[np.ndarray | unyt_array, np.ndarray | unyt_array]
+    ]:
+        """Applies noise to the input flux."""
         pass
 
-    @staticmethod
-    def _phot_ab_to_jy(flux: float) -> unyt_array:
-        """Convert AB magnitude to Jy flux."""
-        return 10 ** (-0.4 * (flux + 8.9)) * Jy
-
-    @staticmethod
-    def _phot_jy_to_ab(flux: unyt_array) -> float:
-        """Convert Jy flux to AB magnitude."""
-        return -2.5 * np.log10(flux.to(Jy).value) + 8.9
-
-    @staticmethod
-    def _phot_err_ab_to_jy(flux: unyt_array, error: np.ndarray) -> unyt_array:
-        """Convert AB magnitude error to Jy flux error."""
-        flux = flux.to(Jy)
-        return (np.log(10) * flux * error) / 2.5
-
-    @staticmethod
-    def _phot_err_jy_to_ab(flux: unyt_array, error: unyt_array) -> np.ndarray:
-        """Convert Jy flux error to AB magnitude error."""
-        return 2.5 / np.log(10) * (error / flux.to(Jy).value)
-
-    @staticmethod
-    def _phot_jy_to_asinh(flux: unyt_array, asinh_softening_parameter: unyt_array) -> unyt_array:
-        """Convert Jy flux to asinh magnitude."""
-        return f_jy_to_asinh(flux, asinh_softening_parameter)
-
-    @staticmethod
-    def _phot_err_jy_to_asinh(
-        flux: unyt_array, error: unyt_array, asinh_softening_parameter: unyt_array
-    ) -> unyt_array:
-        """Convert Jy flux error to asinh magnitude error."""
-        return f_jy_err_to_asinh(flux, error, asinh_softening_parameter)
-
-    def handle_flux_conversion(
-        self,
-        model_flux: np.ndarray,
-        model_flux_units: Union[str, Unit] = "AB",
-        out_units: Optional[str] = "Jy",
-    ):
-        """Handle conversion of fluxes based on the model's requirements.
-
-        Args:
-            model_flux: The flux values to convert.
-            model_flux_units: The units of the flux values.
-                Default is "AB". Can be a string or a unyt Unit.
-            out_units: The units to convert the fluxes to.
-                If None, defaults to Jy.
-
-        Returns:
-            model_flux: The converted flux values.
-            model_flux_units: The units of the converted flux values.
-        """
-        if isinstance(model_flux_units, str):
-            model_flux_units = Unit(model_flux_units)
-
-        if out_units is None:
-            out_units = Jy
-
-        if model_flux_units == "AB":
-            model_flux = self._phot_ab_to_jy(model_flux)
-            model_flux_units = Jy
-        elif model_flux_units == Jy:
-            model_flux = unyt_array(model_flux, units=Jy)
-        elif isinstance(model_flux_units, Unit):
-            model_flux = unyt_array(model_flux, units=model_flux_units)
-        else:
-            raise ValueError("model_flux_units must be 'AB', 'Jy', or a valid unyt Unit.")
-
-        if out_units == "AB":
-            model_flux = self._phot_jy_to_ab(model_flux)
-            model_flux_units = "AB"
-        elif out_units == Jy:
-            model_flux = unyt_array(model_flux, units=Jy)
-        elif isinstance(out_units, Unit):
-            model_flux = unyt_array(model_flux, units=out_units)
-        else:
-            raise ValueError("out_units must be 'AB', 'Jy', or a valid unyt Unit.")
-
-        return model_flux
-
-    def handle_flux_error_conversion(
-        self,
-        model_flux: np.ndarray,
-        model_flux_units: Union[str, Unit] = "AB",
-        model_flux_error: np.ndarray = None,
-        out_units: Optional[str] = "Jy",
-    ):
-        """Handle conversion of flux errors based on the model's requirements.
-
-        Args:
-            model_flux: The flux values to convert.
-            model_flux_units: The units of the flux values.
-                Default is "AB". Can be a string or a unyt Unit.
-            model_flux_error: The flux error values to convert.
-            out_units: The units to convert the flux errors to.
-                If None, defaults to Jy.
-
-        Returns:
-            model_flux_error: The converted flux error values.
-        """
-        if model_flux_error is None:
-            return None
-
-        if isinstance(model_flux_units, str):
-            model_flux_units = Unit(model_flux_units)
-
-        if out_units is None:
-            out_units = Jy
-
-        if model_flux_units == "AB":
-            model_flux_error = self._phot_err_ab_to_jy(model_flux, model_flux_error)
-            model_flux_units = Jy
-        elif model_flux_units == Jy:
-            model_flux_error = unyt_array(model_flux_error, units=Jy)
-        elif isinstance(model_flux_units, Unit):
-            model_flux_error = unyt_array(model_flux_error, units=model_flux_units)
-        else:
-            raise ValueError("model_flux_units must be 'AB', 'Jy', or a valid unyt Unit.")
-
-        if out_units == "AB":
-            model_flux_error = self._phot_err_jy_to_ab(model_flux, model_flux_error)
-            model_flux_units = "AB"
-        elif out_units == Jy:
-            model_flux_error = unyt_array(model_flux_error, units=Jy)
-        elif isinstance(out_units, Unit):
-            model_flux_error = unyt_array(model_flux_error, units=out_units)
-        else:
-            raise ValueError("out_units must be 'AB', 'Jy', or a valid unyt Unit.")
-
-        return model_flux_error
-
     @abstractmethod
-    def serialize_to_hdf5(self, hdf5_group: h5py.Group) -> None:
+    def serialize_to_hdf5(self, hdf5_group: h5py.Group):
         """Serializes the model's state into the given HDF5 group."""
-        raise NotImplementedError("This method should be implemented in subclasses.")
+        pass
 
     @classmethod
     @abstractmethod
     def _from_hdf5_group(cls, hdf5_group: h5py.Group) -> "UncertaintyModel":
         """Loads a model instance from an HDF5 group."""
-        raise NotImplementedError("This method should be implemented in subclasses.")
+        pass
 
-    def __getstate__(self) -> Dict[str, Any]:
-        """Prepare a serializable state dictionary for pickling."""
-        state: Dict[str, Any] = {}
-        for attr, value in self.__dict__.items():
-            if isinstance(value, (np.ndarray, unyt_array, Column)):
-                state[attr] = np.array(value)
-            elif callable(value):
-                continue
-            else:
-                state[attr] = value
-        return state
+    @staticmethod
+    def ab_to_jy(magnitude: np.ndarray | float) -> unyt_array:
+        """Converts AB magnitude to flux density in Janskys."""
+        return (10 ** (-0.4 * (magnitude - 8.90))) * Jy
 
-    def __setstate__(self, state: Dict[str, Any]) -> None:
-        """Restore the object's state from a pickled state dictionary."""
-        import inspect
+    @staticmethod
+    def jy_to_ab(flux: unyt_array) -> np.ndarray:
+        """Converts flux density in Janskys to AB magnitude."""
+        return -2.5 * np.log10(flux.to_value(Jy)) + 8.90
 
-        init_args = inspect.getfullargspec(self.__init__).args
-        init_args.remove("self")
+    @staticmethod
+    def ab_err_to_jy(magnitude_err: np.ndarray | float, flux_jy: unyt_array) -> unyt_array:
+        """Converts AB magnitude uncertainty to flux uncertainty in Janskys."""
+        return (flux_jy.to(Jy) * magnitude_err * np.log(10)) / 2.5
 
-        constructor_state = {arg: state.get(arg) for arg in init_args if arg in state}
-        self.__init__(**constructor_state)
-
-        # Restore other attributes not in constructor
-        for key, value in state.items():
-            if not hasattr(self, key):
-                setattr(self, key, value)
-
+    @staticmethod
+    def jy_err_to_ab(flux_err_jy: unyt_array, flux_jy: unyt_array) -> np.ndarray:
+        """Converts flux uncertainty in Janskys to AB magnitude uncertainty."""
+        return (2.5 / np.log(10)) * (flux_err_jy.to_value(Jy) / flux_jy.to_value(Jy))
 
 class DepthUncertaintyModel(UncertaintyModel):
-    """An uncertainty model that applies noise based on a depth value."""
+    """Applies Gaussian noise based on a fixed survey depth."""
+    def __init__(self, depth_ab: float, depth_sigma_level: unyt_array = 5.0, **kwargs: Any):
+        super().__init__(**kwargs)
+        self.depth_ab = depth_ab
+        self.depth_sigma_level = depth_sigma_level
+        flux_limit_jy = self.ab_to_jy(self.depth_ab)
+        self.sigma = (flux_limit_jy / self.depth_sigma_level).to(Jy)
 
-    def __init__(self, depth: unyt_array, depth_sigma=5, **kwargs):
-        """Initialize the model with a depth value."""
-        self.depth = depth
-        self.depth_sigma = depth_sigma
-        self.sigma = self.depth / self.depth_sigma
+    def apply_noise(self, flux: unyt_array, true_flux_units=None, **kwargs) -> Union[unyt_array, Tuple[unyt_array, unyt_array]]:
+        
+        if true_flux_units is not None:
+            if true_flux_units == "AB":
+                true_flux_jy = self.ab_to_jy(flux)
+            else:
+                true_flux_jy = (true_flux  * true_flux_units).to('Jy').value
+        
+        if len(kwargs) > 0:
+            print(f'WARNING {kwargs} arguments will have no effect with this model')
+        
 
-        init_kwargs = {
-            "depth": self.depth,
-            "depth_sigma": self.depth_sigma,
-            "per_filter": True,
-            **kwargs,
-        }
-        super().__init__(**init_kwargs)
+        flux_jy = flux.to('Jy')
 
-    def apply_scalings(
-        self,
-        flux: Union[np.ndarray, unyt_array],
-        flux_error: Union[np.ndarray, unyt_array],
-        flux_units: Union[str, Unit] = "AB",
-        out_units: Optional[str] = "Jy",
-    ) -> Tuple[Union[np.ndarray, unyt_array], Union[np.ndarray, unyt_array]]:
-        """Applies unit conversions consistent with the model."""
-        scaled_flux = self.handle_flux_conversion(
-            model_flux=flux, model_flux_units=flux_units, out_units=out_units
-        )
-        scaled_error = self.handle_flux_error_conversion(
-            model_flux=flux,
-            model_flux_units=flux_units,
-            model_flux_error=flux_error,
-            out_units=out_units,
-        )
-        return scaled_flux, scaled_error
-
-    def apply_noise_to_flux(
-        self,
-        model_flux: np.ndarray,
-        model_flux_units: Union[str, Unit] = "AB",
-    ):
-        """Apply noise to the flux based on the depth value."""
-        flux = self.handle_flux_conversion(
-            model_flux=model_flux, model_flux_units=model_flux_units, out_units="Jy"
-        )
-        noise = (
-            np.random.normal(loc=0, scale=self.sigma.to_value(), size=flux.shape) * self.sigma.units
-        )  # noqa: E501
-        output_arr = flux + noise
-
-        output_flux = self.handle_flux_conversion(
-            model_flux=output_arr,
-            model_flux_units="Jy",
-            out_units=model_flux_units,
-        )
-
+        if flux_jy.units.dimensions != Jy.dimensions:
+            raise Exception("Input flux must be in Janskys (Jy).")
+        noise = np.random.normal(loc=0.0, scale=self.sigma.to_value(Jy), size=flux_jy.shape) * Jy
+        noisy_flux = flux_jy + noise
         if self.return_noise:
-            sigma_out = np.ones(output_flux.shape) * self.sigma
-            sigma_out = self.handle_flux_error_conversion(
-                model_flux=output_arr,
-                model_flux_units="Jy",
-                model_flux_error=sigma_out,
-                out_units=model_flux_units,
-            )
-            return output_flux, sigma_out
-        return output_flux
+            uncertainty = np.ones_like(noisy_flux.value) * self.sigma
+            return noisy_flux, uncertainty
+        return noisy_flux
 
-    def serialize_to_hdf5(self, hdf5_group: h5py.Group) -> None:
-        """Serializes the model's state into the given HDF5 group."""
-        hdf5_group.attrs["__class__"] = self.__class__.__name__
-        hdf5_group.attrs["depth_val"] = self.depth.value
-        hdf5_group.attrs["depth_unit"] = str(self.depth.units)
-        hdf5_group.attrs["depth_sigma"] = self.depth_sigma
-        hdf5_group.attrs["per_filter"] = self.per_filter
-        hdf5_group.attrs["return_noise"] = self.return_noise
+    def apply_scalings(self, flux: np.ndarray, error: np.ndarray, flux_units: str, out_units: str) -> Tuple[np.ndarray, np.ndarray]:
+        """Applies only unit conversions, as this model has no other scalings."""
+        if flux_units == out_units:
+            return flux, error
+        
+        # Convert to a common intermediate unit (Jy)
+        if flux_units == "AB":
+            flux_jy = self.ab_to_jy(flux)
+            error_jy = self.ab_err_to_jy(error, flux_jy)
+        else:
+            flux_jy = (flux * flux_units).to(Jy)
+            error_jy = (error * flux_units).to(Jy)
+        
+        # Convert from Jy to the final output unit
+        if out_units == "AB":
+            return self.jy_to_ab(flux_jy), self.jy_err_to_ab(error_jy, flux_jy)
+        else:
+            return flux_jy.to_value(out_units), error_jy.to_value(out_units)
+
+    def serialize_to_hdf5(self, hdf5_group: h5py.Group):
+        """Serializes the model to an HDF5 group."""
+        attrs = hdf5_group.attrs
+        attrs["__class__"] = self.__class__.__name__
+        attrs["depth_ab"] = self.depth_ab
+        attrs["depth_sigma_level"] = self.depth_sigma_level
+        attrs["return_noise"] = self.return_noise
 
     @classmethod
     def _from_hdf5_group(cls, hdf5_group: h5py.Group) -> "DepthUncertaintyModel":
-        """Loads a model instance from an HDF5 group."""
-        depth = unyt_array(hdf5_group.attrs["depth_val"], hdf5_group.attrs["depth_unit"])
+        """Loads a model from an HDF5 group."""
         return cls(
-            depth=depth,
-            depth_sigma=hdf5_group.attrs["depth_sigma"],
-            per_filter=hdf5_group.attrs["per_filter"],
+            depth_ab=hdf5_group.attrs["depth_ab"],
+            depth_sigma_level=hdf5_group.attrs["depth_sigma_level"],
             return_noise=hdf5_group.attrs["return_noise"],
         )
 
-
-class DiffusionUncertaintyModel(UncertaintyModel):
-    """Placeholder for a score-based diffusion uncertainty model."""
-
-    def __init__(self, **kwargs):
-        """Initialize the diffusion uncertainty model."""
-        super().__init__(**kwargs)
-        raise NotImplementedError("DiffusionUncertaintyModel is not implemented yet.")
-
-
 class EmpiricalUncertaintyModel(UncertaintyModel, ABC):
-    """A class to model and sample photometric uncertainties based on observations."""
-
+    """
+    Abstract base for empirical uncertainty models from observed data.
+    """
     def __init__(
-        self, error_type: str = "empirical", extrapolate_uncertanties: bool = False, **kwargs
-    ):
-        """Initialize the empirical uncertainty model.
-
-        Parameters
-        ----------
-        error_type : str
-            Type of error model to use, e.g., 'empirical', 'observed'.
-            Default is 'empirical'.
-        extrapolate_uncertanties : bool
-            If True, allows extrapolation of uncertainties beyond the range of the flux bins.
-            If False, uses the nearest bin value for extrapolation.
-            Default is False.
-        **kwargs : dict
-            Additional keyword arguments passed to the parent class.
-        """
-        self.error_type = error_type
-        self.extrapolate_uncertanties = extrapolate_uncertanties
-        self.mag: Optional[unyt_array] = None
-        self.mag_err: Optional[unyt_array] = None
-
-        return super().__init__(**kwargs)
-
-    def _setup_bins(self, num_bins: int = 20, log_bins: bool = True):
-        # Calculate bins
-
-        if log_bins:
-            bins = np.logspace(
-                np.log10(np.nanmin(self.mag)),
-                np.log10(np.nanmax(self.mag)),
-                num_bins + 1,
-            )
-
-        else:
-            bins = np.linspace(np.nanmin(self.mag), np.nanmax(self.mag), num_bins + 1)
-
-        self.flux_bins_centers: List[float] = []
-        bin_median_errors: List[float] = []
-        bin_std_errors: List[float] = []
-
-        # To avoid negative issues, predict log flux_err
-
-        for i in range(len(bins) - 1):
-            low, high = bins[i], bins[i + 1]
-            # Ensure the last bin includes the maximum value
-            if i == len(self.mag) - 2:
-                mask = (self.mag >= low) & (self.mag <= high)
-            else:
-                mask = (self.mag >= low) & (self.mag < high)
-
-            errors_in_bin = self.mag_err[mask]
-
-            if len(errors_in_bin) > 0:
-                self.flux_bins_centers.append(low + (high - low) / 2.0)
-
-                bin_median_errors.append(np.median(errors_in_bin))
-                bin_std_errors.append(np.std(errors_in_bin))
-
-        if len(self.flux_bins_centers) < 2:  # Need at least two points for interpolation
-            raise ValueError(
-                f"Could not create enough valid bins ({len(self.flux_bins_centers)}) "
-                "for interpolation. Try adjusting the input data."
-            )
-        self.flux_bins_centers = np.array(self.flux_bins_centers)
-        # Store the flux range for which the model is considered valid
-
-        # Ignore bounds issues for now
-
-        self._min_interp_flux = self.flux_bins_centers[0]
-        self._max_interp_flux = self.flux_bins_centers[-1]
-
-        if not self.extrapolate_uncertanties:
-            fill_value = (bin_median_errors[0], bin_median_errors[-1])
-        else:
-            fill_value = "extrapolate"
-
-        # Use 'bounds_error=False' and 'fill_value' to handle extrapolation.
-        # For sigma_sigma_X (std of errors), it should not be negative.
-        self.mu_sigma_interpolator: Callable[
-            [Union[float, np.ndarray]], Union[float, np.ndarray]
-        ] = interp1d(
-            self.flux_bins_centers,
-            bin_median_errors,
-            kind="linear",
-            bounds_error=False,
-            fill_value=fill_value,
-        )
-
-        self.sigma_sigma_interpolator: Callable[
-            [Union[float, np.ndarray]], Union[float, np.ndarray]
-        ] = interp1d(
-            self.flux_bins_centers,
-            bin_std_errors,
-            kind="linear",
-            bounds_error=False,
-            fill_value=(bin_std_errors[0], bin_std_errors[-1]),
-        )
-
-    def plot_sigma(self, ax=None, **kwargs):
-        """Plots the interpolated mu_sigma_X and sigma_sigma_X.
-
-        Parameters
-        ----------
-        ax : matplotlib.axes.Axes, optional
-            The axes to plot on. If None, creates a new figure and axes.
-        **kwargs : dict, optional
-            Additional keyword arguments passed to the plot function.
-        """
-        if ax is None:
-            import matplotlib.pyplot as plt
-
-            fig, ax = plt.subplots()
-        flux_range = np.linspace(self._min_interp_flux, self._max_interp_flux, 1000)
-        mu_sigma = self.mu_sigma_interpolator(flux_range)
-        sigma_sigma = self.sigma_sigma_interpolator(flux_range)
-
-        line = ax.plot(flux_range, mu_sigma, **kwargs)
-        ax.fill_between(
-            flux_range,
-            mu_sigma - sigma_sigma,
-            mu_sigma + sigma_sigma,
-            alpha=0.2,
-            color=line[0].get_color(),
-        )
-
-        ax.set_xlabel("Flux")
-        ax.set_ylabel("Flux Uncertainty")
-
-    def get_valid_flux_range(self) -> Tuple[float, float]:
-        """Returns the flux range for which the interpolator was built."""
-        return self._min_interp_flux, self._max_interp_flux
-
-    def sample_uncertainty(
         self,
-        true_flux: Union[float, np.ndarray],
-        filter_negative: bool = True,
-    ) -> Union[float, np.ndarray, None]:
-        """Samples a 'fake' uncertainty (sigma_prime_X) for a given true flux.
+        extrapolate: bool = False,
+        min_samples_per_bin: int = 10,
+        num_bins: int = 20,
+        log_bins: bool = True,
+        **kwargs: Any,
+    ):
+        super().__init__(**kwargs)
+        self.extrapolate = extrapolate
+        self._min_samples_per_bin = min_samples_per_bin
+        self._num_bins = num_bins
+        self._log_bins = log_bins
+        self.bin_centers = None
+        self.median_error_in_bin = None
+        self.std_error_in_bin = None
+        self._mu_sigma_interpolator = None
+        self._sigma_sigma_interpolator = None
 
-        Parameters
-        ----------
-        true_flux : float or np.ndarray
-            The true flux value(s) for which to sample the uncertainty.
-        extrapolate : bool, optional
-            If True, allows extrapolation beyond the range of the flux bins.
-            If False, uses the nearest bin value for extrapolation.
-        filter_negative : bool, optional
-            If True, any sampled uncertainties that are negative will be set to NaN.
+    def _compute_bins_from_data(self, fluxes: np.ndarray, errors: np.ndarray, precomputed_bins: Optional[np.ndarray] = None):
+        if precomputed_bins is not None:
+            bins = precomputed_bins
+        else:
+            valid_mask = np.isfinite(fluxes)
+            if not np.any(valid_mask): raise ValueError("No valid finite data to build bins.")
+            fluxes_for_bins = fluxes[valid_mask]
+            if self._log_bins:
+                positive_flux_mask = fluxes_for_bins > 0
+                if not np.any(positive_flux_mask): raise ValueError("Log-binning requires positive flux values.")
+                min_val, max_val = np.min(fluxes_for_bins[positive_flux_mask]), np.max(fluxes_for_bins)
+                bins = np.logspace(np.log10(min_val), np.log10(max_val), self._num_bins + 1)
+            else:
+                min_val, max_val = np.min(fluxes_for_bins), np.max(fluxes_for_bins)
+                bins = np.linspace(min_val, max_val, self._num_bins + 1)
+        
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            median_err, bin_edges, _ = stats.binned_statistic(fluxes, errors, 'median', bins=bins)
+            std_err, _, _ = stats.binned_statistic(fluxes, errors, np.std, bins=bins)
+            counts, _, _ = stats.binned_statistic(fluxes, fluxes, 'count', bins=bins)
 
-        Returns:
-        -------
-        sampled_sigmas : float or np.ndarray
-            The sampled uncertainties for the given true flux value(s).
+        bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2.0
+        valid_bins_mask = counts >= self._min_samples_per_bin
+        if np.sum(valid_bins_mask) < 2: raise ValueError("Could not create enough valid bins for interpolation.")
 
-        """
-        is_scalar = np.isscalar(true_flux)
-        flux_array = np.atleast_1d(true_flux)
-        sampled_sigmas = np.empty_like(flux_array)
+        self.bin_centers = bin_centers[valid_bins_mask]
+        self.median_error_in_bin = median_err[valid_bins_mask]
+        self.std_error_in_bin = std_err[valid_bins_mask]
 
-        mu_sigma_values = self.mu_sigma_interpolator(flux_array)
-        sigma_sigma_values = self.sigma_sigma_interpolator(flux_array)
-
-        # Define the bounds for truncation (0 to infinity)
-        lower_bound = 0
-        upper_bound = np.inf
-
-        # Calculate the bounds in terms of standard deviations from the mean
-        # This is the format required by scipy.stats.truncnorm
-        a = (lower_bound - mu_sigma_values) / sigma_sigma_values
-        b = (upper_bound - mu_sigma_values) / sigma_sigma_values
-
-        from scipy.stats import truncnorm
-
-        # Sample from the truncated normal distribution
-        sampled_sigmas = truncnorm.rvs(
-            a=a,
-            b=b,
-            loc=mu_sigma_values,
-            scale=sigma_sigma_values,
-            size=flux_array.shape,
+    def _create_interpolators(self):
+        if self.bin_centers is None or len(self.bin_centers) < 2:
+            raise AttributeError("Binned data not found. Cannot create interpolators.")
+        
+        fill_median = "extrapolate" if self.extrapolate else (self.median_error_in_bin[0], self.median_error_in_bin[-1])
+        fill_std = "extrapolate" if self.extrapolate else (self.std_error_in_bin[0], self.std_error_in_bin[-1])
+        
+        self._mu_sigma_interpolator = interp1d(
+            x=self.bin_centers, y=self.median_error_in_bin, kind='linear',
+            bounds_error=False, fill_value=fill_median
         )
-
-        return sampled_sigmas[0] if is_scalar else sampled_sigmas
-
-    def apply_noise_to_flux(self):
-        """Apply noise to a flux based on the uncertainty model."""
-        raise NotImplementedError(
-            "apply_noise_to_flux is not implemented for EmpiricalUncertaintyModel. "
-            "Use a subclass that implements this method."
+        self._sigma_sigma_base_interpolator = interp1d(
+            x=self.bin_centers, y=self.std_error_in_bin, kind='linear',
+            bounds_error=False, fill_value=fill_std
         )
+        # Assign the wrapper method, which is pickle-safe
+        self._sigma_sigma_interpolator = self._non_negative_sigma_wrapper
 
-    def __call__(self, true_flux: Union[float, np.ndarray]):
-        """Sample uncertainty for a given true flux.
+    def _non_negative_sigma_wrapper(self, flux_values: np.ndarray) -> np.ndarray:
+        """Pickle-safe wrapper to ensure sigma_sigma is never negative."""
+        std_devs = self._sigma_sigma_base_interpolator(flux_values)
+        return np.maximum(0, std_devs)
 
-        This method allows the model to be called like a function.
-        """
-        return self.apply_noise_to_flux(true_flux)
+    def sample_uncertainty(self, flux_values: np.ndarray) -> np.ndarray:
+        """Samples an uncertainty from the learned distribution p(sigma|f)."""
+        mu_sigma = self._mu_sigma_interpolator(flux_values)
+        sigma_sigma = self._sigma_sigma_interpolator(flux_values)
+        a = (0 - mu_sigma) / np.where(sigma_sigma > 1e-9, sigma_sigma, 1)
+        return stats.truncnorm.rvs(a=a, b=np.inf, loc=mu_sigma, scale=sigma_sigma, size=len(flux_values))
 
+    def __getstate__(self) -> Dict[str, Any]:
+        state = self.__dict__.copy()
+        state.pop('_mu_sigma_interpolator', None)
+        state.pop('_sigma_sigma_interpolator', None)
+        state.pop('_sigma_sigma_base_interpolator', None)
+        return state
+
+    def __setstate__(self, state: Dict[str, Any]) -> None:
+        self.__dict__.update(state)
+        if self.bin_centers is not None:
+            self._create_interpolators()
+
+    def serialize_to_hdf5(self, hdf5_group: h5py.Group):
+        """Serializes the common state of an empirical model."""
+        attrs = hdf5_group.attrs
+        attrs["__class__"] = self.__class__.__name__
+        attrs["extrapolate"] = self.extrapolate
+        attrs["min_samples_per_bin"] = self._min_samples_per_bin
+        attrs["num_bins"] = self._num_bins
+        attrs["log_bins"] = self._log_bins
+
+        if self.bin_centers is not None:
+            hdf5_group.create_dataset("bin_centers", data=self.bin_centers)
+            hdf5_group.create_dataset("median_error_in_bin", data=self.median_error_in_bin)
+            hdf5_group.create_dataset("std_error_in_bin", data=self.std_error_in_bin)
+
+    @classmethod
+    def _from_hdf5_group(cls, hdf5_group: h5py.Group) -> "EmpiricalUncertaintyModel":
+        """Loads the common state for an empirical model."""
+        init_args = {
+            "extrapolate": hdf5_group.attrs.get("extrapolate", False),
+            "min_samples_per_bin": hdf5_group.attrs.get("min_samples_per_bin", 10),
+            "num_bins": hdf5_group.attrs.get("num_bins", 20),
+            "log_bins": hdf5_group.attrs.get("log_bins", True),
+        }
+        # Create an empty instance by calling __init__ with no data
+        instance = cls.__new__(cls)
+        super(EmpiricalUncertaintyModel, instance).__init__(**init_args)
+
+        # Manually populate the binned data and reconstruct interpolators
+        if "bin_centers" in hdf5_group:
+            instance.bin_centers = hdf5_group["bin_centers"][:]
+            instance.median_error_in_bin = hdf5_group["median_error_in_bin"][:]
+            instance.std_error_in_bin = hdf5_group["std_error_in_bin"][:]
+            instance._create_interpolators()
+
+        return instance
 
 class AsinhEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
-    """A class to model and sample photometric uncertainties based on observations.
-
-    The model estimates p(sigma_X | f_X) as a
-    Gaussian N(mu_sigma_X(f_X), sigma_sigma_X(f_X)),
-    where mu_sigma_X and sigma_sigma_X are
-    interpolated from binned statistics of
-    observed (sigma_X, f_X) pairs.
-    """
-
-    def __init__(
-        self,
-        observed_phot: unyt_array,
-        observed_phot_errors: unyt_array,
-        asinh_softening_parameter: Optional[unyt_array] = None,
-        asinh_sigma_level: float = 5.0,
-        min_flux_error: Optional[float] = 0.0,
-        sample_log_err: bool = False,
-        **kwargs,
-    ):
-        """Initialize the AsinhEmpiricalUncertaintyModel.
-
-        Parameters
-        ----------
-        observed_phot : unyt_array
-            The observed photometric flux values.
-        observed_phot_errors : unyt_array
-            The observed photometric flux errors.
-        asinh_softening_parameter : unyt_array, optional
-            The softening parameter for the asinh transformation.
-            If None, it will be set to 5 times the median flux error.
-        asinh_sigma_level : float, optional
-            The sigma level for the asinh transformation.
-            Default is 5.0.
-        min_flux_error : float, optional
-            The minimum flux error to apply.
-            If None, defaults to 0.0.
-        sample_log_err : bool, optional
-            If True, the uncertainties will be sampled in log space.
-            If False, they will be sampled in linear space.
-            Default is False.
-        **kwargs : dict
-            Additional keyword arguments passed to the parent class.
-        """
-        self.observed_phot = observed_phot
-        self.observed_phot_errors = observed_phot_errors
-        self.asinh_sigma_level = asinh_sigma_level
-        self.min_flux_error = min_flux_error
-        self.sample_log_err = sample_log_err
-
-        kwargs = {
-            "observed_phot": self.observed_phot,
-            "observed_phot_errors": self.observed_phot_errors,
-            "asinh_softening_parameter": asinh_softening_parameter,
-            "asinh_sigma_level": self.asinh_sigma_level,
-            "min_flux_error": self.min_flux_error,
-            "sample_log_err": self.sample_log_err,
-            **kwargs,
-        }
-
+    """An empirical model for uncertainties in asinh magnitude space."""
+    def __init__(self, observed_phot_jy: unyt_array, observed_phot_errors_jy: unyt_array, asinh_b_factor = 5.0, error_type: str = "empirical", **kwargs: Any):
+        kwargs['log_bins'] = False
         super().__init__(**kwargs)
+        self.error_type = error_type
+        
+        valid = np.isfinite(observed_phot_jy) & np.isfinite(observed_phot_errors_jy)
+        flux_jy, error_jy = observed_phot_jy[valid], observed_phot_errors_jy[valid]
+        
+        self.b = asinh_b_factor * np.median(error_jy)
+        mag_asinh = f_jy_to_asinh(flux_jy, self.b)
+        mag_err_asinh = f_jy_err_to_asinh(flux_jy, error_jy, self.b)
+        
+        self._compute_bins_from_data(fluxes=mag_asinh, errors=mag_err_asinh)
+        self._create_interpolators()
 
-        # Steps for an asinh model.
-
-        # 1. From observed data (in flux space), find 5 sigma detection limit.
-        # 2. Using this limit, calculate the asinh magnitude and errors.
-        # 3. Interpolate the asinh magnitude and errors to create a model.
-
-        if not isinstance(self.observed_phot, unyt_array):
-            raise TypeError("observed_phot must be a unyt_array.")
-
-        if not isinstance(self.observed_phot_errors, unyt_array):
-            raise TypeError("observed_phot_errors must be a unyt_array.")
-
-        if self.observed_phot.shape != self.observed_phot_errors.shape:
-            raise ValueError("observed_phot and observed_phot_errors must have the same shape.")
-
-        if self.extrapolate_uncertanties and not self.sample_log_err:
-            print(
-                "Warning! Extrapolating uncertainties with sample_log_err=False may lead to negative uncertainties."  # noqa: E501
-            )
-
-        # Filter out non-finite values and errors
-
-        valid_mask = (
-            np.isfinite(self.observed_phot)
-            & np.isfinite(self.observed_phot_errors)
-            & (self.observed_phot_errors > 0)
-        )
-
-        self.observed_phot = self.observed_phot[valid_mask]
-        self.observed_phot_errors = self.observed_phot_errors[valid_mask]
-
-        if asinh_softening_parameter is None:
-            median_unc = np.median(self.observed_phot_errors)
-
-            self.asinh_softening_parameter = self.asinh_sigma_level * median_unc
+    def apply_noise(self, true_flux: unyt_array, true_flux_units=None, **kwargs) -> Tuple[np.ndarray, np.ndarray]:
+        if len(kwargs) > 0:
+            print(f'WARNING {kwargs} arguments will have no effect with this model')
+        
+        if true_flux_units is not None:
+            true_flux_jy = (true_flux  * true_flux_units).to('Jy').value
         else:
-            self.asinh_softening_parameter = asinh_softening_parameter
+            true_flux_jy = true_flux
+    
+        true_mag_asinh = f_jy_to_asinh(true_flux_jy, self.b)
+        sampled_err_asinh = self.sample_uncertainty(true_mag_asinh)
+        noise = np.random.normal(loc=0.0, scale=sampled_err_asinh)
+        noisy_mag_asinh = true_mag_asinh + noise
+        final_err = sampled_err_asinh if self.error_type == "empirical" else self.sample_uncertainty(noisy_mag_asinh)
+        return (noisy_mag_asinh, final_err) if self.return_noise else noisy_mag_asinh
 
-        self.mag = self._phot_jy_to_asinh(
-            self.observed_phot.to("Jy"), self.asinh_softening_parameter.to("Jy")
-        )
-
-        self.mag_err = self._phot_err_jy_to_asinh(
-            self.observed_phot.to("Jy"),
-            self.observed_phot_errors.to("Jy"),
-            self.asinh_softening_parameter.to("Jy"),
-        )
-
-        if self.sample_log_err:
-            self.mag_err = np.log10(self.mag_err)
-
-        self._setup_bins(log_bins=False, num_bins=40)
-
-    def apply_noise_to_flux(
-        self,
-        true_flux: unyt_array,
-    ) -> Tuple[Union[float, np.ndarray, None], Union[float, np.ndarray, None]]:
-        """Applies noise to a photometric measurement.
-
-        Parameters
-        ----------
-        true_flux : float or np.ndarray
-            The true flux value(s) to which noise will be applied.
-        """
-        true_flux = true_flux.copy()
-
-        is_scalar = np.isscalar(true_flux)
-        flux_array = np.atleast_1d(true_flux)
-
-        true_mag = self._phot_jy_to_asinh(
-            flux_array,
-            self.asinh_softening_parameter.to(flux_array.units),
-        )
-        # Calculate the log of the uncertainty kernel
-        log_sigma = self.sample_uncertainty(true_mag, filter_negative=~self.sample_log_err)
-
-        if self.sample_log_err:
-            sigma = 10**log_sigma
-        else:
-            sigma = log_sigma
-
-        # Apply minimum flux error
-        sigma[sigma < self.min_flux_error] = self.min_flux_error
-
-        # Scatter the fluxes based on the sampled uncertainties
-        noise = np.random.normal(loc=0, scale=sigma)
-
-        noisy_mag = true_mag + noise
-        # Ensure noise is not below the minimum error
-        noisy_mag[np.isnan(sigma)] = np.nan
-
-        if self.error_type == "observed":
-            # Re-estimate the errors based on the scattered fluxes
-            log_sigma = self.sample_uncertainty(noisy_mag, filter_negative=not self.sample_log_err)
-            if self.sample_log_err:
-                sigma = 10**log_sigma
-            else:
-                sigma = log_sigma
-
-        if is_scalar:
-            return noisy_mag[0], sigma[0]
-        return noisy_mag, sigma
-
-    def apply_scalings(
-        self,
-        flux: unyt_array,
-        flux_error: unyt_array,
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        """Converts flux and error from Jy to asinh magnitudes space.
-
-        This prepares observational data for direct comparison with the model's
-        internal representation, without applying any noise.
-        """
-        mag = self._phot_jy_to_asinh(flux.to("Jy"), self.asinh_softening_parameter.to("Jy"))
-
-        mag_err = self._phot_err_jy_to_asinh(
-            flux.to("Jy"),
-            flux_error.to("Jy"),
-            self.asinh_softening_parameter.to("Jy"),
-        )
-
-        # Apply min flux error if it's defined
-        if hasattr(self, "min_flux_error") and self.min_flux_error > 0:
-            mag_err[mag_err < self.min_flux_error] = self.min_flux_error
-
+    def apply_scalings(self, flux: unyt_array, error: unyt_array, **kwargs) -> Tuple[np.ndarray, np.ndarray]:
+        """Converts flux and error from Jy to asinh magnitudes."""
+        if len(kwargs) > 0:
+            print(f'WARNING {kwargs} arguments will have no effect with this model')
+        
+        mag = f_jy_to_asinh(flux, self.b)
+        mag_err = f_jy_err_to_asinh(flux, error, self.b)
         return mag, mag_err
+
+    def serialize_to_hdf5(self, hdf5_group: h5py.Group):
+        """Saves the asinh model, including its unique attributes."""
+        # Call the parent method to save the binned data and common config
+        super().serialize_to_hdf5(hdf5_group)
+        
+        # Save attributes specific to this class
+        attrs = hdf5_group.attrs
+        attrs["error_type"] = self.error_type
+        attrs["b_value"] = self.b.to_value()
+        attrs["b_units"] = str(self.b.units)
+
+    @classmethod
+    def _from_hdf5_group(cls, hdf5_group: h5py.Group) -> "AsinhEmpiricalUncertaintyModel":
+        """Loads the asinh model, including its unique attributes."""
+        # Call the parent method to load the common parts (binned data, etc.)
+        instance = super(AsinhEmpiricalUncertaintyModel, cls)._from_hdf5_group(hdf5_group)
+        
+        # Recast the instance to the correct class
+        instance.__class__ = cls
+        
+        # Load attributes specific to this class
+        attrs = hdf5_group.attrs
+        instance.error_type = attrs["error_type"]
+        instance.b = unyt_array(attrs["b_value"], attrs["b_units"])
+        
+        return instance
 
 
 class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
-    """A class to model and sample photometric uncertainties based on observations."""
-
+    """
+    A class to model and sample photometric uncertainties based on observations,
+    with full support for all original features and robust serialization.
+    """
     def __init__(
         self,
         observed_fluxes: np.ndarray,
         observed_errors: np.ndarray,
-        num_bins: int = 20,
-        flux_bins: Optional[np.ndarray] = None,
-        log_bins: bool = True,
-        min_flux_for_binning: Optional[float] = None,
-        min_samples_per_bin: int = 10,
         flux_unit: str = "AB",
-        interpolation_flux_unit: str = None,
-        min_flux_error: Optional[float] = None,
-        error_type: str = "empirical",
+        interpolation_flux_unit: Optional[str] = None,
+        already_binned: bool = False,
+        bin_median_errors: Optional[np.ndarray] = None,
+        bin_std_errors: Optional[np.ndarray] = None,
+        flux_bins: Optional[np.ndarray] = None,
+        min_flux_for_binning: Optional[float] = None,
         sigma_clip: float = 3.0,
+        error_type: str = "empirical",
         upper_limits: bool = False,
         treat_as_upper_limits_below: Optional[float] = None,
         upper_limit_flux_behaviour: str = "scatter_limit",
         upper_limit_flux_err_behaviour: str = "flux",
-        max_flux_error: Optional[float] = None,
-        already_binned: bool = False,
-        bin_median_errors=None,
-        bin_std_errors=None,
+        **kwargs: Any,
     ):
-        """Uncertainity model from observed data.
-
-        Args:
-            observed_fluxes: 1D array of fluxes from a real survey.
-            observed_errors: 1D array of corresponding flux uncertainties.
-            num_bins: Number of bins to use for flux if flux_bins is not provided.
-            flux_bins: Optional array defining the edges of flux bins.
-                       If None, bins are created based on num_bins and log_bins.
-            log_bins: If True and flux_bins is None, bins will be spaced
-                      logarithmically. Otherwise, linearly.
-            min_flux_for_binning: If provided, only fluxes above this value are
-                                  used for creating the interpolation model.
-                                  This can help avoid issues with very low/zero fluxes.
-            min_samples_per_bin: Minimum number of samples required in a bin
-                                 for it to be considered valid for interpolation.
-            flux_unit: The unit of the fluxes, e.g., 'AB', 'Jy', etc.
-            interpolation_flux_unit: The unit of the fluxes used for interpolation.
-                                If None, defaults to flux_unit.
-            min_flux_error: Minimum value for the estimated flux error.
-                             If None, defaults to 0.0.
-            error_type: What kind of error to return. If 'empirical', then sigma_X
-                        is the standard deviation of
-                        the Gaussian used to scatter the fluxes. If 'observed' then
-                        we re-estimate the errors based on the scattered fluxes.
-            sigma_clip: number of standard deviations to clip the sampled uncertainties.
-            upper_limits: If True, treat the model fluxes below treat_as_upper_limits_below
-                    as upper limits. If False, all fluxes are treated as normal.
-            treat_as_upper_limits_below: If provided, fluxes below this SNR
-                    are treated as upper limits.
-            upper_limit_flux_behaviour: How to handle upper limits fluxes.
-                Options are 'scatter_limit', 'upper_limit':
-                - scatter_limit: Use the upper limit value as the flux and scatter the
-                    flux using the model.
-                - upper_limit: Use the upper limit value as the flux with no scattering.
-                - a float/int - Use this value as the upper limit flux.
-            upper_limit_flux_err_behaviour: How to handle upper limits flux errors.
-            Options are 'flux', 'upper_limit'.:
-                - flux: Use the flux_err scatter at the flux value.
-                - 'upper_limit': Use the upper limit value as the flux error.
-                - 'max' : Use the maximum flux error set by max_flux_error.
-                - 'sig_{val}': Find the error at a specific value, e.g., 'sig_1'
-                    will find the error at 1 sigma.
-            max_flux_error: Maximum flux error to allow. If None, no maximum is applied.
-            already_binned: If True, the observed_fluxes and observed_errors are already binned
-            and do not need to be binned again. This is useful for cases where the
-            fluxes and errors are already pre-processed and ready for interpolation.
-            bin_median_errors: Optional pre-computed median errors for each bin.
-                only used if already_binned is True.
-            bin_std_errors: Optional pre-computed standard deviations for each bin.
-                Only used if already_binned is True.
-        """
-        if len(observed_fluxes) != len(observed_errors):
-            raise ValueError("observed_fluxes and observed_errors must have the same length.")
-        self.sigma_clip = sigma_clip
-
-        self.observed_fluxes = observed_fluxes
-        self.observed_errors = observed_errors
-        self.num_bins = num_bins
-        self.flux_bins = flux_bins
-        self.log_bins = log_bins
-        if min_flux_for_binning == "None":
-            min_flux_for_binning = None
-        self.min_flux_for_binning = min_flux_for_binning
-        self.min_samples_per_bin = min_samples_per_bin
+        # 1. Initialize parent and instance attributes
+        super().__init__(**kwargs)
         self.flux_unit = flux_unit
-        self.min_flux_error = min_flux_error if min_flux_error is not None else 0.0
-        self.upper_limit_flux_behaviour = upper_limit_flux_behaviour
-
-        if interpolation_flux_unit is None:
-            self.interpolation_flux_unit = flux_unit
-        else:  # Use provided interpolation flux unit
-            self.interpolation_flux_unit = interpolation_flux_unit
-
-        # convert self.observed_fluxes and self.observed_errors to interpolation_flux_unit
-
-        if self.interpolation_flux_unit != self.flux_unit:
-            if isinstance(self.interpolation_flux_unit, Unit) and isinstance(self.flux_unit, Unit):
-                # If both are unyt units, convert them
-                observed_fluxes = (
-                    (self.observed_fluxes * self.interpolation_flux_unit).to(self.flux_unit).value
-                )
-                observed_errors = (
-                    (self.observed_errors * self.interpolation_flux_unit).to(self.flux_unit).value
-                )
-
-            elif isinstance(self.interpolation_flux_unit, Unit) and self.flux_unit == "AB":
-                # Convert from AB magnitudes to to unyt fluxes
-
-                observed_fluxes = (10 ** (-0.4 * (self.observed_fluxes + 8.9))) * Jy
-                observed_fluxes = observed_fluxes.to(self.interpolation_flux_unit)
-                observed_errors = (
-                    self.observed_errors * np.log(10) * observed_fluxes
-                ) / 2.5  # Convert errors to Jy
-                observed_errors = observed_errors.to(self.interpolation_flux_unit).value
-                observed_fluxes = observed_fluxes.value
-            elif self.interpolation_flux_unit == "AB" and isinstance(self.flux_unit, Unit):
-                # Convert from unyt fluxes to AB magnitudes
-                observed_errors = 2.5 / np.log(10) * (self.observed_errors / self.observed_fluxes)
-                observed_fluxes = (
-                    -2.5 * np.log10((self.observed_fluxes * self.flux_unit).to("Jy").value) + 8.9
-                )
-            else:
-                raise ValueError("interpolation_flux_unit must be a valid unyt unit or 'AB'.")
-
-            self.observed_fluxes = observed_fluxes
-            self.observed_errors = observed_errors
-            self.flux_unit = self.interpolation_flux_unit
-
-        valid_mask = (
-            np.isfinite(observed_fluxes) & np.isfinite(observed_errors) & (observed_errors > 0)
-        )
-        if min_flux_for_binning is not None:
-            valid_mask &= observed_fluxes > min_flux_for_binning
-
-        fluxes = observed_fluxes[valid_mask]
-        errors = observed_errors[valid_mask]
-
-        assert error_type in ["empirical", "observed"], (
-            "error_type must be either 'empirical' or 'observed'."
-        )
+        self.interpolation_flux_unit = interpolation_flux_unit if interpolation_flux_unit else flux_unit
+        self.sigma_clip = sigma_clip
         self.error_type = error_type
-
-        if upper_limits:
-            assert treat_as_upper_limits_below is not None, (
-                "If upper_limits is True, treat_as_upper_limits_below must be provided."
-            )
-
         self.upper_limits = upper_limits
         self.treat_as_upper_limits_below = treat_as_upper_limits_below
         self.upper_limit_flux_behaviour = upper_limit_flux_behaviour
         self.upper_limit_flux_err_behaviour = upper_limit_flux_err_behaviour
+        self.log_snr_interpolator = None
+        self.upper_limit_value = None
 
-        if upper_limits:
-            if flux_unit == "AB":
-                # convert fluxes to Jy if they are in AB magnitudes
-                ftemp = 10 ** (-0.4 * (fluxes + 8.9))  # Convert AB magnitudes to Jy
-                etemp = (errors * np.log(10) * ftemp) / 2.5  # Convert errors to Jy
-            else:
-                ftemp = fluxes
-                etemp = errors
+        # 2. Handle the 'already_binned' case first
+        if already_binned:
+            self.bin_centers = observed_fluxes
+            self.median_error_in_bin = bin_median_errors
+            self.std_error_in_bin = bin_std_errors
+            self._create_interpolators()
+            # Note: For pre-binned data, SNR interpolator cannot be built from raw data.
+            # This would need to be handled separately if required.
+            return
 
-            self.snr_x = ftemp / etemp  # Calculate SNR
-            self.snr_y = ftemp.copy()  # Copy fluxes for SNR interpolation
-            snr = ftemp / etemp
-            order = np.argsort(snr)
-            snr = snr[order]
-            ftemp = ftemp[order]
-
-            self.log_snr_interpolator = interp1d(
-                np.log10(snr),
-                np.log10(ftemp),
-                kind="linear",
-                bounds_error=False,
-                fill_value="extrapolate",
-            )
-            upper_limit_value = 10 ** (
-                self.log_snr_interpolator(np.log10(treat_as_upper_limits_below))
-            )
-            # Convert upper_limit_value back to the original flux unit
-            if flux_unit == "AB":
-                upper_limit_value = -2.5 * np.log10(upper_limit_value) + 8.9
-        else:
-            upper_limit_value = None
-
-        self.upper_limit_value = upper_limit_value
-
-        self.max_flux_error = max_flux_error if max_flux_error is not None else np.inf
-
-        if not already_binned:
-            if len(fluxes) < min_samples_per_bin * 2:  # Need at least two bins for interpolation
-                raise ValueError(
-                    f"Not enough valid data points ({len(fluxes)}) to build the model "
-                    f"with min_samples_per_bin={min_samples_per_bin}. "
-                    "Consider adjusting min_flux_for_binning or providing more data."
-                )
-
-            if flux_bins is None:
-                if log_bins:
-                    # Ensure fluxes are positive for log binning
-                    positive_flux_mask = fluxes > 0
-                    if not np.any(positive_flux_mask):
-                        raise ValueError(
-                            """No positive fluxes available for log binning.
-                            Try linear bins or check data."""
-                        )
-                    min_f = np.min(fluxes[positive_flux_mask])
-                    max_f = np.max(fluxes[positive_flux_mask])
-                    if min_f <= 0:  # Should be caught by positive_flux_mask, but as safeguard
-                        min_f = (
-                            np.partition(fluxes[positive_flux_mask], 1)[1]
-                            if len(fluxes[positive_flux_mask]) > 1
-                            else 1e-9
-                        )
-                    flux_bins = np.logspace(np.log10(min_f), np.log10(max_f), num_bins + 1)
-                else:
-                    min_f = np.min(fluxes)
-                    max_f = np.max(fluxes)
-                    flux_bins = np.linspace(min_f, max_f, num_bins + 1)
-
-            self.flux_bins_centers: List[float] = []
-            bin_median_errors: List[float] = []
-            bin_std_errors: List[float] = []
-
-            for i in range(len(flux_bins) - 1):
-                low_f, high_f = flux_bins[i], flux_bins[i + 1]
-                # Ensure the last bin includes the maximum value
-                if i == len(flux_bins) - 2:
-                    mask = (fluxes >= low_f) & (fluxes <= high_f)
-                else:
-                    mask = (fluxes >= low_f) & (fluxes < high_f)
-
-                errors_in_bin = errors[mask]
-
-                if len(errors_in_bin) >= min_samples_per_bin:
-                    self.flux_bins_centers.append(low_f + (high_f - low_f) / 2.0)  # Bin center
-                    bin_median_errors.append(np.median(errors_in_bin))
-                    bin_std_errors.append(np.std(errors_in_bin))
-
-            if len(self.flux_bins_centers) < 2:  # Need at least two points for interpolation
-                raise ValueError(
-                    f"Could not create enough valid bins ({len(self.flux_bins_centers)}) "
-                    f"for interpolation with min_samples_per_bin={min_samples_per_bin}. "
-                    "Try reducing num_bins, adjusting flux_bins, or min_flux_for_binning."
-                )
-        else:
-            self.flux_bins_centers = flux_bins
-
-        self.flux_bins_centers = np.array(self.flux_bins_centers)
-        # Store the flux range for which the model is considered valid
-        self._min_interp_flux = self.flux_bins_centers[0]
-        self._max_interp_flux = self.flux_bins_centers[-1]
-
-        self.flux_unit = flux_unit
-        self.min_flux_error = min_flux_error if min_flux_error is not None else 0.0
-
-        # Use 'bounds_error=False' and 'fill_value' to handle extrapolation.
-        # For sigma_sigma_X (std of errors), it should not be negative.
-        # We use the value from the closest bin if extrapolating.
-
-        self.mu_sigma_interpolator_clip: Callable[
-            [Union[float, np.ndarray]], Union[float, np.ndarray]
-        ] = interp1d(
-            self.flux_bins_centers,
-            bin_median_errors,
-            kind="linear",
-            bounds_error=False,
-            fill_value=(bin_median_errors[0], bin_median_errors[-1]),
+        # 3. Process raw data if not already binned
+        flux_to_process, error_to_process = self._convert_units(observed_fluxes, observed_errors)
+        
+        valid_mask = np.isfinite(flux_to_process) & np.isfinite(error_to_process) & (error_to_process > 0)
+        if min_flux_for_binning is not None:
+            valid_mask &= flux_to_process > min_flux_for_binning
+        
+        self._compute_bins_from_data(
+            fluxes=flux_to_process[valid_mask],
+            errors=error_to_process[valid_mask],
+            precomputed_bins=flux_bins
         )
-        mu_sigma_interpolator_extrap: Callable[
-            [Union[float, np.ndarray]], Union[float, np.ndarray]
-        ] = interp1d(
-            self.flux_bins_centers,
-            bin_median_errors,
-            kind="linear",
-            bounds_error=False,
-            fill_value="extrapolate",
-        )
-
-        def mu_sigma_interpolator(flux_values):
-            output = np.empty_like(flux_values, dtype=float)
-            extrapolate_mask = flux_values > self._max_interp_flux
-            output[~extrapolate_mask] = self.mu_sigma_interpolator_clip(
-                flux_values[~extrapolate_mask]
-            )
-            output[extrapolate_mask] = mu_sigma_interpolator_extrap(flux_values[extrapolate_mask])
-            return output
-
-        self.mu_sigma_interpolator_extrap = mu_sigma_interpolator
-        self.mu_sigma_interpolator = self.mu_sigma_interpolator_clip
-
-        self.sigma_sigma_interpolator_clip: Callable[
-            [Union[float, np.ndarray]], Union[float, np.ndarray]
-        ] = interp1d(
-            self.flux_bins_centers,
-            bin_std_errors,
-            kind="linear",
-            bounds_error=False,
-            fill_value=(bin_std_errors[0], bin_std_errors[-1]),
-        )
-        sigma_sigma_interpolator_extrap: Callable[
-            [Union[float, np.ndarray]], Union[float, np.ndarray]
-        ] = interp1d(
-            self.flux_bins_centers,
-            bin_std_errors,
-            kind="linear",
-            bounds_error=False,
-            fill_value="extrapolate",
-        )
-
-        def sigma_sigma_interpolator(flux_values):
-            output = np.empty_like(flux_values, dtype=float)
-            extrapolate_mask = flux_values > self._max_interp_flux
-            output[~extrapolate_mask] = self.sigma_sigma_interpolator_clip(
-                flux_values[~extrapolate_mask]
-            )
-            output[extrapolate_mask] = sigma_sigma_interpolator_extrap(
-                flux_values[extrapolate_mask]
-            )
-
-            return output
-
-        self.sigma_sigma_interpolator_extrap = sigma_sigma_interpolator
-
-        self.sigma_sigma_interpolator = self.sigma_sigma_interpolator_clip
-
-        original_sigma_sigma_interpolator = self.sigma_sigma_interpolator
-
-        def non_negative_sigma_sigma_interpolator(flux_values):
-            std_devs = original_sigma_sigma_interpolator(flux_values)
-            if isinstance(std_devs, np.ndarray):
-                std_devs[std_devs < 0] = 0
-            elif std_devs < 0:  # scalar
-                std_devs = 0
-            return std_devs
-
-        self.sigma_sigma_interpolator = non_negative_sigma_sigma_interpolator
-
-    def apply_noise_to_flux(
-        self,
-        true_flux: Union[float, np.ndarray],
-        true_flux_units: Optional[str] = None,
-        out_units: Optional[str] = None,
-        asinh_softening_parameter: Optional[float] = None,
-    ) -> Tuple[Union[float, np.ndarray, None], Union[float, np.ndarray, None]]:
-        """Applies noise to a photometric measurement.
-
-        Parameters
-        ----------
-        true_flux : float or np.ndarray
-            The true flux value(s) to which noise will be applied.
-        true_flux_units : str, optional
-            The units of the true flux. If None, defaults to the object's flux_unit.
-        out_units : str, optional
-            The units to return the noisy flux in. If None, defaults to the object's
-            flux_unit.
-            Can be "AB", "asinh" or any valid unyt unit.
-        asinh_softening_parameter : float, optional
-            If out_units is "asinh", this parameter is used to soften the
-            asinh transformation.
-
-        """
-        true_flux = copy.deepcopy(true_flux)
-
-        if out_units == "asinh":
-            assert asinh_softening_parameter is not None, (
-                "If out_units is 'asinh', asinh_softening_parameter must be provided."
-            )
-
-        if self.flux_unit != true_flux_units:
-            if self.flux_unit == "AB":
-                if not isinstance(true_flux, unyt_array):
-                    true_flux = unyt_array(true_flux, units=true_flux_units).to("Jy").value
-                else:
-                    true_flux = true_flux.to("Jy").value
-
-                true_flux = -2.5 * np.log10(true_flux) + 8.9
-            else:
-                if true_flux_units == "AB":
-                    true_flux = 10 ** (-0.4 * (true_flux - 8.9)) * Jy
-                    true_flux = true_flux.to(self.flux_unit).value
-
-                else:
-                    true_flux = (
-                        unyt_array(true_flux, units=true_flux_units).to(self.flux_unit).value
-                    )
-
-        is_scalar = np.isscalar(true_flux)
-        flux_array = np.atleast_1d(true_flux)
-
-        flux_array = np.array(flux_array, dtype=float)  # Ensure it's a float array for calculations
-
-        sampled_sigma_prime = self.sample_uncertainty(
-            flux_array,
-        )
-
-        # Apply minimum flux error
-        sampled_sigma_prime[sampled_sigma_prime < self.min_flux_error] = self.min_flux_error
-
-        # If upper limit, calculate a mask here so we don't apply crazy 10+ mag scatters
+        
         if self.upper_limits:
-            if self.flux_unit == "AB":
-                # Convert to Jy for upper limit calculations
-                temp_flux_array = 10 ** (-0.4 * (flux_array - 8.9)) * Jy
-                temp_sig = (np.log(10) * temp_flux_array * sampled_sigma_prime) / 2.5
+            self._setup_upper_limit_interpolator(flux_to_process[valid_mask], error_to_process[valid_mask])
+
+        self._create_interpolators()
+
+    def _convert_units(self, fluxes: np.ndarray, errors: np.ndarray, fluxes_unit=None) -> Tuple[np.ndarray, np.ndarray]:
+        """Helper to handle unit conversion for binning data."""
+        
+        if fluxes_unit is None:
+            fluxes_unit = self.flux_unit
+
+        if (self.interpolation_flux_unit == fluxes_unit) or (isinstance(self.interpolation_flux_unit, unyt_array) and isinstance(fluxes_unit, unyt_array) and (self.interpolation_flux_unit.dimensions == fluxes_unit.dimensions)):
+            if self.interpolation_flux_unit == fluxes_unit:
+                conversion = 1.0
             else:
-                temp_flux_array = unyt_array(flux_array, units=self.flux_unit).to("Jy").value
-                temp_sig = unyt_array(sampled_sigma_prime, units=self.flux_unit).to("Jy").value
-            snr = (temp_flux_array / temp_sig).value.astype(float)
-            # print(type(snr), snr.dtype, snr.shape)
-            # print(self.treat_as_upper_limits_below, type(self.treat_as_upper_limits_below))
-            umask = (snr < self.treat_as_upper_limits_below) | (
-                np.isnan(temp_sig) | np.isnan(temp_flux_array)
-            )
-            # print(umask)
+                conversion = (self.interpolation_flux_unit/fluxes_unit).simplify()
 
+            return fluxes*conversion, errors*conversion
+        if fluxes_unit == 'AB': # AB to physical flux
+            flux_jy = self.ab_to_jy(fluxes)
+            error_jy = self.ab_err_to_jy(errors, flux_jy)
+            return flux_jy.to_value(self.interpolation_flux_unit), error_jy.to_value(self.interpolation_flux_unit)
+        else: # Physical flux to AB
+            flux_with_units = fluxes * fluxes_unit
+            error_with_units = errors * fluxes_unit
+            return self.jy_to_ab(flux_with_units), self.jy_err_to_ab(error_with_units, flux_with_units)
+
+    def _setup_upper_limit_interpolator(self, fluxes: np.ndarray, errors: np.ndarray):
+        """Creates the SNR interpolator, always using physical flux units."""
+        # This interpolator is ALWAYS flux vs SNR, so we convert to Jy
+        # regardless of interpolation_flux_unit.
+        if self.interpolation_flux_unit == "AB":
+            flux_jy = self.ab_to_jy(fluxes)
+            error_jy = self.ab_err_to_jy(errors, flux_jy)
         else:
-            umask = np.zeros_like(flux_array, dtype=bool)  # No upper limit mask if not set
-
-        noisy_flux_array = flux_array.copy()
-        noisy_flux_array[~umask] = flux_array[~umask] + stats.truncnorm.rvs(
-            loc=0,
-            scale=sampled_sigma_prime[~umask],
-            a=-self.sigma_clip,
-            b=self.sigma_clip,
+            flux_jy = (fluxes * self.interpolation_flux_unit).to(Jy)
+            error_jy = (errors * self.interpolation_flux_unit).to(Jy)
+            
+        with np.errstate(divide='ignore', invalid='ignore'):
+            snr = (flux_jy / error_jy).value
+        
+        valid = np.isfinite(snr) & (snr > 0) & np.isfinite(flux_jy.value) & (flux_jy.value > 0)
+        if np.sum(valid) < 2: return
+            
+        order = np.argsort(snr[valid])
+        self._snr_x_data = np.log10(snr[valid][order])
+        self._snr_y_data = np.log10(flux_jy.value[valid][order])
+        
+        self.log_snr_interpolator = interp1d(
+            self._snr_x_data, self._snr_y_data,
+            kind="linear", bounds_error=False, fill_value="extrapolate"
         )
-        # Ensure noise is not below the minimum error
-        noisy_flux_array[np.isnan(sampled_sigma_prime)] = np.nan  # Handle NaNs from sampling
+        ul_flux_jy = 10**self.log_snr_interpolator(np.log10(self.treat_as_upper_limits_below))
+        
+        if self.interpolation_flux_unit == "AB":
+            self.upper_limit_value = self.jy_to_ab(ul_flux_jy * Jy)
+        else:
+            self.upper_limit_value = (ul_flux_jy * Jy).to_value(self.interpolation_flux_unit)
 
+    def apply_noise(self, true_flux: np.ndarray, true_flux_units=None, out_units=None) -> Tuple[np.ndarray, np.ndarray]:
+        """Applies configured noise and upper limit rules to true flux values."""
+        # 1. Convert input flux to the model's internal interpolation units
+        flux_internal, _ = self._convert_units(true_flux, np.zeros_like(true_flux), true_flux_units)
+        
+        # 2. Sample uncertainty and add noise in internal units
+        sampled_sigma_internal = self.sample_uncertainty(flux_internal)
+        noise = stats.truncnorm.rvs(-self.sigma_clip, self.sigma_clip, 0, sampled_sigma_internal, size=len(true_flux))
+        noisy_flux_internal = flux_internal + noise
+        
+        final_sigma_internal = sampled_sigma_internal
         if self.error_type == "observed":
-            # Re-estimate the errors based on the scattered fluxes
-            sampled_sigma_prime = self.sample_uncertainty(
-                noisy_flux_array,
-            )
+            final_sigma_internal = self.sample_uncertainty(noisy_flux_internal)
 
-        if self.upper_limits:
-            # If upper limits are set, treat fluxes below the threshold as upper limits
-            # Calculate SNR, and apply upper limit condition.
-            snr_limit = self.treat_as_upper_limits_below
-
-            if self.flux_unit == "AB":
-                # print('AB:', noisy_flux_array, sampled_sigma_prime)
-                temp_flux_array = 10 ** (-0.4 * (noisy_flux_array - 8.9)) * Jy
-                # Convert error back into Jy correctly
-                temp_sigma_prime = (np.log(10) * temp_flux_array * sampled_sigma_prime) / 2.5
+        # 3. Handle upper limits if specified
+        if self.upper_limits and self.upper_limit_value is not None:
+            if self.interpolation_flux_unit == "AB":
+                flux_jy = self.ab_to_jy(noisy_flux_internal)
+                error_jy = self.ab_err_to_jy(final_sigma_internal, flux_jy)
             else:
-                temp_flux_array = unyt_array(noisy_flux_array, units=self.flux_unit).to("Jy").value
-                temp_sigma_prime = (
-                    unyt_array(sampled_sigma_prime, units=self.flux_unit).to("Jy").value
-                )
+                flux_jy = (noisy_flux_internal * self.interpolation_flux_unit).to(Jy)
+                error_jy = (final_sigma_internal * self.interpolation_flux_unit).to(Jy)
+            
+            with np.errstate(divide='ignore', invalid='ignore'):
+                snr = (flux_jy / error_jy).value
+            
+            limit_mask = ~np.isfinite(snr) | (snr < self.treat_as_upper_limits_below)
+            
+            if np.any(limit_mask):
+                noisy_flux_internal[limit_mask] = self.upper_limit_value
+                # Simplified: for now, assign a constant error. More complex behaviours can be added.
+                if self.upper_limit_flux_err_behaviour == 'flux':
+                     final_sigma_internal[limit_mask] = self.sample_uncertainty(np.full_like(noisy_flux_internal[limit_mask], self.upper_limit_value))
 
-            snr = temp_flux_array / temp_sigma_prime
-            m = snr < snr_limit
+        # 4. Convert results back to the original input units
+        out_flux, out_sigma = self._convert_units_inverse(noisy_flux_internal, final_sigma_internal, out_units)
+        
+        return (out_flux, out_sigma) if self.return_noise else out_flux
 
-            # print(m, snr, temp_flux_array, temp_sigma_prime)
+    def _convert_units_inverse(self, fluxes: np.ndarray, errors: np.ndarray, out_unit=None) -> Tuple[np.ndarray, np.ndarray]:
+        """Helper to convert from internal units back to the model's primary flux_unit."""
+        
+        if out_unit is None:
+            out_unit = self.flux_unit
 
-            m = (
-                m
-                | umask
-                | ~np.isfinite(temp_flux_array)
-                | np.isinf(noisy_flux_array)
-                | np.isnan(temp_sigma_prime)
-            )  # Ensure we mask out NaNs and infinities
-
-            # Set upper limit flux behaviour
-            if self.upper_limit_flux_behaviour == "scatter_limit":
-                scatter_lim = self.sigma_sigma_interpolator(self.upper_limit_value)
-                samples = stats.truncnorm.rvs(loc=0, scale=scatter_lim, a=-3, b=3, size=np.sum(m))
-                noisy_flux_array[m] = self.upper_limit_value + samples
-            elif self.upper_limit_flux_behaviour == "upper_limit":
-                noisy_flux_array[m] = self.upper_limit_value
-            elif isinstance(self.upper_limit_flux_behaviour, (int, float)):
-                # If it is a float, use it as the upper limit value
-                noisy_flux_array[m] = float(self.upper_limit_flux_behaviour)
+        if (self.interpolation_flux_unit == out_unit) or (isinstance(self.interpolation_flux_unit, unyt_array) and isinstance(out_unit, unyt_array) and (self.interpolation_flux_unit.dimensions == out_unit.dimensions)):
+            if self.interpolation_flux_unit == out_unit:
+                return fluxes, errors
             else:
-                raise ValueError(
-                    f"""Unknown upper_limit_flux_behaviour:
-                    {self.upper_limit_flux_behaviour}
-                    Must be 'scatter_limit', 'upper_limit', or a float/int value."""
-                )
+                conversion = (out_unit/self.interpolation_flux_unit).simplify()
+                return fluxes*conversion, errors*conversion
 
-            # Set upper limit flux error behaviour
-            if self.upper_limit_flux_err_behaviour == "flux":
-                val_lim = self.mu_sigma_interpolator(
-                    self.upper_limit_value
-                )  # Use the interpolated sigma for the upper limit value but include scatter
-                sampled_sigma_prime[m] = val_lim
-            elif self.upper_limit_flux_err_behaviour == "upper_limit":
-                sampled_sigma_prime[m] = self.upper_limit_value
-            elif self.upper_limit_flux_err_behaviour == "max":
-                sampled_sigma_prime[m] = self.max_flux_error
-            elif self.upper_limit_flux_err_behaviour.startswith("sig_"):
-                sig_val = float(self.upper_limit_flux_err_behaviour.split("_")[1])
+        # This is the reverse of _convert_units
+        if self.interpolation_flux_unit == 'AB': # AB to physical flux
+            flux_jy = self.ab_to_jy(fluxes)
+            error_jy = self.ab_err_to_jy(errors, flux_jy)
+            return flux_jy.to_value(out_unit), error_jy.to_value(out_unit)
+        else: # Physical flux to AB
+            flux_with_units = fluxes * self.interpolation_flux_unit
+            error_with_units = errors  * self.interpolation_flux_unit
+            return self.jy_to_ab(flux_with_units), self.jy_err_to_ab(error_with_units, flux_with_units)
 
-                if self.flux_unit == "AB":
-                    # val is in Jy, convert to AB
-                    val = 2.5 / (sig_val * np.log(10))
-                else:
-                    val = 10 ** self.log_snr_interpolator(np.log10(sig_val))
-                    # Find the error at this value
-                    val = self.mu_sigma_interpolator(val)
-                sampled_sigma_prime[m] = val
-
-            else:
-                raise ValueError(
-                    f"""Unknown upper_limit_flux_err_behaviour:
-                    {self.upper_limit_flux_err_behaviour}. Must be 'flux',
-                    'upper_limit', 'max', or 'sig_{val}'."""
-                )
-
-        # convert back to original units if necessary
-
-        if out_units is None:
-            out_units = true_flux_units
-
-        if self.flux_unit != out_units:
-            if self.flux_unit == "AB":
-                raise NotImplementedError()
-            else:
-                noisy_flux_array = unyt_array(noisy_flux_array, units=self.flux_unit)
-                sampled_sigma_prime = unyt_array(sampled_sigma_prime, units=self.flux_unit)
-
-                if out_units == "AB":
-                    # Convert to AB magnitude
-                    sampled_sigma_prime = (
-                        -2.5
-                        * noisy_flux_array.to(Jy).value
-                        / (np.log(10) * sampled_sigma_prime.to(Jy).value)
-                    )
-                    noisy_flux_array = -2.5 * np.log10(noisy_flux_array.to(Jy).value) + 8.9
-                elif out_units == "asinh":
-                    if isinstance(asinh_softening_parameter, unyt_array):
-                        f_b = asinh_softening_parameter.to(Jy)
-                    else:
-                        # Assume it is a sigma value, and calculate
-                        # error in the same way as we calculated the SNR
-                        # before.
-                        f_b = [
-                            10 ** self.log_snr_interpolator(np.log10(i))
-                            for i in asinh_softening_parameter
-                        ]
-                        f_b = unyt_array(f_b, units=self.flux_unit).to(Jy)
-
-                    # Convert to asinh magnitude
-                    noisy_flux_array = f_jy_err_to_asinh(
-                        sampled_sigma_prime.to(Jy),
-                        noisy_flux_array.to(Jy),
-                        f_b=f_b,
-                    )
-                    sampled_sigma_prime = f_jy_to_asinh(
-                        sampled_sigma_prime.to(Jy),
-                        f_b=f_b,
-                    )
-
-                else:
-                    sampled_sigma_prime = sampled_sigma_prime.to(true_flux_units).value
-                    noisy_flux_array = noisy_flux_array.to(true_flux_units).value
-
-        # Apply min/max in original/output units.
-        sampled_sigma_prime[sampled_sigma_prime < self.min_flux_error] = self.min_flux_error
-        sampled_sigma_prime[sampled_sigma_prime > self.max_flux_error] = self.max_flux_error
-
-        if is_scalar:
-            return noisy_flux_array[0], sampled_sigma_prime[0]
-        return noisy_flux_array, sampled_sigma_prime
-
-    def serialize_to_hdf5(self, hdf5_group: h5py.Group) -> None:
+    def serialize_to_hdf5(self, hdf5_group: h5py.Group):
         """Serializes the model's state into the given HDF5 group."""
-        hdf5_group.attrs["__class__"] = self.__class__.__name__
-
-        # Save binned data used for interpolation
-        hdf5_group.create_dataset("flux_bins_centers", data=self.flux_bins_centers)
-        mu_sigma_values = self.mu_sigma_interpolator(self.flux_bins_centers)
-        sigma_sigma_values = self.sigma_sigma_interpolator(self.flux_bins_centers)
-        hdf5_group.create_dataset("mu_sigma_values", data=mu_sigma_values)
-        hdf5_group.create_dataset("sigma_sigma_values", data=sigma_sigma_values)
-
-        # Save configuration attributes
         attrs = hdf5_group.attrs
-        attrs["num_bins"] = self.num_bins
+        attrs["__class__"] = self.__class__.__name__
+        
+        # Save binned data and config
+        if self.bin_centers is not None:
+            hdf5_group.create_dataset("bin_centers", data=self.bin_centers)
+            hdf5_group.create_dataset("median_error_in_bin", data=self.median_error_in_bin)
+            hdf5_group.create_dataset("std_error_in_bin", data=self.std_error_in_bin)
+        
+        if self.log_snr_interpolator is not None:
+            hdf5_group.create_dataset("snr_x_data", data=self._snr_x_data)
+            hdf5_group.create_dataset("snr_y_data", data=self._snr_y_data)
+        
+        # Save all __init__ parameters for perfect reconstruction
         attrs["flux_unit"] = self.flux_unit
-        attrs["min_flux_error"] = self.min_flux_error
-        attrs["max_flux_error"] = self.max_flux_error
-        attrs["upper_limits"] = self.upper_limits
-        attrs["error_type"] = self.error_type
-        attrs["sigma_clip"] = self.sigma_clip
-        attrs["min_samples_per_bin"] = self.min_samples_per_bin
-        attrs["log_bins"] = self.log_bins
-        attrs["min_flux_for_binning"] = str(self.min_flux_for_binning)
         attrs["interpolation_flux_unit"] = self.interpolation_flux_unit
-
-        if self.upper_limits:
-            attrs["treat_as_upper_limits_below"] = self.treat_as_upper_limits_below
-            attrs["upper_limit_value"] = self.upper_limit_value
-            attrs["upper_limit_flux_behaviour"] = self.upper_limit_flux_behaviour
-            attrs["upper_limit_flux_err_behaviour"] = self.upper_limit_flux_err_behaviour
-
-    def apply_scalings(
-        self, flux: unyt_array, flux_error: unyt_array, out_units: str = None
-    ) -> Tuple[unyt_array, unyt_array]:
-        """Applies the transformation (unit conversion, applying min/max limits) to the flux/error.
-
-        Can apply minimum and maximum flux error limits, and unit conversion if necessary.
-        Can apply handling of lower limits if set.
-
-        Parameters
-        ----------
-        flux : unyt_array
-            The flux values to which the scaling will be applied.
-        flux_error : unyt_array
-            The flux error values to which the scaling will be applied.
-
-        Returns:
-        -------
-        Tuple[unyt_array, unyt_array]
-            The scaled flux and flux error.
-        """
-        output_flux = np.zeros(flux.shape, dtype=float)
-        output_flux_error = np.zeros(flux_error.shape, dtype=float)
-
-        to_convert_mask = np.ones(flux.shape, dtype=bool)
-        if self.treat_as_upper_limits_below is not None:
-            # If upper limits are set, treat fluxes below the threshold as upper limits
-            # Calculate SNR, and apply upper limit condition.
-            temp_flux = flux.to("Jy").value
-            temp_error = flux_error.to("Jy").value
-
-            snr = temp_flux / temp_error
-            umask = snr < self.treat_as_upper_limits_below
-
-            # print('num', np.sum(umask), 'upper limits out of', len(umask))
-
-            if self.upper_limit_flux_behaviour == "scatter_limit":
-                scatter_lim = self.sigma_sigma_interpolator(self.upper_limit_value)
-                samples = stats.truncnorm.rvs(
-                    loc=0, scale=scatter_lim, a=-3, b=3, size=np.sum(umask)
-                )
-                output_flux[umask] = self.upper_limit_value + samples
-            elif self.upper_limit_flux_behaviour == "upper_limit":
-                output_flux[umask] = self.upper_limit_value
-            elif isinstance(self.upper_limit_flux_behaviour, (int, float)):
-                # If it is a float, use it as the upper limit value
-                output_flux[umask] = float(self.upper_limit_flux_behaviour)
-            else:
-                raise ValueError(
-                    f"""Unknown upper_limit_flux_behaviour:
-                    {self.upper_limit_flux_behaviour}
-                    Must be 'scatter_limit', 'upper_limit', or a float/int value."""
-                )
-            if self.upper_limit_flux_err_behaviour == "flux":
-                val_lim = self.mu_sigma_interpolator(self.upper_limit_value)
-                output_flux_error[umask] = val_lim
-            elif self.upper_limit_flux_err_behaviour == "upper_limit":
-                output_flux_error[umask] = self.upper_limit_value
-            elif self.upper_limit_flux_err_behaviour == "max":
-                output_flux_error[umask] = self.max_flux_error
-            elif self.upper_limit_flux_err_behaviour.startswith("sig_"):
-                sig_val = float(self.upper_limit_flux_err_behaviour.split("_")[1])
-                if self.flux_unit == "AB":
-                    # val is in Jy, convert to AB
-                    val = 2.5 / (sig_val * np.log(10))
-                else:
-                    val = 10 ** self.log_snr_interpolator(np.log10(sig_val))
-                    # Find the error at this value
-                    val = self.mu_sigma_interpolator(val)
-                output_flux_error[umask] = val
-            to_convert_mask[umask] = False
-
-        if out_units is not None:
-            if out_units == "AB":
-                temp_e = 2.5 / np.log(10) * (flux_error.to("Jy").value / flux.to("Jy").value)
-                temp_f = -2.5 * np.log10(flux.to("Jy").value) + 8.9
-            elif out_units == "asinh":
-                # Convert to asinh magnitude
-                temp_f, temp_e = f_jy_err_to_asinh(
-                    flux.to("Jy").value,
-                    flux_error.to("Jy").value,
-                    f_b=self.asinh_softening_parameter,
-                )
-            else:
-                temp_e = flux.to(out_units).value
-                temp_f = flux_error.to(out_units).value
-        output_flux[to_convert_mask] = temp_f[to_convert_mask]
-        output_flux_error[to_convert_mask] = temp_e[to_convert_mask]
-        # Apply minimum and maximum flux error limits
-        output_flux_error[output_flux_error < self.min_flux_error] = self.min_flux_error
-        if self.max_flux_error is not None:
-            output_flux_error[output_flux_error > self.max_flux_error] = self.max_flux_error
-
-        # print('out', output_flux, output_flux_error)
-
-        return output_flux, output_flux_error
+        attrs["sigma_clip"] = self.sigma_clip
+        attrs["error_type"] = self.error_type
+        attrs["upper_limits"] = self.upper_limits
+        attrs["treat_as_upper_limits_below"] = self.treat_as_upper_limits_below if self.treat_as_upper_limits_below is not None else "None"
+        attrs["upper_limit_flux_behaviour"] = self.upper_limit_flux_behaviour
+        attrs["upper_limit_flux_err_behaviour"] = self.upper_limit_flux_err_behaviour
+        attrs["extrapolate"] = self.extrapolate
+        attrs["min_samples_per_bin"] = self._min_samples_per_bin
+        attrs["num_bins"] = self._num_bins
+        attrs["log_bins"] = self._log_bins
 
     @classmethod
     def _from_hdf5_group(cls, hdf5_group: h5py.Group) -> "GeneralEmpiricalUncertaintyModel":
         """Loads a model instance from an HDF5 group."""
-        # Load binned data
-        flux_bins_centers = hdf5_group["flux_bins_centers"][:]
-        mu_sigma_values = hdf5_group["mu_sigma_values"][:]
-        sigma_sigma_values = hdf5_group["sigma_sigma_values"][:]
-
-        # Load configuration from attributes
         attrs = hdf5_group.attrs
-
-        # Handle potentially stringified 'None'
-        min_flux_for_binning = attrs["min_flux_for_binning"]
-        if min_flux_for_binning == "None":
-            min_flux_for_binning = None
-        else:
-            min_flux_for_binning = float(min_flux_for_binning)
-
-        # Create constructor arguments dictionary
-        constructor_args = {
-            "observed_fluxes": flux_bins_centers,  # Dummy data, will be ignored
-            "observed_errors": mu_sigma_values,  # Dummy data, will be ignored
-            "num_bins": attrs["num_bins"],
-            "flux_bins": flux_bins_centers,
-            "log_bins": attrs["log_bins"],
-            "min_samples_per_bin": attrs["min_samples_per_bin"],
-            "flux_unit": attrs["flux_unit"],
-            "min_flux_error": attrs["min_flux_error"],
-            "error_type": attrs["error_type"],
-            "sigma_clip": attrs["sigma_clip"],
-            "upper_limits": attrs["upper_limits"],
-            "treat_as_upper_limits_below": attrs.get("treat_as_upper_limits_below"),
-            "upper_limit_flux_behaviour": attrs.get("upper_limit_flux_behaviour", "scatter_limit"),
-            "upper_limit_flux_err_behaviour": attrs.get("upper_limit_flux_err_behaviour", "flux"),
-            "max_flux_error": attrs["max_flux_error"],
-            "interpolation_flux_unit": attrs["interpolation_flux_unit"],
-            "min_flux_for_binning": min_flux_for_binning,
+        
+        # Use the already_binned=True path for clean reconstruction
+        init_args = {
+            "observed_fluxes": hdf5_group["bin_centers"][:],
+            "observed_errors": None, # Not needed for this path
             "already_binned": True,
-            "bin_median_errors": mu_sigma_values,
-            "bin_std_errors": sigma_sigma_values,
+            "bin_median_errors": hdf5_group["median_error_in_bin"][:],
+            "bin_std_errors": hdf5_group["std_error_in_bin"][:],
+            "flux_unit": attrs["flux_unit"],
+            "interpolation_flux_unit": attrs["interpolation_flux_unit"],
+            "sigma_clip": attrs["sigma_clip"],
+            "error_type": attrs["error_type"],
+            "upper_limits": attrs["upper_limits"],
+            "treat_as_upper_limits_below": None if attrs["treat_as_upper_limits_below"] == "None" else attrs["treat_as_upper_limits_below"],
+            "upper_limit_flux_behaviour": attrs["upper_limit_flux_behaviour"],
+            "upper_limit_flux_err_behaviour": attrs["upper_limit_flux_err_behaviour"],
+            "extrapolate": attrs["extrapolate"],
+            "min_samples_per_bin": attrs["min_samples_per_bin"],
+            "num_bins": attrs["num_bins"],
+            "log_bins": attrs["log_bins"],
         }
+        
+        instance = cls(**init_args)
+        
+        # Manually reconstruct the SNR interpolator
+        if "snr_x_data" in hdf5_group:
+            instance._snr_x_data = hdf5_group["snr_x_data"][:]
+            instance._snr_y_data = hdf5_group["snr_y_data"][:]
+            instance.log_snr_interpolator = interp1d(
+                instance._snr_x_data, instance._snr_y_data,
+                kind="linear", bounds_error=False, fill_value="extrapolate"
+            )
 
-        return cls(**constructor_args)
+        return instance
 
+    def apply_scalings(self, flux: np.ndarray, error: np.ndarray, flux_units: str, out_units: str) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Applies deterministic model transformations (units, SNR cuts)
+        to observed data without adding random noise.
+        """
+        # 1. Convert input flux to the model's internal interpolation units
+        flux_internal, error_internal = self._convert_units(flux, error)
 
-# +++++++++ NEW HDF5 HANDLING FRAMEWORK +++++++++
+        # 2. Apply upper limit rule (SNR cut) without random scatter
+        if self.upper_limits and self.upper_limit_value is not None:
+            if self.interpolation_flux_unit == "AB":
+                flux_jy = self.ab_to_jy(flux_internal)
+                error_jy = self.ab_err_to_jy(error_internal, flux_jy)
+            else:
+                flux_jy = (flux_internal * u.Unit(self.interpolation_flux_unit)).to(u.Jy)
+                error_jy = (error_internal * u.Unit(self.interpolation_flux_unit)).to(u.Jy)
+            
+            with np.errstate(divide='ignore', invalid='ignore'):
+                snr = (flux_jy / error_jy).value
+            
+            limit_mask = ~np.isfinite(snr) | (snr < self.treat_as_upper_limits_below)
+            
+            if np.any(limit_mask):
+                flux_internal[limit_mask] = self.upper_limit_value
+                # Replace error with the model's median error at the limit
+                error_internal[limit_mask] = self._mu_sigma_interpolator(self.upper_limit_value)
+        
+        # 3. Convert results to the desired output units
+        if self.interpolation_flux_unit == out_units:
+            return flux_internal, error_internal
+        else:
+            return self._convert_units_inverse(flux_internal, error_internal, out_units)
+
+# =============================================================================
+# SERIALIZATION FACTORY FUNCTIONS
+# =============================================================================
 
 MODEL_CLASS_REGISTRY = {
-    "DepthUncertaintyModel": DepthUncertaintyModel,
-    "DiffusionUncertaintyModel": DiffusionUncertaintyModel,
-    # "AsinhEmpiricalUncertaintyModel": AsinhEmpiricalUncertaintyModel, # Add if implemented
+    "DepthUncertaintyModel": DepthUncertaintyModel, 
+    "AsinhEmpiricalUncertaintyModel": AsinhEmpiricalUncertaintyModel,
     "GeneralEmpiricalUncertaintyModel": GeneralEmpiricalUncertaintyModel,
 }
 
-
-def save_model_to_hdf5(
-    model: UncertaintyModel, filepath: str, group_name: str, overwrite: bool = False
-) -> None:
-    """Saves a supported uncertainty model to an HDF5 file.
-
-    Args:
-        model: An instance of a class derived from UncertaintyModel.
-        filepath: Path to the HDF5 file.
-        group_name: Name of the group to save the model under.
-        overwrite: If True, deletes the group if it already exists.
-    """
+def save_unc_model_to_hdf5(model: UncertaintyModel, filepath: str, group_name: str, overwrite: bool = False):
+    """Saves a supported uncertainty model to an HDF5 file."""
     with h5py.File(filepath, "a") as f:
         if group_name in f:
-            if overwrite:
-                del f[group_name]
-            else:
-                raise ValueError(
-                    f"Group '{group_name}' already exists in '{filepath}'. "
-                    "Set overwrite=True to replace it."
-                )
+            if overwrite: del f[group_name]
+            else: raise ValueError(f"Group '{group_name}' already exists.")
         group = f.create_group(group_name)
         model.serialize_to_hdf5(group)
 
-
-def load_model_from_hdf5(filepath: str, group_name: str) -> UncertaintyModel:
-    """Factory function to load any supported model from an HDF5 file.
-
-    Args:
-        filepath: Path to the HDF5 file.
-        group_name: Name of the group where the model is stored.
-
-    Returns:
-        An initialized instance of the loaded uncertainty model.
-    """
+def load_unc_model_from_hdf5(filepath: str, group_name: str) -> UncertaintyModel:
+    """Factory function to load any supported model from an HDF5 file."""
     with h5py.File(filepath, "r") as f:
-        if group_name not in f:
-            raise KeyError(f"Group '{group_name}' not found in HDF5 file '{filepath}'.")
-
+        if group_name not in f: raise KeyError(f"Group '{group_name}' not found.")
         group = f[group_name]
         class_name = group.attrs.get("__class__")
+        if class_name not in MODEL_CLASS_REGISTRY: raise TypeError(f"Unknown model class '{class_name}'.")
+        return MODEL_CLASS_REGISTRY[class_name]._from_hdf5_group(group)
 
-        if class_name is None:
-            raise TypeError(f"HDF5 group '{group_name}' is missing the '__class__' attribute.")
-
-        if class_name not in MODEL_CLASS_REGISTRY:
-            raise TypeError(f"Unknown model class '{class_name}' found in HDF5 group.")
-
-        model_class = MODEL_CLASS_REGISTRY[class_name]
-        return model_class._from_hdf5_group(group)
-
-
-def create_uncertainity_models_from_EPOCHS_cat(
+def create_uncertainty_models_from_EPOCHS_cat(
     file,
     bands,
     new_band_names=None,
@@ -1563,6 +692,9 @@ def create_uncertainity_models_from_EPOCHS_cat(
     dict
         A dictionary of EmpiricalUncertaintyModel objects for each band.
     """
+
+    from astropy import units as u
+
     if isinstance(bands, str):
         bands = [bands]
 
@@ -1633,7 +765,7 @@ def create_uncertainity_models_from_EPOCHS_cat(
 
             plt.ylim(0, 1.2)
             mag = np.linspace(23, 40, 10000)
-            noisy_flux, sampled_sigma = noise_model.apply_noise_to_flux(mag, true_flux_units="AB")
+            noisy_flux, sampled_sigma = noise_model.apply_noise(mag)
 
             # plt.scatter(noisy_flux, sampled_sigma, alpha=0.1, color='green', s=0.1)
             plt.hexbin(
