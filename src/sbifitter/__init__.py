@@ -16,13 +16,13 @@ from .utils import (
     list_parameters, rename_overlapping_parameters, FilterArithmeticParser,
     timeout_handler, TimeoutException, create_sqlite_db, f_jy_err_to_asinh,
     f_jy_to_asinh, check_scaling, detect_outliers, compare_methods_feature_importance,
-    analyze_feature_contributions, optimize_sfh_xlimit
+    analyze_feature_contributions, optimize_sfh_xlimit, make_serializable
 )
 
 from .noise_models import (
-    EmpiricalUncertaintyModel, create_uncertainity_models_from_EPOCHS_cat,
+    EmpiricalUncertaintyModel, create_uncertainty_models_from_EPOCHS_cat,
     DepthUncertaintyModel, UncertaintyModel, AsinhEmpiricalUncertaintyModel,
-    GeneralEmpiricalUncertaintyModel
+    GeneralEmpiricalUncertaintyModel, save_unc_model_to_hdf5, load_unc_model_from_hdf5
 )
 
 
@@ -66,7 +66,7 @@ __all__ = [
     "EmpiricalUncertaintyModel",
     "AsinhEmpiricalUncertaintyModel",
     "test_out_of_distribution",
-    "create_uncertainity_models_from_EPOCHS_cat",
+    "create_uncertainty_models_from_EPOCHS_cat",
     "load_grid_from_hdf5",
     "calculate_min_max_wav_grid",
     "list_parameters",
@@ -85,5 +85,7 @@ __all__ = [
     "DepthUncertaintyModel",
     "UncertaintyModel",
     "GeneralEmpiricalUncertaintyModel",
+    "save_unc_model_to_hdf5",
+    "load_unc_model_from_hdf5",
     "optimize_sfh_xlimit"
 ]
