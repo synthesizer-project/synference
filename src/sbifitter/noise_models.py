@@ -1036,16 +1036,26 @@ def save_unc_model_to_hdf5(
         model.serialize_to_hdf5(group)
 
 
-def load_unc_model_from_hdf5(filepath: str, group_name: str) -> UncertaintyModel:
+def load_unc_model_from_hdf5(filepath: str, group_name: str = "all") -> UncertaintyModel:
     """Factory function to load any supported model from an HDF5 file."""
     with h5py.File(filepath, "r") as f:
-        if group_name not in f:
-            raise KeyError(f"Group '{group_name}' not found.")
-        group = f[group_name]
-        class_name = group.attrs.get("__class__")
-        if class_name not in MODEL_CLASS_REGISTRY:
-            raise TypeError(f"Unknown model class '{class_name}'.")
-        return MODEL_CLASS_REGISTRY[class_name]._from_hdf5_group(group)
+        if group_name == "all":
+            models = {}
+            for name in f.keys():
+                group = f[name]
+                class_name = group.attrs.get("__class__")
+                if class_name not in MODEL_CLASS_REGISTRY:
+                    raise TypeError(f"Unknown model class '{class_name}'.")
+                models[name] = MODEL_CLASS_REGISTRY[class_name]._from_hdf5_group(group)
+            return models
+        else:
+            if group_name not in f:
+                raise KeyError(f"Group '{group_name}' not found.")
+            group = f[group_name]
+            class_name = group.attrs.get("__class__")
+            if class_name not in MODEL_CLASS_REGISTRY:
+                raise TypeError(f"Unknown model class '{class_name}'.")
+            return MODEL_CLASS_REGISTRY[class_name]._from_hdf5_group(group)
 
 
 def create_uncertainty_models_from_EPOCHS_cat(
