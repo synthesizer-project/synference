@@ -667,7 +667,7 @@ class SBI_Fitter:
             param_dict["parameter_array"] = self.fitted_parameter_array
 
             if (
-                "empirical_noise_models" in param_dict
+                "empirical_noise_models" in param_dict["feature_array_flags"]
                 and param_dict["feature_array_flags"]["empirical_noise_models"]
             ):
                 noise_models = param_dict["feature_array_flags"].pop("empirical_noise_models")
@@ -3619,6 +3619,7 @@ class SBI_Fitter:
                     with redirect_stdout(buffer):
                         posteriors, stats = trainer(loader)
                 else:
+                    pass
                     # Train with normal output
                     posteriors, stats = trainer(loader)
             except Exception as e:
@@ -4899,8 +4900,20 @@ class SBI_Fitter:
             os.makedirs(plots_dir)
 
         if X is None or y is None:
-            raise ValueError("X and y must be provided to plot the posterior.")
+            if hasattr(self, "_X_test") and hasattr(self, "_y_test"):
+                X = self._X_test
+                y = self._y_test
+                print(
+                    "Defaulting to _X_test and _y_test. "
+                    "If this is not what you want, please provide X and y explicitly."
+                )  # noqa E501
+            else:
+                raise ValueError("X and y must be provided or set in the object.")
 
+        X = np.atleast_2d(X)
+        y = np.atleast_2d(y)
+
+        print(X.shape, y.shape)
         if ind == "random":
             if seed is not None:
                 np.random.seed(seed)

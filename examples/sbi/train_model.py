@@ -240,11 +240,6 @@ def main_task(args: Args) -> None:
     empirical_model_fitter.plot_histogram_feature_array(bins="scott")
     empirical_model_fitter.plot_histogram_parameter_array(bins="scott")
 
-    if args.simformer and args.optimize:
-        raise NotImplementedError(
-            "SimFormer optimization is not implemented yet. Please set --optimize=False."
-        )
-
     if args.optimize:
         if args.simformer:
             raise NotImplementedError(
@@ -272,7 +267,7 @@ def main_task(args: Args) -> None:
             n_jobs=args.n_optimize_jobs,
             random_seed=42,
             verbose=True,
-            persistent_storage=False,
+            persistent_storage=True,
             score_metrics=["log_prob", "tarp"],
             direction=["maximize", "minimize"],
             timeout_minutes_trial_sampling=15.0,
