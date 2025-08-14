@@ -11,7 +11,6 @@ from typing import Any, Dict, Optional, Tuple, Union
 import h5py
 import matplotlib.pyplot as plt
 import numpy as np
-from astropy import units as u
 from astropy.table import Table
 from scipy import stats
 from scipy.interpolate import interp1d
@@ -455,7 +454,14 @@ class AsinhEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
                 "Using asinh model with AB input will not benefit from asinh scaling of neg fluxes."
             )
         elif true_flux_units is not None:
-            true_flux_jy = (flux * u.Unit(true_flux_units)).to("Jy")
+            if isinstance(flux, unyt_array):
+                assert true_flux_units == flux.units, (
+                    "If true_flux_units is specified, "
+                    "flux must be a unyt_array with the same units."
+                )
+                true_flux_jy = flux.to("Jy")
+            else:
+                true_flux_jy = (flux * true_flux_units).to("Jy")
         else:
             true_flux_jy = flux  # Assumes input is already a unyt_array in Jy
 
@@ -861,9 +867,7 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
                     )
 
                 flux_at_snr_jy = 10 ** self.log_snr_interpolator(np.log10(sig_val))
-                flux_at_snr_internal = (flux_at_snr_jy * u.Jy).to_value(
-                    self.interpolation_flux_unit
-                )
+                flux_at_snr_internal = (flux_at_snr_jy * Jy).to_value(self.interpolation_flux_unit)
                 errors[mask] = self._mu_sigma_interpolator(flux_at_snr_internal)
 
         return errors

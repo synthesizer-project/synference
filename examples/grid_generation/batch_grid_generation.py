@@ -33,6 +33,7 @@ from sbifitter import (
     generate_constant_R,
     generate_random_DB_sfh,
     generate_sfh_basis,
+    calculate_surviving_mass,
 )
 
 # Filters
@@ -177,7 +178,7 @@ except Exception:
 
 av_to_tau_v = 1.086  # conversion factor from Av to tau_v for the dust attenuation curve
 overwrite = True  # whether to overwrite existing grids
-Nmodels = 100_000  # 00  # _000
+Nmodels = 200  # 00  # _000
 batch_size = 40_000  # number of models to generate in each batch
 redshift = (0.01, 12)
 masses = (4, 12)
@@ -512,6 +513,7 @@ for sfh_name, sfh_params in sfhs.items():
         sfh_quant_50=(calculate_sfh_quantile, 0.50, True),  # Calculate SFH quantile at 50%
         sfh_quant_75=(calculate_sfh_quantile, 0.75, True),  # Calculate SFH quantile at 75%
         # UV=(calculate_colour, 'U','V', "total"), # These are broken as they need to be rest-frame
+        log_surviving_mass=(calculate_surviving_mass, grid),  # Calculate surviving mass
         # VJ=(calculate_colour, 'V','J', "total"),
         d4000=calculate_d4000,  # Calculate D4000 index
         beta=calculate_beta,  # Calculate beta using the instrument
