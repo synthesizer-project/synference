@@ -679,7 +679,22 @@ class SBI_Fitter:
 
         param_dict.update(extras)
 
-        # convery any torch tensors to numpy arrays on the cpu for compatibility
+        if "stats" in param_dict:
+            stats_path = f"{out_dir}/{self.name}{name_append}_summary.json"
+            # add some more model info to stats
+            # copy any parameters in param_dict which are lists or strings to stats
+            param_dict["stats"].append({})
+            for key, value in param_dict.items():
+                if isinstance(value, (list, str, float, int, bool)):
+                    param_dict["stats"][-1][key] = value
+            try:
+                with open(stats_path, "w") as f:
+                    json.dump(param_dict["stats"], f, indent=4)
+            except Exception as e:
+                print(f"Error saving stats to {stats_path}: {e}")
+            param_dict["stats"].pop()
+
+        # convert any torch tensors to numpy arrays on the cpu for compatibility
         param_dict = make_serializable(param_dict, allowed_types=[np.ndarray, UncertaintyModel])
 
         if save_method == "torch":
@@ -3166,7 +3181,7 @@ class SBI_Fitter:
                     score = np.mean(self.log_prob(X_test, y_test, posterior))
 
                     # Continue with the PIT calculation and adjust the score
-                    pit = self.calculate_PIT(X_test, y_test, num_samples=5000, posteriors=posterior)
+                    pit = self.calculate_PIT(X_test, y_test, num_samples=1000, posteriors=posterior)
                     dpit_max = np.max(np.abs(pit - np.linspace(0, 1, len(pit))))
                     score += -0.5 * np.log(dpit_max)
                 elif score == "log_prob":
@@ -3238,6 +3253,7 @@ class SBI_Fitter:
         save_method: str = "joblib",
         num_posterior_draws_per_sample: int = 1000,
         embedding_net: Optional[torch.nn.Module] = torch.nn.Identity(),
+        custom_config_yaml: Optional[str] = None,
     ) -> tuple:
         """Run a single SBI training instance.
 
@@ -3252,7 +3268,9 @@ class SBI_Fitter:
             train_indices: Indices of the training set.
             test_indices: Indices of the test set. If None, no test set is used.
             n_nets: Number of networks to use in the ensemble.
-            model_type: Type of model to use. Either 'mdn' or 'maf'.
+            model_type: Type of model to use. Can be most models supported by sbi or lampe.
+                If a list, will be an ensemble of models.
+                E.g. 'mdn', 'maf', 'nsf' etc.
             hidden_features: Number of hidden features in the neural network.
             num_components: Number of components in the mixture density network.
             num_transforms: Number of transforms in the masked autoregressive flow.
@@ -3329,6 +3347,9 @@ class SBI_Fitter:
                 )
                 # return posterior, stats
                 run = True
+
+                if params is not None:
+                    save_model = False  # Don't save the model again if we loaded it.
             else:
                 print(
                     "Model with same name already exists. \
@@ -3340,6 +3361,17 @@ class SBI_Fitter:
             self.has_simulator = True
 
         start_time = datetime.now()
+
+        if custom_config_yaml is not None:
+            # Doing this here so it's defined for custom models we are loading.
+            import yaml
+
+            with open(custom_config_yaml) as f:
+                train_args = yaml.safe_load(f)["train_args"]
+            sqlite_url = create_sqlite_db(f"{out_dir}/{self.name}_{name_append}_optuna_study.db")  # noqa: E501
+            train_args["optuna"]["study"]["study_name"] = f"{self.name}_{name_append}"
+            train_args["optuna"]["study"]["storage"] = sqlite_url
+            net_configs = [{"model": train_args["optuna"]["search_space"]["model_choice"][0]}]
 
         if not run:
             if learning_type == "offline" or initial_training_from_grid:
@@ -3572,17 +3604,18 @@ class SBI_Fitter:
 
                 model_args.update(additional_model_args)
 
-                # Create neural network
-                net = self._create_network(
-                    model_type,
-                    model_args,
-                    engine=eng,
-                    backend=backend,
-                    verbose=verbose,
-                    embedding_net=embedding_net,
-                    device=self.device,
-                )
-                nets.append(net)
+                if custom_config_yaml is None:
+                    # Create neural network
+                    net = self._create_network(
+                        model_type,
+                        model_args,
+                        engine=eng,
+                        backend=backend,
+                        verbose=verbose,
+                        embedding_net=embedding_net,
+                        device=self.device,
+                    )
+                    nets.append(net)
                 ensemble_model_types.append(model_type)
                 ensemble_model_args.append(model_args)
 
@@ -3598,17 +3631,39 @@ class SBI_Fitter:
             if learning_type == "online":
                 train_args["num_round"] = num_online_rounds
 
-            # Set up trainer
-            trainer = InferenceRunner.load(
-                backend=backend,
-                engine=engine,
-                prior=prior,
-                nets=nets,
-                train_args=train_args,
-                out_dir=out_dir if save_model else None,
-                name=f"{self.name}_{name_append}_",
-                device=self.device,
-            )
+            if custom_config_yaml is None:
+                # Set up trainer
+                trainer = InferenceRunner.load(
+                    backend=backend,
+                    engine=engine,
+                    prior=prior,
+                    nets=nets,
+                    train_args=train_args,
+                    out_dir=out_dir if save_model else None,
+                    name=f"{self.name}_{name_append}_",
+                    device=self.device,
+                )
+                extra_args = {}
+            else:
+                from .custom_runner import SBICustomRunner
+
+                trainer = SBICustomRunner(
+                    engine=engine,
+                    prior=prior,
+                    train_args=train_args,
+                    out_dir=out_dir if save_model else None,
+                    name=f"{self.name}_{name_append}_",
+                    device=self.device,
+                    net_configs=net_configs,
+                )
+                if learning_type == "online":
+                    validation_loader = loader
+                else:
+                    validation_loader = NumpyLoader(
+                        self.feature_array[test_indices],
+                        self.fitted_parameter_array[test_indices],
+                    )
+                extra_args = {"validation_loader": validation_loader}
 
             print(f"Training on {self.device}.")
             # Train the model
@@ -3617,11 +3672,11 @@ class SBI_Fitter:
                     # Suppress output if not verbose
                     buffer = StringIO()
                     with redirect_stdout(buffer):
-                        posteriors, stats = trainer(loader)
+                        posteriors, stats = trainer(loader, **extra_args)
                 else:
                     pass
                     # Train with normal output
-                    posteriors, stats = trainer(loader)
+                    posteriors, stats = trainer(loader, **extra_args)
             except Exception as e:
                 raise RuntimeError(f"Error during SBI training: {str(e)}")
 
@@ -3658,15 +3713,27 @@ class SBI_Fitter:
 
         # Save the params with the model if needed
         if save_model:
-            param_dict = {
-                "engine": engine,
-                "learning_type": learning_type,
-                "ensemble_model_types": ensemble_model_types,
-                "ensemble_model_args": ensemble_model_args,
-                "n_nets": n_nets,
-                "train_args": train_args,
-                "stats": stats,
-            }
+            if custom_config_yaml is None:
+                param_dict = {
+                    "engine": engine,
+                    "learning_type": learning_type,
+                    "ensemble_model_types": ensemble_model_types,
+                    "ensemble_model_args": ensemble_model_args,
+                    "n_nets": n_nets,
+                    "train_args": train_args,
+                    "stats": stats,
+                    "training_time": elapsed_time.total_seconds(),
+                }
+            else:
+                # Option to serialize custom config yaml
+                param_dict = {
+                    "engine": engine,
+                    "train_args": train_args,
+                    "stats": stats,
+                    "custom_config_yaml": custom_config_yaml,
+                    "net_configs": net_configs,
+                    "training_time": elapsed_time.total_seconds(),
+                }
 
             if learning_type == "online" or initial_training_from_grid:
                 param_dict["simulator"] = simulator
@@ -4393,9 +4460,21 @@ class SBI_Fitter:
 
         # Properly check dimensionality and shape
         X_test_array = np.asarray(X_test)  # Ensure it's a numpy array
+        X_test_array = torch.as_tensor(X_test_array, device=self.device)
         # Handle single sample case
         if X_test_array.ndim == 1 or (X_test_array.ndim == 2 and X_test_array.shape[0] == 1):
             return sample_with_timeout(sampler, num_samples, X_test_array, timeout_seconds_per_test)
+
+        if hasattr(posteriors, "sample_batched"):
+            X_test_array = torch.squeeze(X_test_array)
+            samples = (
+                posteriors.sample_batched((num_samples,), x=X_test_array, show_progress_bars=True)
+                .detach()
+                .cpu()
+                .numpy()
+            )  # noqa E501
+            samples = np.transpose(samples, (1, 0, 2))
+            return samples
 
         # Handle multiple samples case
         shape = len(self.fitted_parameter_names)
@@ -4517,7 +4596,10 @@ class SBI_Fitter:
         assert samples.ndim == 3, (
             "Samples must have shape (num_objects, num_samples, num_parameters)."
         )
-        assert samples.shape[0] == len(X_test), "Samples must match the number of test samples."
+        assert samples.shape[0] == len(X_test), (
+            f"Samples must match the number of test samples, {samples.shape[0]} != {len(X_test)}."
+            f"Samples shape: {samples.shape}"
+        )  # noqa E501
         if samples.shape[1] != num_samples:
             raise ValueError(
                 f"Samples must have {num_samples} samples per test sample, but got {samples.shape[1]}."  # noqa E501
@@ -4558,13 +4640,10 @@ class SBI_Fitter:
             "R_squared": 1 - (ss_res / ss_tot),
             "RMSE_norm": rmse_normalized,
             "mean_ae_norm": mae_normalized,
-            "tarp": np.array(
-                [
-                    self.calculate_TARP(X_test, y_test, samples=tarp_samples, posteriors=posteriors)
-                    .cpu()
-                    .numpy()
-                ]
-            ),
+            "tarp": self.calculate_TARP(X_test, y_test, samples=tarp_samples, posteriors=posteriors)
+            .detach()
+            .cpu()
+            .numpy(),  # noqa E501
             "log_dpit_max": log_dpit_max,
         }
 
@@ -4763,8 +4842,16 @@ class SBI_Fitter:
         fig, ax = plt.subplots(1, 1, figsize=(6, 4))
 
         for i, m in enumerate(summaries):
-            ax.plot(m["training_log_probs"], ls="-", label=f"{i}_train")
-            ax.plot(m["validation_log_probs"], ls="--", label=f"{i}_val")
+            tlp = m.get("training_log_probs", None)
+            if tlp is None:
+                tlp = -1.0 * np.array(m["training_loss"])
+
+            vlp = m.get("validation_log_probs", None)
+            if vlp is None:
+                vlp = -1.0 * np.array(m["validation_loss"])
+
+            ax.plot(tlp, ls="-", label=f"{i}_train")
+            ax.plot(vlp, ls="--", label=f"{i}_val")
         ax.set_xlim(0)
         ax.set_xlabel("Epoch")
         ax.set_ylabel("Log probability")
@@ -4909,15 +4996,17 @@ class SBI_Fitter:
                 )  # noqa E501
             else:
                 raise ValueError("X and y must be provided or set in the object.")
+        # Drop leading dimensions and then ensure still 2D
+        X = np.squeeze(X)
+        y = np.squeeze(y)
 
         X = np.atleast_2d(X)
         y = np.atleast_2d(y)
 
-        print(X.shape, y.shape)
         if ind == "random":
             if seed is not None:
                 np.random.seed(seed)
-            ind = np.random.randint(0, X.shape[0])
+            ind = np.random.randint(0, len(X))
 
         # use ltu-ili's built-in validation metrics to plot the posterior for this point
         metric = PlotSinglePosterior(
@@ -5169,6 +5258,15 @@ class SBI_Fitter:
 
         if len(plot_list) == 0:
             return
+
+        # Drop leading dimensions and then ensure still 2D
+        X = np.squeeze(X)
+        y = np.squeeze(y)
+        if X.ndim == 1:
+            raise ValueError(
+                "X must be a 2D array. Can't assess coverage "
+                "for a single sample. Please provide a 2D array."
+            )
 
         metric = PosteriorCoverage(
             num_samples=num_samples,
@@ -5425,6 +5523,11 @@ class SBI_Fitter:
                             self._y_test = self.fitted_parameter_array[self._test_indices]
                             self._X_train = self.feature_array[self._train_indices]
                             self._y_train = self.fitted_parameter_array[self._train_indices]
+
+                            self._X_test = np.squeeze(self._X_test)
+                            self._y_test = np.squeeze(self._y_test)
+                            self._X_train = np.squeeze(self._X_train)
+                            self._y_train = np.squeeze(self._y_train)
                 else:
                     self._X_test = None
                     self._y_test = None
@@ -5442,8 +5545,11 @@ class SBI_Fitter:
                 self._train_args = params["train_args"]
                 self._prior = params["prior"]
 
-                self._ensemble_model_types = params["ensemble_model_types"]
-                self._ensemble_model_args = params["ensemble_model_args"]
+                try:
+                    self._ensemble_model_types = params["ensemble_model_types"]
+                    self._ensemble_model_args = params["ensemble_model_args"]
+                except KeyError:
+                    pass
 
         else:
             print(f"Warning: No parameter file found for {model_file}.")

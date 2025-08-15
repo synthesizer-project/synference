@@ -246,7 +246,7 @@ def calculate_colour(
     Returns:
         The colour of the galaxy as a float.
     """
-    if filter1 in ["U", "V", "J"] or filter2 in ["U", "V", "J"] and not rest_frame:
+    if (filter1 in ["U", "V", "J"] or filter2 in ["U", "V", "J"]) and not rest_frame:
         print(
             "Warning: Using 'U', 'V', or 'J' filters in the observed frame is not recommended. "
             "Set 'rest_frame=True' to use these filters in the rest frame."
@@ -336,13 +336,17 @@ def calculate_balmer_decrement(galaxy: Galaxy, emission_model_key: str = "total"
     return balmer_decrement
 
 
-def calculate_line_flux(galaxy: Galaxy, emission_model, line="Ha"):
+def calculate_line_flux(
+    galaxy: Galaxy, emission_model, line="Ha", emission_model_key="total", cosmo=Planck18
+):
     """Measures the equivalent widths of specific emission lines in a galaxy.
 
     Args:
         galaxy: An instance of a synthesizer.parametric.Galaxy object.
         emission_model: An instance of a synthesizer.emission_models.EmissionModel.
         line: The name of the emission line to measure (default is 'Ha').
+        emission_model_key: The key for the emission model to use (default is 'total').
+        cosmo: An instance of astropy.cosmology.Cosmology (default is Planck18).
 
     Returns:
         A dictionary with line names as keys and their equivalent widths as values.
@@ -352,18 +356,19 @@ def calculate_line_flux(galaxy: Galaxy, emission_model, line="Ha"):
     line = aliases.get(line, line)  # Handle aliases for line names
 
     line = galaxy.stars.get_lines(([line]), emission_model)
-    flux = line.get_flux(cosmo=Planck18, z=galaxy.redshift)[0]
+    flux = line.get_flux(cosmo=cosmo, z=galaxy.redshift)[0]
 
     return flux
 
 
-def calculate_line_ew(galaxy: Galaxy, emission_model, line="Ha"):
-    """Measures the equivalent widths of specific emission lines in a galaxy.
+def calculate_line_ew(galaxy: Galaxy, emission_model, line="Ha", emission_model_key="total"):
+    """Measures the rest-frame equivalent widths of specific emission lines in a galaxy.
 
     Args:
         galaxy: An instance of a synthesizer.parametric.Galaxy object.
         emission_model: An instance of a synthesizer.emission_models.EmissionModel.
         line: The name of the emission line to measure (default is 'Ha').
+        emission_model_key: The key for the emission model to use (default is 'total').
 
     Returns:
         A dictionary with line names as keys and their equivalent widths as values.
@@ -372,11 +377,34 @@ def calculate_line_ew(galaxy: Galaxy, emission_model, line="Ha"):
 
     line = aliases.get(line, line)  # Handle aliases for line names
 
-    line = galaxy.stars.get_lines(([line]), emission_model)
+    galaxy.stars.get_lines(([line]), emission_model)
 
-    print(galaxy.stars.lines["nebular"])
+    line = galaxy.stars.lines[emission_model_key]
 
     return line.equivalent_width[0]
+
+
+def calculate_line_luminosity(
+    galaxy: Galaxy, emission_model, line="Ha", emission_model_key="total"
+):
+    """Measures the luminosity of specific emission lines in a galaxy.
+
+    Args:
+        galaxy: An instance of a synthesizer.parametric.Galaxy object.
+        emission_model: An instance of a synthesizer.emission_models.EmissionModel.
+        line: The name of the emission line to measure (default is 'Ha').
+        emission_model_key: The key for the emission model to use (default is 'total').
+
+    Returns:
+        A dictionary with line names as keys and their luminosities as values.
+    """
+    from synthesizer.emissions.utils import aliases
+
+    line = aliases.get(line, line)  # Handle aliases for line names
+
+    galaxy.stars.get_lines(([line]), emission_model)
+
+    return galaxy.stars.lines[emission_model_key].luminosity[0]
 
 
 def calculate_sfh_quantile(galaxy, quantile=0.5, norm=False, cosmo=Planck18):
@@ -2057,6 +2085,10 @@ class GalaxyBasis:
 
                 if self.instrument.can_do_photometry:
                     pipeline.get_photometry_fluxes(self.instrument)
+
+                if False:
+                    pipeline.get_lines(line_ids=["H 1 6562.80A", "O 3 5006.84A", "H 1 4861.32A"])
+                    pipeline.get_observed_lines(self.cosmo)
 
                 pipeline.add_galaxies(batch_gals)
 
