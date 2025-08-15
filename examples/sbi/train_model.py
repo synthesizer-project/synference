@@ -69,6 +69,7 @@ class Args:
     n_trials: int = 100  # Number of trials for optimization
     optimize: bool = False  # If True, run Optuna optimization
     noise_model_class: str = "general"  # Type of noise model to use - general, depth or asinh.
+    custom_config_yaml: str = None
 
 
 parser.add_arguments(Args, dest="args")
@@ -240,11 +241,6 @@ def main_task(args: Args) -> None:
     empirical_model_fitter.plot_histogram_feature_array(bins="scott")
     empirical_model_fitter.plot_histogram_parameter_array(bins="scott")
 
-    if args.simformer and args.optimize:
-        raise NotImplementedError(
-            "SimFormer optimization is not implemented yet. Please set --optimize=False."
-        )
-
     if args.optimize:
         if args.simformer:
             raise NotImplementedError(
@@ -298,6 +294,7 @@ def main_task(args: Args) -> None:
             name_append=args.name_append,
             plot=args.plot,
             additional_model_args=additional_model_args,
+            custom_config_yaml=args.custom_config_yaml,
         )
     else:
         args = dict(

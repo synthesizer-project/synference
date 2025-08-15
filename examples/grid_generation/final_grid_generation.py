@@ -6,34 +6,33 @@ import sys
 import numpy as np
 from astropy.cosmology import Planck18
 from synthesizer.emission_models.attenuation import (
-    MWN18,
+    Calzetti2000,
 )  # noqa
-
-mwn18 = MWN18()
 from synthesizer.emission_models.dust.emission import Greybody, IR_templates  # noqa
 from synthesizer.emission_models.stellar.pacman_model import (
-    BimodalPacmanEmission,
+    PacmanEmission,
 )  # noqa
 from synthesizer.grid import Grid
 from synthesizer.instruments import FilterCollection, Instrument
 from synthesizer.parametric import SFH, ZDist
 from tqdm import tqdm
-from unyt import K, Myr, dimensionless, unyt_array
+from unyt import K, Myr, unyt_array
 
 from sbifitter import (
     CombinedBasis,
     GalaxyBasis,
     calculate_beta,
+    calculate_colour,
     calculate_d4000,
     calculate_mass_weighted_age,
     calculate_muv,
     calculate_sfh_quantile,
     calculate_sfr,
+    calculate_surviving_mass,
     draw_from_hypercube,
     generate_constant_R,
     generate_random_DB_sfh,
     generate_sfh_basis,
-    calculate_surviving_mass,
 )
 
 # Filters
@@ -86,7 +85,7 @@ else:
 
 
 # Consistent wavelength grid for both SPS grids and filters
-new_wav = generate_constant_R(R=300, auto_start_stop=True, filterset=filterset, max_redshift=15)
+new_wav = generate_constant_R(R=300, auto_start_stop=True, filterset=filterset, max_redshift=20)
 
 filterset.resample_filters(new_lam=new_wav)
 
@@ -100,6 +99,26 @@ grid_dir = os.environ["SYNTHESIZER_GRID_DIR"]
 
 dir_path = os.path.dirname(os.path.abspath(__file__))
 out_dir = os.path.join(os.path.dirname(os.path.dirname(dir_path)), "grids/")
+
+try:
+    n_proc = int(sys.argv[1])
+except Exception:
+    n_proc = 6
+
+av_to_tau_v = 1.086  # conversion factor from Av to tau_v for the dust attenuation curve
+overwrite = True  # whether to overwrite existing grids
+Nmodels = 200  # 00  # _000
+batch_size = 40_000  # number of models to generate in each batch
+redshift = (0.01, 14)
+masses = (4, 12)
+max_redshift = 20  # gives maximum age of SFH at a given redshift
+cosmo = Planck18  # cosmology to use for age calculations
+emission_key = "total"  # 'attenuated' if no dust emission or 'emergent' if fesc > 0
+# ---------------------------------------------------------------
+
+
+logAv = (-3, 0.7)  # Log-uniform between 0.001 and 5.0 magnitudes
+log_zmet = (-4, -1.39)  # max of grid (e.g. 0.04)
 
 
 def continuity_agebins(
@@ -171,31 +190,6 @@ def continuity_agebins(
     return all_bins
 
 
-try:
-    n_proc = int(sys.argv[1])
-except Exception:
-    n_proc = 6
-
-av_to_tau_v = 1.086  # conversion factor from Av to tau_v for the dust attenuation curve
-overwrite = True  # whether to overwrite existing grids
-Nmodels = 200  # 00  # _000
-batch_size = 40_000  # number of models to generate in each batch
-redshift = (0.01, 12)
-masses = (4, 12)
-max_redshift = 20  # gives maximum age of SFH at a given redshift
-cosmo = Planck18  # cosmology to use for age calculations
-
-# ---------------------------------------------------------------
-
-
-logAv = (-3, 0.7)  # Log-uniform between 0.001 and 5.0 magnitudes
-dust_birth_fraction = (
-    0.5,
-    2.0,
-)  # multiplier for the attenuation av for the birth cloud
-log_zmet = (-4, -1.39)  # max of grid (e.g. 0.04)
-
-
 """
 "delayed_exponential": {
     "sfh_type": SFH.DelayedExponential,
@@ -248,17 +242,16 @@ log_zmet = (-4, -1.39)  # max of grid (e.g. 0.04)
 """
 
 sfhs = {
-    "log_normal": {
-        "sfh_type": SFH.LogNormal,
-        "sfh_param_names": ["tau", "peak_age_norm"],
-        "tau": (0.05, 2.5),  # in Gyr
-        "tau_units": [None, None],
-        "peak_age_norm": (
-            0.001,
-            0.99,
-        ),  # normalized to maximum age of the universe at that redshift.
-        "params_to_ignore": ["max_age"],  # correlates with redshift, so not needed
-    }
+    "dense_basis": {
+        "Nparam_SFH": 3,
+        "tx_alpha": 1,
+        "sfh_type": SFH.DenseBasis,
+        "sfh_param_names": [
+            "ssfr",
+        ],
+        "ssfr": (-12, -7),  # log10(sSFR) in yr^-1'
+        "params_to_ignore": ["max_age"],
+    },
 }
 
 
@@ -268,7 +261,6 @@ full_params_base = {
     "redshift": redshift,
     "log_masses": masses,
     "log_Av": logAv,  # Av in magnitudes
-    "dust_birth_fraction": dust_birth_fraction,
     "log_zmet": log_zmet,
 }
 
@@ -279,7 +271,7 @@ for sfh_name, sfh_params in sfhs.items():
 
     sfh_name = str(sfh_type).split(".")[-1].split("'")[0]
 
-    name = f"BPASS_Chab_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_CF00_MWN18_v2"  # noqa: E501
+    name = f"BPASS_Chab_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_Calzetti_v3"  # noqa: E501
     print(f"{out_dir}/grid_{name}.hdf5")
     if os.path.exists(f"{out_dir}/v2/grid_{name}.hdf5") and not overwrite:
         print(f"Grid {name} already exists, skipping.")
@@ -385,27 +377,20 @@ for sfh_name, sfh_params in sfhs.items():
 
     # Essentially CF00 with explicit fesc and fesc_ly_alpha parameters.
 
-    emission_model = BimodalPacmanEmission(
+    emission_model = PacmanEmission(
         grid=grid,
-        tau_v_ism="tau_v_ism",
-        tau_v_birth="tau_v_birth",
-        dust_curve_ism=MWN18(),  # Calzetti2000(),
-        dust_curve_birth=MWN18(),  # Calzetti2000(),
-        age_pivot=7 * dimensionless,
-        dust_emission_ism=dust_emission,
-        dust_emission_birth=dust_emission,
+        tau_v="tau_v",
+        dust_curve=Calzetti2000(),
+        dust_emission=dust_emission,
         fesc=0.0,  # escape fraction of ionizing photons
-        fesc_ly_alpha=0.1,  # escape fraction of Lyman-alpha photons
+        fesc_ly_alpha=0.0,  # escape fraction of Lyman-alpha photons
     )
 
     # List of other varying or fixed parameters. Either a distribution to pull from or a list.
     # Can be any parameter which can be property of emitter or
     # galaxy and processed by the emission model.
     galaxy_params = {
-        "tau_v_ism": all_param_dict["Av"] / av_to_tau_v,
-        "tau_v_birth": all_param_dict["Av"]
-        * all_param_dict["dust_birth_fraction"]
-        / av_to_tau_v,  # Av to tau_v for the birth cloud
+        "tau_v": all_param_dict["Av"] / av_to_tau_v,
     }
 
     # Dictionary of alternative parametrizations for the galaxy parameters -
@@ -441,11 +426,7 @@ for sfh_name, sfh_params in sfhs.items():
     # These convert between the actual galaxy/emitter parameters and the
     # parameters we want to sample.
     alt_parametrizations = {
-        "tau_v_birth": (
-            "dust_birth_fraction",
-            lambda x: x["tau_v_birth"] / x["tau_v_ism"],
-        ),
-        "tau_v_ism": ("Av", lambda x: x["tau_v_ism"] * av_to_tau_v),
+        "tau_v": ("Av", lambda x: x["tau_v"] * av_to_tau_v),
     }
 
     if sfh_type == SFH.DenseBasis:
@@ -479,7 +460,7 @@ for sfh_name, sfh_params in sfhs.items():
     combined_basis = CombinedBasis(
         bases=[basis],
         log_stellar_masses=all_param_dict["log_masses"],
-        base_emission_model_keys=["total"],
+        base_emission_model_keys=[emission_key],
         combination_weights=None,
         redshifts=redshifts,
         out_name=f"grid_{name}",
@@ -512,11 +493,11 @@ for sfh_name, sfh_params in sfhs.items():
         sfh_quant_25=(calculate_sfh_quantile, 0.25, True),  # Calculate SFH quantile at 25%
         sfh_quant_50=(calculate_sfh_quantile, 0.50, True),  # Calculate SFH quantile at 50%
         sfh_quant_75=(calculate_sfh_quantile, 0.75, True),  # Calculate SFH quantile at 75%
-        # UV=(calculate_colour, 'U','V', "total"), # These are broken as they need to be rest-frame
+        UV=(calculate_colour, "U", "V", emission_key, True),  # Calculate UV colour (rest-frame)
+        VJ=(calculate_colour, "V", "J", emission_key, True),  # Calculate VJ colour (rest-frame)
         log_surviving_mass=(calculate_surviving_mass, grid),  # Calculate surviving mass
-        # VJ=(calculate_colour, 'V','J', "total"),
-        d4000=calculate_d4000,  # Calculate D4000 index
-        beta=calculate_beta,  # Calculate beta using the instrument
+        d4000=(calculate_d4000, emission_key),  # Calculate D4000 using the emission model
+        beta=(calculate_beta, emission_key),  # Calculate beta using the qinstrument
         n_proc=n_proc,
         verbose=False,
         batch_size=batch_size,
@@ -524,3 +505,15 @@ for sfh_name, sfh_params in sfhs.items():
 
     # Create grid - kinda overkill for a single case, but it does work.
     combined_basis.create_grid(overwrite=overwrite)
+
+
+""" Graveyard
+# Calculate EW of H-alpha line
+EW_Halpha=(calculate_line_ew, emission_model,  "Ha", emission_key)
+# Calculate flux of H-alpha line
+flux_Halpha=(calculate_line_flux, emission_model, "Ha", emission_key, cosmo),
+# Calculate EW of OIII doublet noqa: E501
+EW_OIII=(calculate_line_ew, emission_model, "O3", emission_key),
+# Calculate flux of OIII doublet noqa: E501
+flux_OIII=(calculate_line_flux, emission_model, "O3", emission_key, cosmo),
+"""
