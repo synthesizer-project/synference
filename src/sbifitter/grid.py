@@ -42,6 +42,7 @@ from unyt import (
     Msun,
     Myr,
     Unit,
+    define_unit,
     dimensionless,
     nJy,
     uJy,
@@ -54,7 +55,7 @@ from unyt import (
 from .noise_models import (
     EmpiricalUncertaintyModel,
 )
-from .utils import check_scaling, list_parameters, save_emission_model
+from .utils import check_log_scaling, check_scaling, list_parameters, save_emission_model
 
 file_path = os.path.dirname(os.path.realpath(__file__))
 grid_folder = os.path.join(os.path.dirname(os.path.dirname(file_path)), "grids")
@@ -71,8 +72,15 @@ UNIT_DICT = {
     "log_sfr": "log10(Msun/yr)",
     "sfr": "Msun/yr",
     "log_stellar_mass": "log10(Msun)",
+    "log_surviving_mass": "log10(Msun)",
     "stellar_mass": "Msun",
 }
+
+try:
+    define_unit("log10_Msun", 1 * dimensionless)
+except RuntimeError:
+    pass
+
 
 # ------------------------------------------
 # Functions for galaxy parameters
@@ -124,7 +132,7 @@ if not synthesizer_available:
 
 
 def calculate_muv(galaxy, cosmo=Planck18):
-    """Calculate the MUV magnitude of a galaxy.
+    """Calculate the apparent mUV magnitude of a galaxy.
 
     Parameters
     ----------
@@ -143,14 +151,44 @@ def calculate_muv(galaxy, cosmo=Planck18):
         "MUV": {"lam_eff": 1500 * Angstrom, "lam_fwhm": 100 * Angstrom},
     }
 
-    filter = FilterCollection(tophat_dict=tophats, verbose=False)
+    muv_filter = FilterCollection(tophat_dict=tophats, verbose=False)
 
     phots = {}
 
     for key in list(galaxy.stars.spectra.keys()):
-        lnu = galaxy.stars.spectra[key].get_photo_lnu(filter).photo_lnu[0]
+        lnu = galaxy.stars.spectra[key].get_photo_lnu(muv_filter).photo_lnu[0]
         phot = lnu_to_fnu(lnu, cosmo=cosmo, redshift=z)
         phots[key] = phot
+
+    return phots
+
+
+def calculate_MUV(galaxy, cosmo=Planck18):
+    """Calculate the absolute MUV magnitude of a galaxy.
+
+    Parameters
+    ----------
+    galaxy : Galaxy
+        The galaxy object containing stellar spectra.
+    cosmo : Cosmology, optional
+        The cosmology to use for redshift calculations, by default Planck18.
+
+    Returns:
+    -------
+    dict
+        Dictionary containing the MUV magnitude for each stellar spectrum in the galaxy.
+    """
+    tophats = {
+        "MUV": {"lam_eff": 1500 * Angstrom, "lam_fwhm": 100 * Angstrom},
+    }
+
+    muv_filter = FilterCollection(tophat_dict=tophats, verbose=False)
+
+    phots = {}
+
+    for key in list(galaxy.stars.spectra.keys()):
+        lnu = galaxy.stars.spectra[key].get_photo_lnu(muv_filter).photo_lnu[0]
+        phots[key] = lnu
 
     return phots
 
@@ -166,7 +204,7 @@ def calculate_sfr(galaxy, timescale=10 * Myr):
         The star formation rate as a float.
     """
     timescale = (0, timescale.to("yr").value)  # Convert timescale to years
-    sfr = galaxy.stars.get_average_sfr(t_range=timescale)
+    sfr = galaxy.stars.calculate_average_sfr(t_range=timescale)
     return sfr
 
 
@@ -190,7 +228,11 @@ def calculate_flux_weighted_age(galaxy, spectra_type="total", filter_code="JWST/
 
 
 def calculate_colour(
-    galaxy: Galaxy, filter1: str, filter2: str, emission_model_key: str = "total"
+    galaxy: Galaxy,
+    filter1: str,
+    filter2: str,
+    emission_model_key: str = "total",
+    rest_frame: bool = False,
 ) -> float:
     """Measures the colour of a galaxy between two filters (filter1 - filter2).
 
@@ -199,10 +241,16 @@ def calculate_colour(
         filter1: The first filter code (e.g., 'JWST/NIRCam.F444W').
         filter2: The second filter code (e.g., 'JWST/NIRCam.F115W').
         emission_model_key: The key for the emission model to use (default is 'total').
+        rest_frame: Whether to use the rest frame (default is False).
 
     Returns:
         The colour of the galaxy as a float.
     """
+    if (filter1 in ["U", "V", "J"] or filter2 in ["U", "V", "J"]) and not rest_frame:
+        print(
+            "Warning: Using 'U', 'V', or 'J' filters in the observed frame is not recommended. "
+            "Set 'rest_frame=True' to use these filters in the rest frame."
+        )
     for i, filter_code in enumerate([filter1, filter2]):
         if (
             galaxy.stars.spectra[emission_model_key].photo_fnu is None
@@ -217,16 +265,27 @@ def calculate_colour(
                     filters = FilterCollection(filters=[filter])
                 else:
                     filters = FilterCollection(filter_codes=[filter_code])
-                galaxy.stars.get_photo_fnu(filters)
+                if rest_frame:
+                    galaxy.stars.get_photo_lnu(filters)
+                else:
+                    galaxy.stars.get_photo_fnu(filters)
             except ValueError:
                 raise ValueError(
                     "Filter '{filter_code}' is not available in the "
                     f"emission model '{emission_model_key}'."
                 )
         if i == 0:
-            flux1 = galaxy.stars.spectra[emission_model_key].photo_fnu[filter_code]
+            flux1 = galaxy.stars.spectra[emission_model_key]
+            if rest_frame:
+                flux1 = flux1.photo_lnu[filter_code]
+            else:
+                flux1 = flux1.photo_fnu[filter_code]
         else:
-            flux2 = galaxy.stars.spectra[emission_model_key].photo_fnu[filter_code]
+            flux2 = galaxy.stars.spectra[emission_model_key]
+            if rest_frame:
+                flux2 = flux2.photo_lnu[filter_code]
+            else:
+                flux2 = flux2.photo_fnu[filter_code]
 
     colour = 2.5 * np.log10(flux2 / flux1)
 
@@ -277,13 +336,17 @@ def calculate_balmer_decrement(galaxy: Galaxy, emission_model_key: str = "total"
     return balmer_decrement
 
 
-def calculate_line_flux(galaxy: Galaxy, emission_model, line="Ha"):
+def calculate_line_flux(
+    galaxy: Galaxy, emission_model, line="Ha", emission_model_key="total", cosmo=Planck18
+):
     """Measures the equivalent widths of specific emission lines in a galaxy.
 
     Args:
         galaxy: An instance of a synthesizer.parametric.Galaxy object.
         emission_model: An instance of a synthesizer.emission_models.EmissionModel.
         line: The name of the emission line to measure (default is 'Ha').
+        emission_model_key: The key for the emission model to use (default is 'total').
+        cosmo: An instance of astropy.cosmology.Cosmology (default is Planck18).
 
     Returns:
         A dictionary with line names as keys and their equivalent widths as values.
@@ -293,18 +356,19 @@ def calculate_line_flux(galaxy: Galaxy, emission_model, line="Ha"):
     line = aliases.get(line, line)  # Handle aliases for line names
 
     line = galaxy.stars.get_lines(([line]), emission_model)
-    flux = line.get_flux(cosmo=Planck18, z=galaxy.redshift)[0]
+    flux = line.get_flux(cosmo=cosmo, z=galaxy.redshift)[0]
 
     return flux
 
 
-def calculate_line_ew(galaxy: Galaxy, emission_model, line="Ha"):
-    """Measures the equivalent widths of specific emission lines in a galaxy.
+def calculate_line_ew(galaxy: Galaxy, emission_model, line="Ha", emission_model_key="total"):
+    """Measures the rest-frame equivalent widths of specific emission lines in a galaxy.
 
     Args:
         galaxy: An instance of a synthesizer.parametric.Galaxy object.
         emission_model: An instance of a synthesizer.emission_models.EmissionModel.
         line: The name of the emission line to measure (default is 'Ha').
+        emission_model_key: The key for the emission model to use (default is 'total').
 
     Returns:
         A dictionary with line names as keys and their equivalent widths as values.
@@ -313,11 +377,34 @@ def calculate_line_ew(galaxy: Galaxy, emission_model, line="Ha"):
 
     line = aliases.get(line, line)  # Handle aliases for line names
 
-    line = galaxy.stars.get_lines(([line]), emission_model)
+    galaxy.stars.get_lines(([line]), emission_model)
 
-    print(galaxy.stars.lines["nebular"])
+    line = galaxy.stars.lines[emission_model_key]
 
     return line.equivalent_width[0]
+
+
+def calculate_line_luminosity(
+    galaxy: Galaxy, emission_model, line="Ha", emission_model_key="total"
+):
+    """Measures the luminosity of specific emission lines in a galaxy.
+
+    Args:
+        galaxy: An instance of a synthesizer.parametric.Galaxy object.
+        emission_model: An instance of a synthesizer.emission_models.EmissionModel.
+        line: The name of the emission line to measure (default is 'Ha').
+        emission_model_key: The key for the emission model to use (default is 'total').
+
+    Returns:
+        A dictionary with line names as keys and their luminosities as values.
+    """
+    from synthesizer.emissions.utils import aliases
+
+    line = aliases.get(line, line)  # Handle aliases for line names
+
+    galaxy.stars.get_lines(([line]), emission_model)
+
+    return galaxy.stars.lines[emission_model_key].luminosity[0]
 
 
 def calculate_sfh_quantile(galaxy, quantile=0.5, norm=False, cosmo=Planck18):
@@ -364,10 +451,28 @@ def calculate_sfh_quantile(galaxy, quantile=0.5, norm=False, cosmo=Planck18):
     return lookback_time
 
 
+def calculate_surviving_mass(galaxy, grid: Grid):
+    """Calculate the surviving mass of the stellar population in a galaxy.
+
+    Args:
+        galaxy: An instance of a synthesizer.parametric.Galaxy object.
+        grid: An instance of synthesizer.grid.Grid containing the SPS grid.
+
+    Returns:
+        The surviving mass as a unyt_quantity in Msun.
+    """
+    mass = galaxy.get_surviving_mass(grid)
+    mass = np.log10(mass.to_value("Msun"))
+    mass = unyt_array(mass, "log10_Msun")
+
+    return mass
+
+
 class SUPP_FUNCTIONS:
     """A class to hold supplementary functions for galaxy analysis."""
 
     calculate_muv = calculate_muv
+    calculate_MUV = calculate_MUV
     calculate_sfr = calculate_sfr
     calculate_mass_weighted_age = calculate_mass_weighted_age
     calculate_lum_weighted_age = calculate_lum_weighted_age
@@ -379,6 +484,7 @@ class SUPP_FUNCTIONS:
     calculate_line_flux = calculate_line_flux
     calculate_line_ew = calculate_line_ew
     calculate_sfh_quantile = calculate_sfh_quantile
+    calculate_surviving_mass = calculate_surviving_mass
 
 
 # ------------------------------------------
@@ -1979,6 +2085,10 @@ class GalaxyBasis:
 
                 if self.instrument.can_do_photometry:
                     pipeline.get_photometry_fluxes(self.instrument)
+
+                if False:
+                    pipeline.get_lines(line_ids=["H 1 6562.80A", "O 3 5006.84A", "H 1 4861.32A"])
+                    pipeline.get_observed_lines(self.cosmo)
 
                 pipeline.add_galaxies(batch_gals)
 
@@ -3753,6 +3863,8 @@ class CombinedBasis:
                         for subkey, subvalue in value.items():
                             if check_scaling(subvalue):
                                 supp_dict[key][subkey] = subvalue[pos] * scaling_factors
+                            elif check_log_scaling(subvalue):
+                                supp_dict[key][subkey] = subvalue[pos] + np.log10(scaling_factors)
                             else:
                                 supp_dict[key][subkey] = subvalue[pos]
                             supp_param_units[key] = (
@@ -3763,6 +3875,8 @@ class CombinedBasis:
                     else:
                         if check_scaling(value):
                             supp_dict[key] = value[pos] * scaling_factors
+                        elif check_log_scaling(value):
+                            supp_dict[key] = value[pos] + np.log10(scaling_factors)
                         else:
                             supp_dict[key] = value[pos]
                         supp_param_units[key] = (
@@ -3802,7 +3916,7 @@ class CombinedBasis:
                 param_units.append("dimensionless")
                 param_idx += 1
                 params_array[param_idx, :] = log_total_mass
-                param_units.append("log10(Msun/Mstar)")
+                param_units.append("log10_Msun")
                 param_idx += 1
 
                 # Fill varying parameters
@@ -3865,7 +3979,7 @@ class CombinedBasis:
                     param_idx += 1
                     params_array[param_idx, i] = log_total_mass
                     if i == 0:
-                        param_units.append("log10(Msun/Mstar)")
+                        param_units.append("log10_Msun")
                     param_idx += 1
 
                     params_array[param_idx, i] = weights[0]  # weight fraction
