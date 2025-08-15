@@ -25,9 +25,10 @@ from .noise_models import (
     GeneralEmpiricalUncertaintyModel, save_unc_model_to_hdf5, load_unc_model_from_hdf5
 )
 
+from .custom_runner import SBICustomRunner
 
 try:
-    from .sbi import SBI_Fitter, MissingPhotometryHandler, Simformer_Fitter
+    from .sbi_runner import SBI_Fitter, MissingPhotometryHandler, Simformer_Fitter
 except ImportError as e:
     print(e)
     print('Dependencies for SBI not installed. Only the grid generation functions will be available.')
