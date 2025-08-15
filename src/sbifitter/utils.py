@@ -524,6 +524,23 @@ class CPU_Unpickler(pickle.Unpickler):
             return super().find_class(module, name)
 
 
+def check_log_scaling(arr: Union[unyt_array, unyt_quantity]):
+    """Check if the input array has dimensions that scale with logarithmic normalization."""
+    assert isinstance(arr, unyt_array) or isinstance(arr, unyt_quantity), (
+        "Input must be a unyt_array or unyt_quantity, got {}".format(type(arr))
+    )
+
+    if isinstance(arr, unyt_quantity):
+        arr = 1.0 * arr  # Ensure it is a unyt_array
+
+    if not isinstance(arr, unyt_array):
+        return False
+
+    # Check if the unit is dimensionless
+    if arr.units.is_dimensionless and "log" in str(arr.units):
+        return True
+
+
 def check_scaling(arr: Union[unyt_array, unyt_quantity]):
     """Check if the input array has dimensions that scale with normalization."""
     assert isinstance(arr, unyt_array) or isinstance(arr, unyt_quantity), (
