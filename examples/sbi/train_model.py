@@ -69,6 +69,7 @@ class Args:
     n_trials: int = 100  # Number of trials for optimization
     optimize: bool = False  # If True, run Optuna optimization
     noise_model_class: str = "general"  # Type of noise model to use - general, depth or asinh.
+    custom_config_yaml: str = None
 
 
 parser.add_arguments(Args, dest="args")
@@ -293,6 +294,7 @@ def main_task(args: Args) -> None:
             name_append=args.name_append,
             plot=args.plot,
             additional_model_args=additional_model_args,
+            custom_config_yaml=args.custom_config_yaml,
         )
     else:
         args = dict(
