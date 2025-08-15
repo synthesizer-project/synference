@@ -254,9 +254,9 @@ def main_task(args: Args) -> None:
         train_params = dict(
             study_name=f"{args.model_name}{args.name_append}",
             suggested_hyperparameters={
-                "learning_rate": [1e-6, 1e-3],
+                "learning_rate": [1e-5, 1e-3], # 1e-6 makes models very slow to train!
                 "hidden_features": [12, 500],
-                num_name: [2, 20],
+                num_name: [2, 30],
                 "training_batch_size": [32, 128],
                 "stop_after_epochs": [10, 30],
                 "clip_max_norm": [0.1, 5.0],
@@ -269,13 +269,13 @@ def main_task(args: Args) -> None:
                 "engine": args.engine,
             },
             n_trials=args.n_trials,
-            n_jobs=args.n_optimize_jobs,
+            n_jobs=1,
             random_seed=42,
             verbose=True,
-            persistent_storage=False,
+            persistent_storage=True,
             score_metrics=["log_prob", "tarp"],
             direction=["maximize", "minimize"],
-            timeout_minutes_trial_sampling=15.0,
+            timeout_minutes_trial_sampling=60.0,
         )
 
         empirical_model_fitter.optimize_sbi(**train_params)
@@ -321,13 +321,27 @@ def main_task(args: Args) -> None:
 if __name__ == "__main__":
     args = parse_args()
 
-    if args.background:
-        # Use multiprocessing to run the main task in a new 'spawned' process
-        print("Starting the task in a background process...")
-        process = mp.Process(target=main_task, args=(args,))
-        process.start()
-        print(f"Process started with PID: {process.pid}. The script will now exit.")
+    if args.optimize:
+        # Start N different processes for optimization
+        print(f"Starting optimization with {args.n_optimize_jobs} parallel jobs...")
+        processes = []
+        for i in range(args.n_optimize_jobs):
+            process = mp.Process(target=main_task, args=(args,))
+            processes.append(process)
+            process.start()
+            print(f"Process {i + 1} started with PID: {process.pid}")
+        for process in processes:
+            process.join()
+        print("All optimization processes completed.")
         sys.exit(0)
     else:
-        # Run in the foreground as normal
-        main_task(args)
+        if args.background:
+            # Use multiprocessing to run the main task in a new 'spawned' process
+            print("Starting the task in a background process...")
+            process = mp.Process(target=main_task, args=(args,))
+            process.start()
+            print(f"Process started with PID: {process.pid}. The script will now exit.")
+            sys.exit(0)
+        else:
+            # Run in the foreground as normal
+            main_task(args)

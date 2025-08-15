@@ -748,7 +748,7 @@ class SBI_Fitter:
                 DOESN'T DO ANYTHING HERE YET.
             flux_units: The units of the fluxes in the photometry array.
             return_errors: Whether to return the errors as well.
-            normed_flux_units: The units of the fluxes after normalization.
+            flux_units: The units of the fluxes after normalization.
 
         Returns:
             The photometry array with applied noise models.
@@ -1168,6 +1168,9 @@ class SBI_Fitter:
                     "AB" - AB magnitude normalization.
                     "asinh" - Asinh magnitude normalization.
                     any string or unyt_quantity equivalent to a flux density unit.
+                    NOTE: Certain noise models can ignore this flux unit,
+                    e.g. if you provide a AsinhUcertaintyModel, the fluxes will be
+                    in asinh magnitudes regardless of the normed_flux_units.
             normalization_unit: The unit of the normalization factor, if used.
                 E.g. 'log10 nJy', 'nJy', AB', etc. This can be different to
                 normed_flux_units, but should be a valid flux density unit. E.g.
