@@ -19,16 +19,8 @@ from tqdm import tqdm
 from unyt import K, Myr, unyt_array
 
 from sbifitter import (
-    CombinedBasis,
     GalaxyBasis,
-    calculate_beta,
     calculate_colour,
-    calculate_d4000,
-    calculate_mass_weighted_age,
-    calculate_muv,
-    calculate_sfh_quantile,
-    calculate_sfr,
-    calculate_surviving_mass,
     draw_from_hypercube,
     generate_constant_R,
     generate_random_DB_sfh,
@@ -137,7 +129,7 @@ except Exception:
 
 av_to_tau_v = 1.086  # conversion factor from Av to tau_v for the dust attenuation curve
 overwrite = True  # whether to overwrite existing grids
-Nmodels = 100_000  # number of models to generate
+Nmodels = 1000  # number of models to generate
 batch_size = 50_000  # number of models to generate in each batch
 redshift = (0.01, 14)
 masses = (4, 12)
@@ -151,6 +143,7 @@ logAv = (-3, 0.7)  # Log-uniform between 0.001 and 5.0 magnitudes
 log_zmet = (-4, -1.39)  # max of grid (e.g. 0.04)
 
 seed = 42  # Seed for reproducibility
+
 
 def continuity_agebins(
     redshift,
@@ -303,7 +296,7 @@ for sfh_name, sfh_params in sfhs.items():
 
     sfh_name = str(sfh_type).split(".")[-1].split("'")[0]
 
-    name = f"BPASS_Chab_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_Calzetti_v3"  # noqa: E501
+    name = f"badbadbadbadbad_BPASS_Chab_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_Calzetti_v3"  # noqa: E501
     print(f"{out_dir}/grid_{name}.hdf5")
     if os.path.exists(f"{out_dir}/v2/grid_{name}.hdf5") and not overwrite:
         print(f"Grid {name} already exists, skipping.")
@@ -366,7 +359,6 @@ for sfh_name, sfh_params in sfhs.items():
                 redshift=z,
                 logsfr=logsfr,
                 logmass=logmass,
-                seed=seed,
             )
             sfh_models.append(sfh)
             # Reassign parameters
@@ -436,13 +428,14 @@ for sfh_name, sfh_params in sfhs.items():
     def make_db_tuple(params):
         nquant = 0
         for key in params:
-            if key.startswith('sfh_quantile_'):
+            if key.startswith("sfh_quantile_"):
                 nquant += 1
 
-        mass_quantiles = np.linspace(0,1,nquant+2)[1:-1]  # Exclude the 0 and 1 quantiles
+        mass_quantiles = np.linspace(0, 1, nquant + 2)[1:-1]  # Exclude the 0 and 1 quantiles
 
-        db_tuple = [params['log_mass'], params['log_sfr'], nquant] + \
-                    [params[f'sfh_quantile_{int(q*100)}'] for q in mass_quantiles]
+        db_tuple = [params["log_mass"], params["log_sfr"], nquant] + [
+            params[f"sfh_quantile_{int(q * 100)}"] for q in mass_quantiles
+        ]
         return db_tuple  # Return a tuple of (log_mass, SFR, nquant, [quantiles...])
 
     def db_sf_convert(param, param_dict, Nparam_SFH=3):
@@ -503,7 +496,7 @@ for sfh_name, sfh_params in sfhs.items():
         log_stellar_masses=all_param_dict["log_masses"],
     )
 
-    ''' for i in range(10):
+    """ for i in range(10):
         try:
             basis.plot_galaxy(
                 idx=i,
@@ -512,35 +505,41 @@ for sfh_name, sfh_params in sfhs.items():
             )
         except ValueError as e:
             print(f"Error plotting galaxy {i}: {e}")
-            continue'''
+            continue"""
 
     basis.create_mock_cat(
         emission_model_key=emission_key,
         out_name=f"grid_{name}",
         out_dir=out_dir,
         overwrite=overwrite,
-        mUV=(calculate_muv, cosmo),  # Calculate mUV using the provided cosmology
-        mass_weighted_age=calculate_mass_weighted_age,  # Calculate mass-weighted age
-        sfr_3=(calculate_sfr, 3 * Myr),  # Calculate SFR averaged over the last 3 Myr
-        sfr_10=(calculate_sfr, 10 * Myr),  # Calculate SFR averaged over the last 10 Myr
-        sfr_30=(calculate_sfr, 30 * Myr),  # Calculate SFR averaged over the last 30 Myr
-        sfr_100=(calculate_sfr, 100 * Myr),  # Calculate SFR averaged over the last 100 Myr
-        sfh_quant_25=(calculate_sfh_quantile, 0.25, True),  # Calculate SFH quantile at 25%
-        sfh_quant_50=(calculate_sfh_quantile, 0.50, True),  # Calculate SFH quantile at 50%
-        sfh_quant_75=(calculate_sfh_quantile, 0.75, True),  # Calculate SFH quantile at 75%
+        # mUV=(calculate_muv, cosmo),  # Calculate mUV using the provided cosmology
+        # mass_weighted_age=calculate_mass_weighted_age,  # Calculate mass-weighted age
+        # sfr_3=(calculate_sfr, 3 * Myr),  # Calculate SFR averaged over the last 3 Myr
+        # sfr_10=(calculate_sfr, 10 * Myr),  # Calculate SFR averaged over the last 10 Myr
+        # sfr_30=(calculate_sfr, 30 * Myr),  # Calculate SFR averaged over the last 30 Myr
+        # sfr_100=(calculate_sfr, 100 * Myr),  # Calculate SFR averaged over the last 100 Myr
+        # sfh_quant_25=(calculate_sfh_quantile, 0.25, True),  # Calculate SFH quantile at 25%
+        # sfh_quant_50=(calculate_sfh_quantile, 0.50, True),  # Calculate SFH quantile at 50%
+        # sfh_quant_75=(calculate_sfh_quantile, 0.75, True),  # Calculate SFH quantile at 75%
         UV=(calculate_colour, "U", "V", emission_key, True),  # Calculate UV colour (rest-frame)
         VJ=(calculate_colour, "V", "J", emission_key, True),  # Calculate VJ colour (rest-frame)
-        log_surviving_mass=(calculate_surviving_mass, grid),  # Calculate surviving mass
-        d4000=(calculate_d4000, emission_key),  # Calculate D4000 using the emission model
-        beta=(calculate_beta, emission_key),  # Calculate beta using the qinstrument
+        # log_surviving_mass=(calculate_surviving_mass, grid),  # Calculate surviving mass
+        # d4000=(calculate_d4000, emission_key),  # Calculate D4000 using the emission model
+        # beta=(calculate_beta, emission_key),  # Calculate beta using the qinstrument
         n_proc=n_proc,
         verbose=False,
         batch_size=batch_size,
         parameter_transforms_to_save={
             "db_tuple": make_db_tuple,  # Save the Dense Basis SFH tuple
-        }
+        },
     )
 
+# no supplementary parameters took 5 seconds
+# mass weighted age, sfh quantiles, surviving mass took 11 seconds
+# d4000/beta/mUV took 12 seconds
+# All took 5 minutes!
+# it was creating the UVJ filter colletction for each model that took the longest time.
+# The UVJ filter collection is now created once at the start of the script.
 
 
 """ Graveyard
@@ -552,4 +551,5 @@ flux_Halpha=(calculate_line_flux, emission_model, "Ha", emission_key, cosmo),
 EW_OIII=(calculate_line_ew, emission_model, "O3", emission_key),
 # Calculate flux of OIII doublet noqa: E501
 flux_OIII=(calculate_line_flux, emission_model, "O3", emission_key, cosmo),
+# sfrs took 11 seconds
 """

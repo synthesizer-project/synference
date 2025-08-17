@@ -15,6 +15,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from astropy.cosmology import Cosmology, Planck18, z_at_value
 from dill.source import getsource
+from joblib import Parallel, delayed, parallel_config
 from matplotlib.ticker import FuncFormatter, ScalarFormatter
 from scipy.linalg import inv
 from scipy.stats import qmc
@@ -25,7 +26,7 @@ try:
     from synthesizer.emission_models.attenuation import Inoue14
     from synthesizer.emissions import plot_spectra
     from synthesizer.grid import Grid
-    from synthesizer.instruments import FilterCollection, Instrument
+    from synthesizer.instruments import UVJ, FilterCollection, Instrument
     from synthesizer.parametric import SFH, Galaxy, Stars, ZDist
     from synthesizer.particle.stars import sample_sfzh
     from synthesizer.pipeline import Pipeline
@@ -77,6 +78,21 @@ UNIT_DICT = {
     "stellar_mass": "Msun",
 }
 
+
+uvj = UVJ()
+uvj = {
+    "U": FilterCollection(filters=[uvj["U"]]),
+    "V": FilterCollection(filters=[uvj["V"]]),
+    "J": FilterCollection(filters=[uvj["J"]]),
+}
+
+tophats = {
+    "MUV": {"lam_eff": 1500 * Angstrom, "lam_fwhm": 100 * Angstrom},
+}
+
+muv_filter = FilterCollection(tophat_dict=tophats, verbose=False)
+
+
 try:
     define_unit("log10_Msun", 1 * dimensionless)
 except RuntimeError:
@@ -84,6 +100,7 @@ except RuntimeError:
 
 try:
     from mpi4py import MPI
+
     comm = MPI.COMM_WORLD
     rank = comm.Get_rank()
     size = comm.Get_size()
@@ -157,11 +174,6 @@ def calculate_muv(galaxy, cosmo=Planck18):
         Dictionary containing the MUV magnitude for each stellar spectrum in the galaxy.
     """
     z = galaxy.redshift
-    tophats = {
-        "MUV": {"lam_eff": 1500 * Angstrom, "lam_fwhm": 100 * Angstrom},
-    }
-
-    muv_filter = FilterCollection(tophat_dict=tophats, verbose=False)
 
     phots = {}
 
@@ -188,12 +200,6 @@ def calculate_MUV(galaxy, cosmo=Planck18):
     dict
         Dictionary containing the MUV magnitude for each stellar spectrum in the galaxy.
     """
-    tophats = {
-        "MUV": {"lam_eff": 1500 * Angstrom, "lam_fwhm": 100 * Angstrom},
-    }
-
-    muv_filter = FilterCollection(tophat_dict=tophats, verbose=False)
-
     phots = {}
 
     for key in list(galaxy.stars.spectra.keys()):
@@ -268,11 +274,8 @@ def calculate_colour(
         ):
             try:
                 if filter_code in ["U", "V", "J"]:
-                    from synthesizer.filters import UVJ
+                    filters = uvj[filter_code]
 
-                    uvj = UVJ()
-                    filter = uvj[filter_code]
-                    filters = FilterCollection(filters=[filter])
                 else:
                     filters = FilterCollection(filter_codes=[filter_code])
                 if rest_frame:
@@ -800,7 +803,11 @@ def generate_emission_models(
 
     emission_models = []
     out_params = {}
-    for i, params in tqdm(enumerate(varying_param_combinations), desc="Generating Emission Models", disable=(rank != 0)):
+    for i, params in tqdm(
+        enumerate(varying_param_combinations),
+        desc="Generating Emission Models",
+        disable=(rank != 0),
+    ):
         # Create parameter dictionary for emission model constructor
         emission_params = {key: params[j] for j, key in enumerate(varying_params.keys())}
 
@@ -1140,16 +1147,16 @@ def generate_sfh_basis(
 
     return np.array(sfhs), redshifts
 
-#from joblib import delayed, Parallel, wrap_non_picklable_objects, parallel_config
 
+# from joblib import delayed, Parallel, wrap_non_picklable_objects, parallel_config
 
 
 def create_galaxy(
-        sfh: Type[SFH.Common],
-        redshift: float,
-        metal_dist: Type[ZDist.Common],
-        log_stellar_masses: Union[float, list] = 9,
-        grid: Optional[Grid] = None,
+    sfh: Type[SFH.Common],
+    redshift: float,
+    metal_dist: Type[ZDist.Common],
+    log_stellar_masses: Union[float, list] = 9,
+    grid: Optional[Grid] = None,
     **galaxy_kwargs,
 ) -> Type[Galaxy]:
     """Create a new galaxy with the specified parameters."""
@@ -1204,7 +1211,7 @@ def create_galaxy(
     return galaxy
 
 
-#@wrap_non_picklable_objects
+# @wrap_non_picklable_objects
 def _process_single_galaxy(
     sfh: Any,
     redshift: float,
@@ -1214,10 +1221,7 @@ def _process_single_galaxy(
     params: Dict[str, Any],
     alt_parametrizations: Dict[str, Tuple[Union[str, List[str]], Any]],
 ) -> Any:  # Replace Any with your Galaxy object type if available
-    """
-    Creates and processes a single galaxy object based on the provided inputs.
-    This function is designed to be called in parallel by joblib.
-    """
+    """Process a single galaxy creation."""
     # Create a new galaxy with the specified parameters
     gal = create_galaxy(
         sfh=sfh,
@@ -1250,6 +1254,7 @@ def _process_single_galaxy(
 
     gal.all_params = save_params
     return gal
+
 
 class GalaxyBasis:
     """Class to create a basis of galaxies with different SFHs, redshifts, and parameters.
@@ -1467,7 +1472,7 @@ class GalaxyBasis:
         varying_param_values = [
             i for i in self.galaxy_params.values() if type(i) in [list, np.ndarray]
         ]
-        
+
         if isinstance(log_base_masses, (list, np.ndarray)):
             self.per_particle = True
 
@@ -1501,7 +1506,7 @@ class GalaxyBasis:
             enumerate(self.redshifts),
             desc=f"Creating {self.model_name} galaxies",
             total=len(self.redshifts),
-            disable=(rank != 0)
+            disable=(rank != 0),
         ):
             # get the sfh for this redshift
             sfh_models = self.sfhs[redshift]
@@ -1851,13 +1856,11 @@ class GalaxyBasis:
             base.attrs["fixed_param_values"] = self.fixed_param_values
             base.attrs["fixed_param_units"] = self.fixed_param_units
 
-
-
     def _create_matched_galaxies(
         self,
         log_base_masses: Union[float, np.ndarray] = 9,
         galaxies_mask: Optional[np.ndarray] = None,
-        n_proc: int = 1
+        n_proc: int = 1,
     ) -> List[Type[Galaxy]]:
         """Creates galaxies where all parameters have been sampled.
 
@@ -1890,11 +1893,11 @@ class GalaxyBasis:
             length, got {len(self.sfhs)} and {len(self.metal_dists)}"""
 
         if galaxies_mask is not None:
-            assert (len(galaxies_mask) == len(self.sfhs)), (
+            assert len(galaxies_mask) == len(self.sfhs), (
                 "galaxies_mask must be the same length as sfhs, redshifts, and metal_dists"
             )
 
-        print('Checking parameters inside create_matched_galaxies.')
+        print("Checking parameters inside create_matched_galaxies.")
         varying_param_values = [
             i for i in self.galaxy_params.values() if type(i) in [list, np.ndarray]
         ]
@@ -1918,15 +1921,15 @@ class GalaxyBasis:
             ), f"""All varying parameters must be the same length,
                 got {len(self.sfhs)} and {len(self.galaxy_params)}"""
 
-
         # This was a side-effect in the original loop. We can detect it here
         # before running the jobs.
-        if isinstance(log_base_masses, (list, np.ndarray)) and isinstance(log_base_masses[0], (list, np.ndarray)):
+        if isinstance(log_base_masses, (list, np.ndarray)) and isinstance(
+            log_base_masses[0], (list, np.ndarray)
+        ):
             self.per_particle = True
 
-
         job_inputs: List[Dict[str, Any]] = []
-        for i in tqdm(range(len(self.sfhs)), desc='Batching galaxy inputs', disable=(rank != 0)):
+        for i in tqdm(range(len(self.sfhs)), desc="Batching galaxy inputs", disable=(rank != 0)):
             # Skip this galaxy if the mask is provided and is False
             if galaxies_mask is not None and len(galaxies_mask) > 0 and not galaxies_mask[i]:
                 continue
@@ -1941,7 +1944,7 @@ class GalaxyBasis:
                 mass = log_base_masses[i]
             except (IndexError, TypeError):
                 mass = log_base_masses
-            
+
             job_inputs.append(
                 {
                     "sfh": self.sfhs[i],
@@ -1960,10 +1963,15 @@ class GalaxyBasis:
             with parallel_config("threading"):
                 self.galaxies = Parallel(n_jobs=n_proc)(
                     tqdm(tasks, desc="Creating galaxies.", disable=(rank != 0))
-            )
+                )
         else:
-            print('Creating galaxies in single-process mode.')
-            self.galaxies = [_process_single_galaxy(**inputs) for inputs in tqdm(job_inputs, desc="Creating galaxies.", disable=(rank != 0), file=sys.stdout)]
+            print("Creating galaxies in single-process mode.")
+            self.galaxies = [
+                _process_single_galaxy(**inputs)
+                for inputs in tqdm(
+                    job_inputs, desc="Creating galaxies.", disable=(rank != 0), file=sys.stdout
+                )
+            ]
 
         print(f"Created {len(self.galaxies)} galaxies.")
 
@@ -2004,7 +2012,9 @@ class GalaxyBasis:
         fixed_param_values = []
         varying_param_names = []
 
-        for key, value in tqdm(self.all_parameters.items(), desc="Processing parameters", disable=(rank != 0)):
+        for key, value in tqdm(
+            self.all_parameters.items(), desc="Processing parameters", disable=(rank != 0)
+        ):
             if len(value) == 1 and value[0] is None:
                 to_remove.append(key)
                 continue
@@ -2137,7 +2147,7 @@ class GalaxyBasis:
             if not skip:
                 if multi_node:
                     print("Running pipeline in multi-node mode with MPI.")
-                    print(f'SIZE: {size}, RANK: {rank}')
+                    print(f"SIZE: {size}, RANK: {rank}")
                 else:
                     print("Running in single-node mode.")
 
@@ -2159,8 +2169,7 @@ class GalaxyBasis:
                 print("Added analysis functions to pipeline.")
 
                 if multi_node:
-                    print(f'Pipeline MPI: {pipeline.using_mpi}')
-
+                    print(f"Pipeline MPI: {pipeline.using_mpi}")
 
                 # Add any extra analysis functions requested by the user.
 
@@ -2187,8 +2196,8 @@ class GalaxyBasis:
                 pipeline.add_galaxies(batch_gals)
 
                 ngal = len(batch_gals)
-                print(f"Running pipeline at {start} for {ngal} galaxies")
                 start = datetime.now()
+                print(f"Running pipeline at {start} for {ngal} galaxies")
                 pipeline.run()
                 elapsed = datetime.now() - start
                 print(f"Finished running pipeline at {datetime.now()} for {ngal} galaxies")
@@ -2198,8 +2207,8 @@ class GalaxyBasis:
                     pipeline.write(fullpath, verbose=0)
 
                     if multi_node:
-                        print('Combining HDF5 files across nodes.')
-                        pipeline.combine_files() # virtual needs work
+                        print("Combining HDF5 files across nodes.")
+                        pipeline.combine_files()  # virtual needs work
 
             if save:
                 wav = self.grid.lam.to(Angstrom).value
@@ -2207,7 +2216,6 @@ class GalaxyBasis:
                 if n_batches == 1:
                     final_fullpath = fullpath
 
-                
                 # IF MPI, only do this on rank 0
                 add = True
                 if multi_node:
@@ -2687,7 +2695,6 @@ $\\log_{{10}}(M_\\star/M_\\odot)$: {np.log10(mass):.1f}"""
             **extra_analysis_functions,
         )
 
-
         if compile_grid:
             # Make code wait until all bases are processed
             print("Compiling the grid after processing bases.")
@@ -2697,7 +2704,9 @@ $\\log_{{10}}(M_\\star/M_\\odot)$: {np.log10(mass):.1f}"""
             elif cat_type == "spectra":
                 combined_basis.create_spectral_grid(overwrite=overwrite)
             else:
-                raise ValueError(f"Unknown catalog type: {cat_type}. Use 'photometry' or 'spectra'.")
+                raise ValueError(
+                    f"Unknown catalog type: {cat_type}. Use 'photometry' or 'spectra'."
+                )
 
             out_path = f"{combined_basis.out_dir}/{combined_basis.out_name}"
             if not out_path.endswith(".hdf5"):
@@ -2866,7 +2875,9 @@ class CombinedBasis:
                         "galaxies_mask is not implemented for draw_parameter_combinations=False."
                     )
             else:
-                galaxies = base._create_matched_galaxies(log_base_masses=self.log_base_masses, galaxies_mask=galaxies_mask, n_proc=n_proc)
+                galaxies = base._create_matched_galaxies(
+                    log_base_masses=self.log_base_masses, galaxies_mask=galaxies_mask, n_proc=n_proc
+                )
 
             print(f"Created {len(galaxies)} galaxies for base {base.model_name}")
             # Process the galaxies
