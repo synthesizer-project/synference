@@ -21,6 +21,13 @@ from unyt import K, Myr, unyt_array
 from sbifitter import (
     GalaxyBasis,
     calculate_colour,
+    calculate_d4000,
+    calculate_muv,
+    calculate_mass_weighted_age,
+    calculate_sfh_quantile,
+    calculate_sfr,
+    calculate_surviving_mass,
+    calculate_beta,
     draw_from_hypercube,
     generate_constant_R,
     generate_random_DB_sfh,
@@ -129,7 +136,7 @@ except Exception:
 
 av_to_tau_v = 1.086  # conversion factor from Av to tau_v for the dust attenuation curve
 overwrite = True  # whether to overwrite existing grids
-Nmodels = 1000  # number of models to generate
+Nmodels = 100_000  # number of models to generate
 batch_size = 50_000  # number of models to generate in each batch
 redshift = (0.01, 14)
 masses = (4, 12)
@@ -296,7 +303,7 @@ for sfh_name, sfh_params in sfhs.items():
 
     sfh_name = str(sfh_type).split(".")[-1].split("'")[0]
 
-    name = f"badbadbadbadbad_BPASS_Chab_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_Calzetti_v3"  # noqa: E501
+    name = f"BPASS_Chab_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_Calzetti_v3"  # noqa: E501
     print(f"{out_dir}/grid_{name}.hdf5")
     if os.path.exists(f"{out_dir}/v2/grid_{name}.hdf5") and not overwrite:
         print(f"Grid {name} already exists, skipping.")
@@ -512,20 +519,20 @@ for sfh_name, sfh_params in sfhs.items():
         out_name=f"grid_{name}",
         out_dir=out_dir,
         overwrite=overwrite,
-        # mUV=(calculate_muv, cosmo),  # Calculate mUV using the provided cosmology
-        # mass_weighted_age=calculate_mass_weighted_age,  # Calculate mass-weighted age
-        # sfr_3=(calculate_sfr, 3 * Myr),  # Calculate SFR averaged over the last 3 Myr
-        # sfr_10=(calculate_sfr, 10 * Myr),  # Calculate SFR averaged over the last 10 Myr
-        # sfr_30=(calculate_sfr, 30 * Myr),  # Calculate SFR averaged over the last 30 Myr
-        # sfr_100=(calculate_sfr, 100 * Myr),  # Calculate SFR averaged over the last 100 Myr
-        # sfh_quant_25=(calculate_sfh_quantile, 0.25, True),  # Calculate SFH quantile at 25%
-        # sfh_quant_50=(calculate_sfh_quantile, 0.50, True),  # Calculate SFH quantile at 50%
-        # sfh_quant_75=(calculate_sfh_quantile, 0.75, True),  # Calculate SFH quantile at 75%
+        mUV=(calculate_muv, cosmo),  # Calculate mUV using the provided cosmology
+        mass_weighted_age=calculate_mass_weighted_age,  # Calculate mass-weighted age
+        sfr_3=(calculate_sfr, 3 * Myr),  # Calculate SFR averaged over the last 3 Myr
+        sfr_10=(calculate_sfr, 10 * Myr),  # Calculate SFR averaged over the last 10 Myr
+        sfr_30=(calculate_sfr, 30 * Myr),  # Calculate SFR averaged over the last 30 Myr
+        sfr_100=(calculate_sfr, 100 * Myr),  # Calculate SFR averaged over the last 100 Myr
+        sfh_quant_25=(calculate_sfh_quantile, 0.25, True),  # Calculate SFH quantile at 25%
+        sfh_quant_50=(calculate_sfh_quantile, 0.50, True),  # Calculate SFH quantile at 50%
+        sfh_quant_75=(calculate_sfh_quantile, 0.75, True),  # Calculate SFH quantile at 75%
         UV=(calculate_colour, "U", "V", emission_key, True),  # Calculate UV colour (rest-frame)
         VJ=(calculate_colour, "V", "J", emission_key, True),  # Calculate VJ colour (rest-frame)
-        # log_surviving_mass=(calculate_surviving_mass, grid),  # Calculate surviving mass
-        # d4000=(calculate_d4000, emission_key),  # Calculate D4000 using the emission model
-        # beta=(calculate_beta, emission_key),  # Calculate beta using the qinstrument
+        log_surviving_mass=(calculate_surviving_mass, grid),  # Calculate surviving mass
+        d4000=(calculate_d4000, emission_key),  # Calculate D4000 using the emission model
+        beta=(calculate_beta, emission_key),  # Calculate beta using the qinstrument
         n_proc=n_proc,
         verbose=False,
         batch_size=batch_size,
