@@ -12,18 +12,24 @@ from simple_parsing import ArgumentParser
 
 from sbifitter import SBI_Fitter, Simformer_Fitter, create_uncertainty_models_from_EPOCHS_cat
 
-try:
+'''try:
     mp.set_start_method("spawn", force=True)
     torch.multiprocessing.set_start_method("spawn", force=True)
     print("Multiprocessing start method set to 'spawn'.")
 except RuntimeError as e:
-    print(f"Start method already set: {e}")
+    print(f"Start method already set: {e}")'''
 
 
 # Setup parsing
 parser = ArgumentParser(description="SBI SED Fitting")
 
 file_dir = os.path.dirname(__file__)
+
+import logging
+logging.getLogger().handlers.clear()
+logging.basicConfig(level=logging.INFO, 
+                    format='%(asctime)s - %(levelname)s - %(message)s',
+                    stream=sys.stdout)
 
 
 @dataclass
@@ -69,7 +75,8 @@ class Args:
     n_trials: int = 100  # Number of trials for optimization
     optimize: bool = False  # If True, run Optuna optimization
     noise_model_class: str = "general"  # Type of noise model to use - general, depth or asinh.
-    custom_config_yaml: str = None
+    custom_config_yaml: str = None,
+    sql_db_path: str = None  # Path to SQLite database for storing results
 
 
 parser.add_arguments(Args, dest="args")
@@ -149,8 +156,14 @@ def main_task(args: Args) -> None:
             )
     parameter_transformations = {}
 
+    def log10_floor(x, floor=-6):
+        """
+        Logarithm base 10 with a floor value.
+        """
+        return np.log10(np.maximum(x, 10 ** floor))
+
     if args.parameter_transformations:
-        pos_vals = {"log10": np.log10, "log": np.log, "exp": np.exp, "sqrt": np.sqrt}
+        pos_vals = {"log10": np.log10, "log": np.log, "exp": np.exp, "sqrt": np.sqrt, "log10_floor":log10_floor}
         # Assuming args.parameter_transformations is a string like 'key1=val1,key2=val2'
         try:
             transformations_str = args.parameter_transformations[0]
@@ -250,11 +263,11 @@ def main_task(args: Args) -> None:
         train_params = dict(
             study_name=f"{args.model_name}{args.name_append}",
             suggested_hyperparameters={
-                "learning_rate": [1e-5, 1e-3], # 1e-6 makes models very slow to train!
+                "learning_rate": [5e-6, 1e-3], # 1e-6 makes models very slow to train!
                 "hidden_features": [12, 500],
-                num_name: [2, 30],
+                num_name: [2, 50],
                 "training_batch_size": [32, 128],
-                "stop_after_epochs": [10, 30],
+                "stop_after_epochs": [10, 40],
                 "clip_max_norm": [0.1, 5.0],
                 "validation_fraction": [0.1, 0.3],
             },
@@ -271,7 +284,8 @@ def main_task(args: Args) -> None:
             persistent_storage=True,
             score_metrics=["log_prob", "tarp"],
             direction=["maximize", "minimize"],
-            timeout_minutes_trial_sampling=60.0,
+            timeout_minutes_trial_sampling=120.0,
+            sql_db_path=args.sql_db_path,
         )
 
         empirical_model_fitter.optimize_sbi(**train_params)
@@ -295,6 +309,7 @@ def main_task(args: Args) -> None:
             plot=args.plot,
             additional_model_args=additional_model_args,
             custom_config_yaml=args.custom_config_yaml,
+            sql_db_path=args.sql_db_path,
         )
     else:
         args = dict(
@@ -309,6 +324,8 @@ def main_task(args: Args) -> None:
             save_method="joblib",
             task_func=None,
         )
+
+    print('Runnin SBI training.')
 
     empirical_model_fitter.run_single_sbi(**args)
 

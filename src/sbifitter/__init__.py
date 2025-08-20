@@ -1,6 +1,19 @@
 # -*- coding: utf-8 -*-
 import os
+import sys
 import warnings
+import logging
+
+from .utils import (
+    load_grid_from_hdf5, calculate_min_max_wav_grid, generate_constant_R,
+    list_parameters, rename_overlapping_parameters, FilterArithmeticParser,
+    timeout_handler, TimeoutException, create_sqlite_db, f_jy_err_to_asinh, create_database_universal,
+    f_jy_to_asinh, check_scaling, detect_outliers, compare_methods_feature_importance,
+    analyze_feature_contributions, optimize_sfh_xlimit, make_serializable, setup_mpi_named_logger
+)
+# Set up logging
+logger = setup_mpi_named_logger("sbifitter", level=logging.INFO)
+
 
 from .grid import (
     generate_sfh_grid, generate_metallicity_distribution, generate_emission_models,
@@ -11,13 +24,6 @@ from .grid import (
     calculate_line_flux, calculate_line_ew, calculate_sfh_quantile, calculate_surviving_mass, SUPP_FUNCTIONS
 )
 
-from .utils import (
-    load_grid_from_hdf5, calculate_min_max_wav_grid, generate_constant_R,
-    list_parameters, rename_overlapping_parameters, FilterArithmeticParser,
-    timeout_handler, TimeoutException, create_sqlite_db, f_jy_err_to_asinh,
-    f_jy_to_asinh, check_scaling, detect_outliers, compare_methods_feature_importance,
-    analyze_feature_contributions, optimize_sfh_xlimit, make_serializable
-)
 
 from .noise_models import (
     EmpiricalUncertaintyModel, create_uncertainty_models_from_EPOCHS_cat,

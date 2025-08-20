@@ -1,6 +1,6 @@
 #!/bin/bash -l
 #SBATCH --job-name=sbi_grid_generation
-#SBATCH --nodes=3
+#SBATCH --nodes=4
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=28
 #SBATCH -t 12:00:00
@@ -28,7 +28,6 @@ export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 # Create a unique directory on a shared filesystem for "done" files
 DONE_DIR="/cosma/apps/dp276/dc-harv3/temp/${SLURM_JOB_ID}_done_files"
 mkdir -p "$DONE_DIR"
-
 echo "### STEP 1: Starting parallel work on all nodes. ###"
 echo "Node ${SLURM_NODEID}: Running grid generation script."
 mpirun python sbifitter/examples/grid_generation/final_grid_generation_multinode.py $SLURM_CPUS_PER_TASK 0
@@ -38,12 +37,12 @@ if [ $? -ne 0 ]; then
   rm -rf "$DONE_DIR"
   exit 1
 fi
-
 echo "Node ${SLURM_NODEID}: Script finished, creating done file."
 srun bash -c 'touch "'"$DONE_DIR"'/node_${SLURM_NODEID}.done"'
-
-
 echo -e "\n### STEP 2: Starting final task on primary node after barrier. ###"
+
+#srun --nodes=1 --ntasks=1 python sbifitter/examples/grid_generation/final_grid_generation_multinode.py $SLURM_CPUS_PER_TASK 1
+
 
 srun --nodes=1 --ntasks=1 --exact bash -c '
   echo "Primary (Node 0): Waiting for all nodes to complete Step 1..."
@@ -54,5 +53,5 @@ srun --nodes=1 --ntasks=1 --exact bash -c '
   python sbifitter/examples/grid_generation/final_grid_generation_multinode.py $SLURM_CPUS_PER_TASK 1
 '
 
-rm -rf "$DONE_DIR"
+#rm -rf "$DONE_DIR"
 echo -e "\nJob finished."

@@ -6,7 +6,8 @@ import os
 import pickle
 import re
 import sys
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Union, TextIO
+import logging
 
 import h5py
 import matplotlib.pyplot as plt
@@ -355,6 +356,135 @@ def create_sqlite_db(db_path: str):
     print(storage_name)
 
     return storage_name
+
+def create_database_universal(
+    db_name: str,
+    password: str = "",
+    host: str = "localhost",
+    user: str = "root",
+    port: int = 31666,
+    db_type = "mysql+pymysql",
+    full_url: str = None
+):
+    """
+    Create database for MySQL, PostgreSQL, or CockroachDB
+    Returns the full connection URL for the created database.
+
+    Either provide a full URL or the individual parameters.
+    """
+    import sqlalchemy
+    from sqlalchemy.exc import SQLAlchemyError, ProgrammingError
+    from urllib.parse import urlparse, urlunparse
+    
+    assert db_type in ["mysql+pymysql", "postgresql+psycopg2", "cockroachdb"], (
+        "db_type must be one of 'mysql+pymysql', 'postgresql+psycopg2', or 'cockroachdb'."
+    )
+    # Determine database type and prepare connection details
+    if full_url is None:
+        sqlalchemy_url = f":{db_type}//{user}:{password}@{host}:{port}/"
+    else:
+        parsed = urlparse(full_url)
+        if full_url.startswith("mysql://"):
+            db_type = "mysql"
+            sqlalchemy_url = full_url.replace("mysql://", "mysql+pymysql://")
+        elif full_url.startswith("postgres://") or full_url.startswith("postgresql://"):
+            db_type = "postgresql"
+            if full_url.startswith("postgres://"):
+                sqlalchemy_url = full_url.replace("postgres://", "postgresql+psycopg2://")
+            else:
+                sqlalchemy_url = full_url.replace("postgresql://", "postgresql+psycopg2://")
+        elif full_url.startswith("cockroachdb://"):
+            db_type = "cockroachdb"
+            sqlalchemy_url = full_url  # Keep cockroachdb:// scheme
+        else:
+            db_type = "unknown"
+            sqlalchemy_url = full_url
+    
+    # Remove existing database name from URL to connect to system database
+    parsed = urlparse(sqlalchemy_url)
+    path_parts = parsed.path.strip('/').split('/') if parsed.path.strip('/') else []
+    
+    if db_type == "mysql":
+        # Connect to mysql system database
+        system_path = "/mysql"
+        cd = "`"  # MySQL uses backticks
+        create_sql = f"CREATE DATABASE IF NOT EXISTS {cd}{db_name}{cd}"
+        isolation_level = "AUTOCOMMIT"
+    elif db_type == "postgresql":
+        # Connect to postgres system database
+        system_path = "/postgres"
+        cd = '"'  # PostgreSQL uses double quotes
+        create_sql = f'CREATE DATABASE {cd}{db_name}{cd}'
+        isolation_level = "AUTOCOMMIT"
+    elif db_type == "cockroachdb":
+        # CockroachDB uses defaultdb as system database
+        system_path = "/defaultdb"
+        cd = ""  # CockroachDB doesn't require quotes for simple names
+        create_sql = f"CREATE DATABASE IF NOT EXISTS {db_name}"
+        db_name = db_name.lower()
+        isolation_level = "AUTOCOMMIT"
+    else:
+        # Fallback - try without quotes
+        system_path = "/"
+        cd = ""
+        create_sql = f"CREATE DATABASE IF NOT EXISTS {db_name}"
+        isolation_level = "AUTOCOMMIT"
+    
+    # Build system database URL
+    system_url = parsed._replace(path=system_path)
+    system_url = urlunparse(system_url)
+    
+    try:
+        engine = sqlalchemy.create_engine(system_url, isolation_level=isolation_level)
+        
+        with engine.connect() as connection:
+            if db_type == "postgresql":
+                # PostgreSQL: Check if database exists first
+                try:
+                    result = connection.execute(
+                        sqlalchemy.text("SELECT 1 FROM pg_database WHERE datname = :db_name"),
+                        {"db_name": db_name}
+                    )
+                    if not result.fetchone():
+                        connection.execute(sqlalchemy.text(create_sql))
+                        print(f"Database {db_name} created.")
+                    else:
+                        print(f"Database {db_name} already exists.")
+                except ProgrammingError as e:
+                    if "already exists" not in str(e).lower():
+                        raise
+                    print(f"Database {db_name} already exists.")
+            else:
+                # MySQL and CockroachDB: Use IF NOT EXISTS
+                connection.execute(sqlalchemy.text(create_sql))
+                print(f"Database {db_name} created or already exists.")
+        
+        engine.dispose()
+        
+    except SQLAlchemyError as e:
+        print(f"Failed to create database {db_name}:", e)
+        # Continue anyway - database might already exist
+    
+    # Build final database URL
+    if full_url is None:
+        final_url = f"mysql+pymysql://{user}:{password}@{host}:{port}/{db_name}"
+    else:
+        # Replace system database with target database in original URL
+        parsed = urlparse(sqlalchemy_url)
+        if db_type == "cockroachdb" and 'defaultdb' in sqlalchemy_url:
+            final_url = sqlalchemy_url.replace('defaultdb', db_name)
+        else:
+            final_url = parsed._replace(path=f"/{db_name}")
+            final_url = urlunparse(final_url)
+        
+        # Convert back to original scheme format if needed
+        if full_url.startswith("mysql://") and final_url.startswith("mysql+pymysql://"):
+            final_url = final_url.replace("mysql+pymysql://", "mysql://")
+        elif full_url.startswith("postgres://") and final_url.startswith("postgresql+psycopg2://"):
+            final_url = final_url.replace("postgresql+psycopg2://", "postgres://")
+        # CockroachDB keeps its original scheme
+    
+    return final_url
 
 
 def f_jy_to_asinh(
@@ -1769,3 +1899,55 @@ def make_serializable(obj: Any, allowed_types=None) -> Any:
         return str(obj)
     except Exception:
         return f"<unserializable object of type {type(obj).__name__}>"
+
+
+
+
+def setup_mpi_named_logger(
+    name: str, level: int = logging.INFO, stream: TextIO = sys.stdout
+) -> logging.Logger:
+    """
+    Sets up a named logger that only outputs messages from MPI rank 0.
+
+    This is more robust than configuring the root logger, as it won't
+    interfere with the logging settings of other libraries.
+
+    Args:
+        name: The name for the logger instance.
+        level: The logging level for the rank 0 process.
+        stream: The output stream for the rank 0 process.
+
+    Returns:
+        A configured logging.Logger instance.
+    """
+    try:
+        from mpi4py import MPI
+        # Get the MPI communicator, rank, and size
+        COMM = MPI.COMM_WORLD
+        RANK = COMM.Get_rank()
+        SIZE = COMM.Get_size()
+    except ImportError:
+        # Create dummy MPI variables for single-process execution
+        # This allows the script to run without mpi4py or mpiexec
+        COMM = None
+        RANK = 0
+        SIZE = 1
+    logger = logging.getLogger(name)
+    
+    # Prevent messages from propagating to the root logger
+    logger.propagate = False
+
+    if RANK == 0:
+        # Configure the logger for the main process (rank 0)
+        logger.setLevel(level)
+        handler = logging.StreamHandler(stream)
+        formatter = logging.Formatter(
+            "%(asctime)s | %(name)s | %(levelname)-8s | %(message)s"
+        )
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
+    else:
+        # Add a NullHandler to silence the logger on all other processes
+        logger.addHandler(logging.NullHandler())
+
+    return logger
