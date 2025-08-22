@@ -35,10 +35,9 @@ filter_codes = [
 filterset = FilterCollection(filter_codes=filter_codes)
 
 # Consistent wavelength grid for both SPS grids and filters
-new_wav = generate_constant_R(R=300, 
-                              auto_start_stop=True, 
-                              filterset=filterset, 
-                              max_redshift=15)
+new_wav = generate_constant_R(
+    R=300, auto_start_stop=True, filterset=filterset, max_redshift=15
+)
 
 filterset.resample_filters(new_lam=new_wav)
 
@@ -63,7 +62,7 @@ sfh_type = SFH.DelayedExponential
 log_tau = (-2, 1) * Gyr  # log-uniform between 0.01 and 10 Gyr
 
 # Normalized to the maximum age of the universe at that redshift
-max_age = (0.00, 0.99) 
+max_age = (0.00, 0.99)
 
 # Include dust attenuation, V-band optical depth of the ISM
 tau_v = (0.0, 4.0)
@@ -82,8 +81,10 @@ full_params = {
     "max_age": max_age,
 }
 
-# Sample these parameters using a latin hypercube 
-all_param_dict = draw_from_hypercube(full_params, Nmodels, rng=42, unlog_keys=["log_tau"])
+# Sample these parameters using a latin hypercube
+all_param_dict = draw_from_hypercube(
+    full_params, Nmodels, rng=42, unlog_keys=["log_tau"]
+)
 
 # Create a grid object in synthesizer with your chosen SPS model
 grid = Grid(
@@ -93,7 +94,9 @@ grid = Grid(
 )
 
 # Choose your metallicity distributions
-Z_dists = [ZDist.DeltaConstant(log10metallicity=log_z) for log_z in all_param_dict["log_zmet"]]
+Z_dists = [
+    ZDist.DeltaConstant(log10metallicity=log_z) for log_z in all_param_dict["log_zmet"]
+]
 
 # Define your redshifts
 redshifts = all_param_dict["redshift"]
@@ -123,14 +126,14 @@ emission_model = PacmanEmission(
     fesc_ly_alpha=0.1,  # escape fraction of Lyman-alpha photons
 )
 
-# Get nice version of SFH name 
+# Get nice version of SFH name
 sfh_name = str(sfh_type).split(".")[-1].split("'")[0]
 
 # Place any other parameters you want to train with here
 galaxy_params = {"tau_v": all_param_dict["tau_v"]}
 
 # Name your model
-name = "BPASS_min_example" 
+name = "BPASS_min_example"
 
 # Grid Generation
 
@@ -162,7 +165,7 @@ basis.create_mock_cat(
     batch_size=batch_size,
     # Also calculate mUV for the mock catalogue if you want to use this
     # as your feature
-    mUV=(calculate_muv, cosmo)
+    mUV=(calculate_muv, cosmo),
 )
 
 # SBI Fitting
@@ -202,7 +205,7 @@ observed_data_vector = [
     27.3,
     26.5,
     26.2,
-] 
+]
 
 posterior = empirical_model_fitter.sample_posterior(observed_data_vector)
 

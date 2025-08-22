@@ -92,7 +92,9 @@ else:
 
 
 # Consistent wavelength grid for both SPS grids and filters
-new_wav = generate_constant_R(R=300, auto_start_stop=True, filterset=filterset, max_redshift=15)
+new_wav = generate_constant_R(
+    R=300, auto_start_stop=True, filterset=filterset, max_redshift=15
+)
 
 filterset.resample_filters(new_lam=new_wav)
 
