@@ -10,7 +10,11 @@ import torch
 from astropy.table import Table
 from simple_parsing import ArgumentParser
 
-from sbifitter import SBI_Fitter, Simformer_Fitter, create_uncertainity_models_from_EPOCHS_cat
+from sbifitter import (
+    SBI_Fitter,
+    Simformer_Fitter,
+    create_uncertainity_models_from_EPOCHS_cat,
+)
 
 try:
     mp.set_start_method("spawn", force=True)
@@ -57,7 +61,9 @@ class Args:
     plot: bool = True
     additional_model_args: tuple = ()
     parameters_to_add: tuple = ()
-    data_err_file: str = """/home/tharvey/Downloads/JADES-Deep-GS_MASTER_Sel-f277W+f356W+f444W_v9_loc_depth_masked_10pc_EAZY_matched_selection_ext_src_UV.fits"""  # noqa
+    data_err_file: str = (
+        """/home/tharvey/Downloads/JADES-Deep-GS_MASTER_Sel-f277W+f356W+f444W_v9_loc_depth_masked_10pc_EAZY_matched_selection_ext_src_UV.fits"""  # noqa
+    )
     data_err_hdu: str = "OBJECTS"  # The HDU name in the FITS file
     background: bool = False
     model_features: tuple = ()
@@ -102,7 +108,11 @@ def main_task(args: Args) -> None:
             bands = [band for band in bands if band not in phot_to_remove]
 
         new_band_names = [
-            f"HST/ACS_WFC.{band.upper()}" if band in hst_bands else f"JWST/NIRCam.{band.upper()}"
+            (
+                f"HST/ACS_WFC.{band.upper()}"
+                if band in hst_bands
+                else f"JWST/NIRCam.{band.upper()}"
+            )
             for band in bands
         ]
 
@@ -186,13 +196,17 @@ def main_task(args: Args) -> None:
         ]
     else:
         unused_filters = [
-            f"JWST/NIRCam.{filt.upper()}"
-            if filt not in hst_bands
-            else f"HST/ACS_WFC.{filt.upper()}"
+            (
+                f"JWST/NIRCam.{filt.upper()}"
+                if filt not in hst_bands
+                else f"HST/ACS_WFC.{filt.upper()}"
+            )
             for filt in phot_to_remove
         ]
         unused_filters = [
-            filt for filt in unused_filters if filt in empirical_model_fitter.raw_photometry_names
+            filt
+            for filt in unused_filters
+            if filt in empirical_model_fitter.raw_photometry_names
         ]
 
     print(f"Unused filters: {unused_filters}", file=sys.stdout)
@@ -201,9 +215,9 @@ def main_task(args: Args) -> None:
         normalize_method=args.norm_method,
         include_errors_in_feature_array=args.include_errors_in_feature_array,
         scatter_fluxes=args.scatter_fluxes,
-        empirical_noise_models=empirical_noise_models
-        if args.include_errors_in_feature_array
-        else None,
+        empirical_noise_models=(
+            empirical_noise_models if args.include_errors_in_feature_array else None
+        ),
         photometry_to_remove=unused_filters,
         norm_mag_limit=args.norm_mag_limit,
         drop_dropouts=args.drop_dropouts,
