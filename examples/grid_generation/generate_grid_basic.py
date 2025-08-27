@@ -16,7 +16,7 @@ from unyt import Myr
 from sbifitter import (
     GalaxyBasis,
     calculate_muv,
-    calculate_mwa,
+    calculate_mass_weighted_age,
     draw_from_hypercube,
     generate_constant_R,
     generate_sfh_basis,
@@ -241,7 +241,7 @@ basis.create_mock_cat(
     verbose=False,
     batch_size=50_000,
     mUV=(calculate_muv, cosmo),  # Calculate mUV for the mock catalogue.
-    mwa=calculate_mwa,  # Calculate MWA for the mock catalogue.
+    mwa=calculate_mass_weighted_age,  # Calculate MWA for the mock catalogue.
     parameter_transforms_to_save={
         "max_age": z_to_max_age
     },  # Save function to calculate the maximum age of the SFH at that redshift.

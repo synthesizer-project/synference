@@ -14,9 +14,8 @@ plots/
 priv/
 Yggdrasil/
 models/*
-grids/*
+grids
 !models/README.txt
-!grids/README.txt
 scripts/filters/
 *.joblib
 *.npz

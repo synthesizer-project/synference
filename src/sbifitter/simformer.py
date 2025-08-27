@@ -15,16 +15,19 @@ import jax.numpy as jnp
 import joblib
 import numpy as np
 import torch
-from synthesizer.emission_models import (
-    TotalEmission,
-)
-from synthesizer.emission_models.attenuation import Calzetti2000
-from synthesizer.grid import Grid
-from synthesizer.instruments import FilterCollection, Instrument
-from synthesizer.parametric import (
-    SFH,
-    ZDist,
-)  # Need concrete SFH, ZDist classes
+
+try:
+    from synthesizer.emission_models import TotalEmission
+    from synthesizer.emission_models.attenuation import Calzetti2000
+    from synthesizer.grid import Grid
+    from synthesizer.instruments import FilterCollection, Instrument
+    from synthesizer.parametric import (
+        SFH,
+        ZDist,
+    )  # Need concrete SFH, ZDist classese
+except:
+    pass
+
 from unyt import (
     Myr,
 )
@@ -435,8 +438,12 @@ def load_full_model(dir_path, model_id, simulator=None):
         task = get_task(task_name)
         task.__dict__.update(meta)
 
+        if getattr(task, 'prior_dict', None) is None:
+            prior_dict = meta['prior']
+        else:
+            prior_dict = task.prior_dict
         task.prior_dist = GalaxyPrior(
-            prior_ranges=task.prior_dict, param_order=task.param_names_ordered
+            prior_ranges=prior_dict, param_order=task.param_names_ordered
         )
 
         model.edge_mask_fn = get_edge_mask_fn(model.edge_mask_fn_params["name"], task)
@@ -447,6 +454,10 @@ def load_full_model(dir_path, model_id, simulator=None):
             print("No simulator provided. Please provide a simulator to use with the model.")
     except FileNotFoundError as e:
         print(f'not found {e}')
+        meta = {}
+        task = None
+    except (EOFError, AttributeError):
+        print(f'Pickle corrupted?')
         meta = {}
         task = None
 

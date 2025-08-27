@@ -243,7 +243,7 @@ def combined_grid_basis_params(grid_basis_params):
         "bases": [basis1, basis2],
         "log_stellar_masses": [9] * len(grid_basis_params["redshifts"]),
         "redshifts": grid_basis_params["redshifts"],
-        "base_emission_model_keys": ["total", "total"],
+        "base_emission_model_keys": ["emergent", "emergent"],
         "combination_weights": np.array([np.array([i, 1 - i]) for i in np.arange(0, 1.1, 0.25)]),
         "out_name": "test_combined",
         "out_dir": f"{test_dir}/test_output/",
@@ -273,7 +273,7 @@ def combined_lhc_basis_params(lhc_basis_params):
         "bases": [basis1, basis2],
         "log_stellar_masses": [9] * len(lhc_basis_params["redshifts"]),
         "redshifts": lhc_basis_params["redshifts"],
-        "base_emission_model_keys": ["total", "total"],
+        "base_emission_model_keys": ["emergent", "emergent"],
         "combination_weights": np.array(
             [
                 np.array([i, 1 - i])
@@ -434,7 +434,9 @@ class TestGalaxyBasis:
 
         basis.galaxies = test_parametric_galaxies
 
-        fig = basis.plot_galaxy(idx=0, out_dir=f"{test_dir}/test_output/")
+        fig = basis.plot_galaxy(
+            idx=0, out_dir=f"{test_dir}/test_output/", emission_model_keys=["emergent"]
+        )
 
         assert fig is not None, "Plotting function did not return a figure."
         # Check that the plot file was created
@@ -447,7 +449,7 @@ class TestGalaxyBasis:
 
         combined = basis.create_mock_cat(
             log_stellar_masses=[9] * len(lhc_basis_params["redshifts"]),
-            emission_model_key="total",
+            emission_model_key="emergent",
             out_name="test_combined_simple",
             out_dir=f"{test_dir}/test_output/",
             n_proc=1,
@@ -483,7 +485,7 @@ class TestCombinedBasis:
         assert combined.out_name == "test_combined"
         assert len(combined.bases) == 2
         assert np.array_equal(combined.redshifts, combined_grid_basis_params["redshifts"])
-        assert combined.base_emission_model_keys == ["total", "total"]
+        assert combined.base_emission_model_keys == ["emergent", "emergent"]
         assert combined.out_dir == f"{test_dir}/test_output/"
 
     def test_process_bases(self, combined_grid_basis_params):
@@ -626,7 +628,7 @@ class TestSBIFitter:
         fitter.create_feature_array_from_raw_photometry(normed_flux_units=nJy)
 
         # Test including errors
-        depths = np.array([29] * len(fitter.raw_photometry_names))
+        depths = np.array([29] * len(fitter.raw_observation_names))
         depths = (10 ** (-0.4 * (depths - 8.9))) / 5 * Jy
         fitter.create_feature_array_from_raw_photometry(scatter_fluxes=True, depths=depths)
 
@@ -643,7 +645,7 @@ class TestSBIFitter:
 
         # Test including a specific variety of missing bands
         missing_flux_options = np.random.randint(
-            0, 1, (5, len(fitter.raw_photometry_names))
+            0, 1, (5, len(fitter.raw_observation_names))
         ).astype(bool)
         fitter.create_feature_array_from_raw_photometry(
             simulate_missing_fluxes=True,
@@ -655,7 +657,7 @@ class TestSBIFitter:
 
         # Test removing a feature
         fitter.create_feature_array_from_raw_photometry(
-            photometry_to_remove=[fitter.raw_photometry_names[0]]
+            photometry_to_remove=[fitter.raw_observation_names[0]]
         )
 
         # Test removing a feature that does not exist
@@ -703,7 +705,7 @@ class TestFullPipeline:
 
         basis.create_mock_cat(
             log_stellar_masses=stellar_masses,
-            emission_model_key="total",
+            emission_model_key="emergent",
             out_name="test_full_simple",
             out_dir=f"{test_dir}/test_output/",
             n_proc=1,
@@ -742,14 +744,14 @@ class TestSuppFunctions:
         test_parametric_galaxy.get_observed_spectra(cosmo=Planck18)
         filter_codes = ["JWST/NIRCam.F444W", "JWST/NIRCam.F115W"]
         filters = FilterCollection(filter_codes=filter_codes)
-        test_parametric_galaxy.get_photo_fluxes(filters)
+        test_parametric_galaxy.get_photo_fnu(filters)
         return test_parametric_galaxy
 
     def test_calculate_muv(self, test_galaxy):
         """Test the calculate_muv function."""
         func = self.param_functions("calculate_muv")
         muv = func(test_galaxy, Planck18)
-        muv = muv["total"]
+        muv = muv["emergent"]
         assert muv is not None, "calculate_muv did not return a value."
         assert isinstance(muv, unyt_array), (
             f"calculate_muv did not return a unyt_array. Got {type(muv)} instead."
@@ -761,10 +763,10 @@ class TestSuppFunctions:
     def test_calculate_beta(self, test_galaxy):
         """Test the calculate_beta function."""
         func = self.param_functions("calculate_beta")
-        beta = func(test_galaxy)
+        beta = func(test_galaxy, emission_model_key="emergent")
 
         assert beta is not None, "calculate_beta did not return a value."
-        assert isinstance(beta, float), "calculate_beta did not return a floar."
+        assert isinstance(beta, float), "calculate_beta did not return a float."
 
     def test_calculate_sfr(self, test_galaxy):
         """Test the calculate_sfr function."""
@@ -781,7 +783,7 @@ class TestSuppFunctions:
     def test_calculate_balmer_decrement(self, test_galaxy):
         """Test the calculate_balmer_break function."""
         func = self.param_functions("calculate_balmer_decrement")
-        balmer_break = func(test_galaxy)
+        balmer_break = func(test_galaxy, emission_model_key="emergent")
 
         assert balmer_break is not None, "calculate_balmer_break did not return a value."
         assert isinstance(balmer_break, float), "calculate_balmer_break did not return a float."
@@ -789,7 +791,7 @@ class TestSuppFunctions:
     def test_calculate_colour(self, test_galaxy):
         """Test the calculate_colours function."""
         func = self.param_functions("calculate_colour")
-        colour = func(test_galaxy, "V", "J", emission_model_key="total")
+        colour = func(test_galaxy, "V", "J", emission_model_key="emergent", rest_frame=True)
 
         assert colour is not None, "calculate_colour did not return a value."
 
@@ -798,7 +800,7 @@ class TestSuppFunctions:
     def test_calculate_line_ew(self, test_galaxy, mock_emission_model):
         """Test the calculate_line_ew function."""
         func = self.param_functions("calculate_line_ew")
-        ew = func(test_galaxy, mock_emission_model, "Ha")
+        ew = func(test_galaxy, mock_emission_model, "Ha", emission_model_key="emergent")
 
         assert ew is not None, "calculate_line_ew did not return a value."
         assert isinstance(ew, unyt_array), "calculate_line_ew did not return a unyt_array."

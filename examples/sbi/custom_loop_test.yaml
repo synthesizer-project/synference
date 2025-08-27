@@ -1,0 +1,44 @@
+train_args:
+  validation_fraction: 0.1
+  optuna:
+    n_trials: 50
+    build_final_model: False
+    objective:
+      metric: 'log_prob'
+    study:
+      study_name: ""
+      storage: ""
+      direction: 'maximize'
+      load_if_exists: True
+    pruner:
+      type: 'None'
+    search_space:
+      model_choice: ["maf"] # Must be a list
+      optimizer_choice: ["AdamW"] # Must be a list
+      learning_rate:
+        type: "float"
+        low: 1e-4
+        high: 1e-2
+        log: True
+      training_batch_size:
+        type: "int"
+        low: 32
+        high: 256
+      stop_after_epochs:
+        type: "int"
+        low: 10
+        high: 50
+      clip_max_norm:
+        type: "float"
+        low: 0.1
+        high: 5.0
+      models:
+        maf:
+          hidden_features:
+            type: "int"
+            low: 10
+            high: 500
+          num_transforms:
+            type: "int"
+            low: 2
+            high: 50
