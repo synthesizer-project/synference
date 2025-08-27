@@ -8,6 +8,8 @@ import sys
 
 import optuna
 from datetime import datetime
+import tarp
+from tqdm import tqdm
 import torch
 import torch.nn as nn
 import numpy as np
@@ -20,6 +22,13 @@ from torch.distributions import Distribution
 from torch.optim import Adam, AdamW
 from torch.utils import data
 from torch.utils.data.sampler import SubsetRandomSampler
+from torch.distributions.constraint_registry import biject_to, transform_to, _transform_to_interval, _biject_to_independent, _transform_to_independent
+import warnings
+from numbers import Number
+from torch.distributions import constraints
+from torch.distributions.utils import broadcast_all, lazy_property
+from torch.types import _size
+
 
 try:  # sbi > 0.22.0
     from sbi.inference.posteriors import EnsemblePosterior
@@ -268,9 +277,10 @@ class SBICustomRunner(SBIRunner):
         )
         if isinstance(final_estimator, list):
             final_estimator = final_estimator[0]
-
+        logger.info(final_estimator)
         final_estimator = final_estimator(batch_x=x_train, batch_theta=theta_train)
         final_estimator.to(self.device)
+        logger.info(final_estimator, type(final_estimator), final_estimator.__dict__)
 
         optimizer = (Adam if best_params["optimizer_choice"] == "Adam" else AdamW)(
             final_estimator.parameters(), lr=best_params["learning_rate"]
@@ -324,7 +334,7 @@ class SBICustomRunner(SBIRunner):
 
         final_summary["best_params"] = best_params
         logger.info(f"\nFinal model trained. Best training validation loss: {final_loss:.4f}")
-
+        logger.info(type(trained_estimator), trained_estimator.__dict__)
         posterior = DirectPosterior(posterior_estimator=trained_estimator, prior=self.prior)
         posterior = EnsemblePosterior(
             posteriors=[posterior],
@@ -346,59 +356,73 @@ class SBICustomRunner(SBIRunner):
         theta_val: torch.Tensor,
         metric_name: str,
         trial: optuna.Trial,
+        batch_size: int = 128,
     ) -> float:
         logger.info(f"Trial {trial.number}: Calculating objective metric '{metric_name}'.")
 
         posterior = DirectPosterior(posterior_estimator=trained_estimator, prior=self.prior)
+        logger.info(type(posterior), posterior.__dict__)
 
-        if metric_name == "log_prob":
-            # add a leading dimension to theta_val if needed
-            if theta_val.shape[0] != 1:
-                theta_val = theta_val.unsqueeze(0)
+        val_dataset = data.TensorDataset(x_val, theta_val)
+        val_loader = data.DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 
-            logger.info(f'Theta: {theta_val.shape}, X: {x_val.shape}')
 
-            log_prob = posterior.log_prob_batched(theta_val, x=x_val, leakage_correction_params={'show_progress_bars':logger.level <= logging.INFO})
-            return float(log_prob.mean())
-        elif metric_name == "loss":
-            # add a leading dimension to theta_val if needed
-            if theta_val.shape[0] != 1:
-                theta_val = theta_val.unsqueeze(0)
+        if metric_name in ["log_prob", "loss", "log_prob-pit"]:
+            total_log_prob = 0.0
+            with torch.no_grad():
+                for x_batch, theta_batch in tqdm(val_loader, desc=f"Trial {trial.number}: Calculating {metric_name} for {len(x_val)} samples in {len(val_loader)} batches"):
+                    if theta_batch.dim() == 2:
+                        theta_batch = theta_batch.unsqueeze(0)
+                    logger.info(posterior.log_prob_batched)
+                    #Wrong shape? /cosma/apps/dp276/dc-harv3/venv_simformer/lib/python3.12/site-packages/sbi/samplers/rejection/rejection.py
+                    # /cosma/apps/dp276/dc-harv3/venv_simformer/lib/python3.12/site-packages/sbi/inference/posteriors/direct_posterior.py
+                    log_prob = posterior.log_prob_batched(theta_batch, x=x_batch, leakage_correction_params={'show_progress_bars': logging.getLogger().level <= logging.INFO})
+                    total_log_prob += log_prob.sum().item()
+            mean_log_prob = total_log_prob / len(x_val)
 
-            log_prob = posterior.log_prob_batched(theta_val, x=x_val, leakage_correction_params={'show_progress_bars':logger.level <= logging.INFO})
-            return -1*float(log_prob.mean())
-        if metric_name == "log_prob-pit":
-            # add a leading dimension to theta_val if needed
-            if theta_val.shape[0] != 1:
-                theta_val = theta_val.unsqueeze(0)
-
-            score = float(posterior.log_prob_batched(theta_val, x=x_val, leakage_correction_params={'show_progress_bars':logger.level <= logging.INFO}).mean())
-            samples = posterior.sample_batched((1000,), x=x_val, show_progress_bars=False).cpu().numpy()
-            pit = np.empty(len(x_val))
-            for i in range(len(x_val)):
-                pit[i] = np.mean(samples[i] < x_val[i])
-
-            pit = np.sort(pit)
-            pit /= pit[-1]
-            dpit_max = np.max(np.abs(pit - np.linspace(0, 1, len(pit))))
-            score += -0.5 * np.log(dpit_max)
-            return score
+            if metric_name == "log_prob":
+                return mean_log_prob
+            if metric_name == "loss":
+                return -mean_log_prob
+            if metric_name == "log_prob-pit":
+                score = mean_log_prob
+                all_samples = []
+                with torch.no_grad():
+                    for x_batch, _ in tqdm(val_loader, desc=f"Trial {trial.number}: Calculating {metric_name}"):
+                        samples = posterior.sample_batched((1000,), x=x_batch, show_progress_bars=False)
+                        all_samples.append(samples)
+                all_samples = torch.cat(all_samples, dim=1).cpu().numpy()
+                
+                pit = np.empty(len(x_val))
+                for i in range(len(x_val)):
+                    pit[i] = np.mean(all_samples[:, i, :] < theta_val[i].cpu().numpy())
+                
+                pit = np.sort(pit)
+                if pit[-1] > 0:
+                    pit /= pit[-1]
+                dpit_max = np.max(np.abs(pit - np.linspace(0, 1, len(pit))))
+                score += -0.5 * np.log(dpit_max + 1e-9) # Add epsilon for stability
+                return score
 
         elif metric_name == "tarp":
-            import tarp
-
             num_samples = 1000
-            samples = posterior.sample_batched((num_samples,), x=x_val, show_progress_bars=False)
+            all_samples = []
+            with torch.no_grad():
+                for x_batch, _ in tqdm(val_loader, desc=f"Trial {trial.number}: Calculating {metric_name}"):
+                    samples = posterior.sample_batched((num_samples,), x=x_batch, show_progress_bars=False)
+                    all_samples.append(samples)
+            all_samples = torch.cat(all_samples, dim=1)
+            
             ecp, _ = tarp.get_tarp_coverage(
-                samples, theta_val, norm=True, bootstrap=True, num_bootstrap=200
+                all_samples, theta_val, norm=True, bootstrap=True, num_bootstrap=200
             )
-
             tarp_val = torch.mean(torch.from_numpy(ecp[:, ecp.shape[1] // 2])).to(self.device)
             return float(abs(tarp_val - 0.5))
         elif callable(metric_name):
             return metric_name(posterior, x_val, theta_val)
         else:
             raise ValueError(f"Trial {trial.number}: '{metric_name}' not recognized for custom objective.")
+
 
     @staticmethod
     def _train_model(
@@ -676,9 +700,10 @@ class SBICustomRunner(SBIRunner):
 
             if isinstance(density_estimator_builder, list):
                 density_estimator_builder = density_estimator_builder[0]
-
+            logger.info(f"Density Estimator: {density_estimator_builder}, type: {type(density_estimator_builder)}, params: {density_estimator_builder.__dict__}")
             density_estimator = density_estimator_builder(batch_x=x_train, batch_theta=theta_train)
             density_estimator.to(self.device)
+            logger.info(f'{density_estimator}, type: {type(density_estimator)}, params: {density_estimator.__dict__}')
             
             optimizer = (Adam if optimizer_name == "Adam" else AdamW)(
                 density_estimator.parameters(), lr=lr
@@ -748,3 +773,217 @@ class SBICustomRunner(SBIRunner):
             return best_val_loss
 
         return objective, fixed_params
+
+
+
+
+
+class Interval(constraints.Constraint):
+    """
+    Constrain to a real interval `[lower_bound, upper_bound]`.
+    """
+
+    def __init__(self, lower_bound, upper_bound, validate_func=None):
+        self.lower_bound = lower_bound
+        self.upper_bound = upper_bound
+        self.validate_func = validate_func
+        self.depth = 0
+        super().__init__()
+
+    def check(self, value):
+        if self.validate_func is not None and self.depth == 0:
+            self.validate_func(value)
+        x = (self.lower_bound <= value) & (value <= self.upper_bound)
+        return x
+
+    def __repr__(self):
+        fmt_string = self.__class__.__name__[1:]
+        fmt_string += (
+            f"(lower_bound={self.lower_bound}, upper_bound={self.upper_bound})"
+        )
+        return fmt_string
+    
+biject_to.register(Interval, _transform_to_interval)
+transform_to.register(Interval, _transform_to_interval)
+#IndependentInterval = constraints._IndependentConstraint(Interval([1], [10], ['a']), 1)
+
+#biject_to.register(IndependentInterval, _biject_to_independent)
+#transform_to.register(IndependentInterval, _transform_to_independent)
+
+
+
+
+class CustomUniform(Distribution):
+    r"""
+    A custom Uniform distribution that accepts a list of parameter names for
+    enhanced validation error messages, especially for batched data.
+
+    It generates uniformly distributed random samples from the half-open
+    interval ``[low, high)``.
+
+    Args:
+        low (float or Tensor): Lower range (inclusive).
+        high (float or Tensor): Upper range (exclusive).
+        name_list (List[str]): A list of names for each parameter dimension.
+                               Its length must match the number of parameters.
+        validate_args (bool, optional): Whether to validate arguments.
+                                        Defaults to ``Distribution._validate_args``.
+    """
+    arg_constraints = {
+        "low": constraints.dependent(is_discrete=False, event_dim=0),
+        "high": constraints.dependent(is_discrete=False, event_dim=0),
+    }
+    has_rsample = True
+
+    @property
+    def mean(self) -> torch.Tensor:
+        return (self.high + self.low) / 2
+
+    @property
+    def mode(self) -> torch.Tensor:
+        return torch.full_like(self.high, float('nan'))
+
+    @property
+    def stddev(self) -> torch.Tensor:
+        return (self.high - self.low) / (12**0.5)
+
+    @property
+    def variance(self) -> torch.Tensor:
+        return (self.high - self.low).pow(2) / 12
+
+    def __init__(
+        self,
+        low: Union[float, torch.Tensor],
+        high: Union[float, torch.Tensor],
+        name_list: List[str],
+        verbose: bool = True,
+        validate_args: Optional[bool] = None
+    ):
+        self.low, self.high = broadcast_all(low, high)
+        self.name_list = name_list
+        self.verbose = verbose
+
+        if isinstance(low, Number) and isinstance(high, Number):
+            batch_shape = torch.Size()
+        else:
+            batch_shape = self.low.size()
+
+        # Ensure name_list matches parameter dimensions
+        num_params = self.low.shape[-1] if self.low.dim() > 0 else 1
+        if len(self.name_list) != num_params:
+            raise ValueError(
+                f"Length of name_list ({len(self.name_list)}) must match the "
+                f"number of parameters ({num_params})."
+            )
+
+        super().__init__(batch_shape, validate_args=validate_args)
+
+    def expand(self, batch_shape: _size, _instance=None) -> "CustomUniform":
+        new = self._get_checked_instance(CustomUniform, _instance)
+        batch_shape = torch.Size(batch_shape)
+        new.low = self.low.expand(batch_shape)
+        new.high = self.high.expand(batch_shape)
+        new.name_list = self.name_list
+        super(CustomUniform, new).__init__(batch_shape, validate_args=False)
+        new._validate_args = self._validate_args
+        return new
+
+    @constraints.dependent_property(is_discrete=False, event_dim=0)
+    def support(self) -> constraints.Constraint:
+        return Interval(self.low, self.high, self._validate_sample if self.verbose else None)
+
+    def rsample(self, sample_shape: _size = torch.Size()) -> torch.Tensor:
+        shape = self._extended_shape(sample_shape)
+        rand = torch.rand(shape, dtype=self.low.dtype, device=self.low.device)
+        return self.low + rand * (self.high - self.low)
+
+    def log_prob(self, value: torch.Tensor) -> torch.Tensor:
+        if self._validate_args:
+            self._validate_sample(value)
+        lb = self.low.le(value).type_as(self.low)
+        ub = self.high.gt(value).type_as(self.low)
+        return torch.log(lb.mul(ub)) - torch.log(self.high - self.low)
+
+    def cdf(self, value: torch.Tensor) -> torch.Tensor:
+        if self._validate_args:
+            self._validate_sample(value)
+        result = (value - self.low) / (self.high - self.low)
+        return result.clamp(min=0, max=1)
+
+    def icdf(self, value: torch.Tensor) -> torch.Tensor:
+        result = value * (self.high - self.low) + self.low
+        return result
+
+    def entropy(self) -> torch.Tensor:
+        return torch.log(self.high - self.low)
+
+    
+    @constraints.dependent_property(is_discrete=False, event_dim=0)
+    def _original_support(self) -> constraints.Constraint:
+        """
+        Returns the original support constraint without validation.
+        This is used for internal consistency checks.
+        """
+        return constraints.interval(self.low, self.high)
+
+    def _validate_sample(self, value: torch.Tensor) -> None:
+        """
+        Custom argument validation with aggregated error messages for out-of-support
+        parameters in a batch.
+        """
+        if not isinstance(value, torch.Tensor):
+            raise ValueError("The value argument to log_prob must be a Tensor")
+
+        # use a copy of the value to avoid modifying the original tensor
+        value = value.clone()
+        # Standard shape validation from the base class
+        event_dim_start = len(value.size()) - len(self._event_shape)
+        if value.size()[event_dim_start:] != self._event_shape:
+            raise ValueError(
+                f"The right-most size of value must match event_shape: {value.size()} vs {self._event_shape}."
+            )
+        actual_shape = value.size()
+        expected_shape = self._batch_shape + self._event_shape
+        for i, j in zip(reversed(actual_shape), reversed(expected_shape)):
+            if i != 1 and j != 1 and i != j:
+                raise ValueError(
+                    f"Value is not broadcastable with batch_shape+event_shape: {actual_shape} vs {expected_shape}."
+                )
+        #logging.info(f"Sample shape validation passed: {actual_shape} matches expected {expected_shape}.")
+        # Custom support validation with aggregated summary
+        is_in_support = self._original_support.check(value)
+        if not is_in_support.all():
+            error_messages = []
+            param_dim = -1  # Assumes parameters are in the last dimension
+            num_params = is_in_support.shape[param_dim]
+
+            for i in range(num_params):
+                param_is_in_support = is_in_support[..., i]
+                if not param_is_in_support.all():
+                    # Count how many samples in the batch are invalid for this parameter
+                    num_invalid = (~param_is_in_support).sum().item()
+                    total_samples = param_is_in_support.numel()
+                    param_name = self.name_list[i]
+                    low_bound = self.low[..., i].item()
+                    high_bound = self.high[..., i].item()
+                    error_messages.append(
+                        f"  - Parameter '{param_name}' (support [{low_bound:.2f}, {high_bound:.2f})): "
+                        f"{num_invalid}/{total_samples} samples are out of support."
+                    )
+            # out of total samples(how many have support in every parameter)
+            total = torch.all(is_in_support, axis=-1).sum().float().mean() / total_samples
+            error_messages.append(f'  - In total {total*100:.2f}% samples are within support across all parameters.')
+            # Log a single aggregated message
+            if error_messages:
+                full_error_message = "Checked sample acceptance within batched sample. Summary:\n" + "\n".join(error_messages)
+                logging.warning(full_error_message)
+
+
+class CustomIndependentUniform(CustomUniform):
+    def __init__(self, *args, device='cpu', **kwargs):
+        args = [torch.as_tensor(v, dtype=torch.float32, device=device) if isinstance(v, (float, int, torch.Tensor, np.ndarray)) else v
+                for v in args ]
+        kwargs = {k: torch.as_tensor(v, dtype=torch.float32, device=device) if isinstance(v, (float, int, torch.Tensor, np.ndarray)) else v
+                  for k, v in kwargs.items()}
+
+        super().__init__(*args, **kwargs)
