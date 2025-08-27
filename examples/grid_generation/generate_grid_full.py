@@ -71,7 +71,7 @@ instrument = "HST+JWST"
 path = f"{os.path.dirname(__file__)}/filters/{instrument}.hdf5"
 
 if os.path.exists(path):
-    print(f'Loading filters from {path}')
+    print(f"Loading filters from {path}")
     filterset = FilterCollection(path=path)
 else:
     filterset = FilterCollection(filter_codes=filter_codes)
@@ -163,7 +163,9 @@ elif sfh_type == SFH.DelayedExponential:
 # Draw samples from Latin Hypercube.
 # unlog_keys are keys which should be unlogged after drawing from the hypercube.
 # they will be renamed to not include 'log_' after drawing.
-all_param_dict = draw_from_hypercube(full_params, Nmodels, rng=42, unlog_keys=["log_Av"])
+all_param_dict = draw_from_hypercube(
+    full_params, Nmodels, rng=42, unlog_keys=["log_Av"]
+)
 
 
 # Create the grid
@@ -202,9 +204,9 @@ if sfh_type == SFH.DenseBasis:
         sfh_models.append(sfh)
         # Reassign parameters
         for j in range(Nparam_SFH):
-            all_param_dict[f"sfh_quantile_{100 * (j + 1) / (Nparam_SFH + 1):.0f}"][i] = (
-                tx[j]
-            )
+            all_param_dict[f"sfh_quantile_{100 * (j + 1) / (Nparam_SFH + 1):.0f}"][
+                i
+            ] = tx[j]
     full_params.pop("ssfr", None)  # remove ssfr from full_params
     # Add logSFR to all_param_dict
     all_param_dict["log_sfr"] = np.array(logsfrs)
