@@ -10,20 +10,26 @@ import torch
 from astropy.table import Table
 from simple_parsing import ArgumentParser
 
-from sbifitter import SBI_Fitter, Simformer_Fitter, create_uncertainity_models_from_EPOCHS_cat
+from sbifitter import SBI_Fitter, Simformer_Fitter, create_uncertainty_models_from_EPOCHS_cat
 
-try:
+'''try:
     mp.set_start_method("spawn", force=True)
     torch.multiprocessing.set_start_method("spawn", force=True)
     print("Multiprocessing start method set to 'spawn'.")
 except RuntimeError as e:
-    print(f"Start method already set: {e}")
+    print(f"Start method already set: {e}")'''
 
 
 # Setup parsing
 parser = ArgumentParser(description="SBI SED Fitting")
 
 file_dir = os.path.dirname(__file__)
+
+import logging
+logging.getLogger().handlers.clear()
+logging.basicConfig(level=logging.INFO, 
+                    format='%(asctime)s - %(levelname)s - %(message)s',
+                    stream=sys.stdout)
 
 
 @dataclass
@@ -46,10 +52,11 @@ class Args:
     hidden_features: int = 64
     num_transforms: int = 6
     num_components: int = 10
-    scatter_fluxes: float = 10.0
+    scatter_fluxes: float = 1
     include_errors_in_feature_array: bool = True
+    min_flux_error: float = 0.00
     norm_mag_limit: float = 40.0
-    drop_dropouts: bool = True
+    drop_dropouts: bool = False
     drop_dropout_fraction: float = 0.5
     max_rows: int = -1
     parameter_transformations: tuple = ()  # This can be a dict of transformations
@@ -64,6 +71,12 @@ class Args:
     norm_method: str = None
     device: str = "cuda:0"
     simformer: bool = False  # If True, use SimFormer for training
+    n_optimize_jobs: int = 1  # Number of parallel jobs for optimization
+    n_trials: int = 100  # Number of trials for optimization
+    optimize: bool = False  # If True, run Optuna optimization
+    noise_model_class: str = "general"  # Type of noise model to use - general, depth or asinh.
+    custom_config_yaml: str = None
+    sql_db_path: str = None  # Path to SQLite database for storing results
 
 
 parser.add_arguments(Args, dest="args")
@@ -111,7 +124,7 @@ def main_task(args: Args) -> None:
         if not os.path.exists(out_dir):
             os.makedirs(out_dir, exist_ok=True)
 
-        empirical_noise_models = create_uncertainity_models_from_EPOCHS_cat(
+        empirical_noise_models = create_uncertainty_models_from_EPOCHS_cat(
             args.data_err_file,
             bands,
             new_band_names,
@@ -119,6 +132,8 @@ def main_task(args: Args) -> None:
             hdu=args.data_err_hdu,
             save_path=out_dir,
             save=True,
+            min_flux_error=args.min_flux_error,
+            model_class=args.noise_model_class,
         )
 
     else:
@@ -141,8 +156,14 @@ def main_task(args: Args) -> None:
             )
     parameter_transformations = {}
 
+    def log10_floor(x, floor=-6):
+        """
+        Logarithm base 10 with a floor value.
+        """
+        return np.log10(np.maximum(x, 10 ** floor))
+
     if args.parameter_transformations:
-        pos_vals = {"log10": np.log10, "log": np.log, "exp": np.exp, "sqrt": np.sqrt}
+        pos_vals = {"log10": np.log10, "log": np.log, "exp": np.exp, "sqrt": np.sqrt, "log10_floor":log10_floor}
         # Assuming args.parameter_transformations is a string like 'key1=val1,key2=val2'
         try:
             transformations_str = args.parameter_transformations[0]
@@ -178,10 +199,10 @@ def main_task(args: Args) -> None:
         model_name=args.model_name, hdf5_path=args.grid_path, device=args.device
     )
 
-    if not args.include_errors_in_feature_array:
+    if args.scatter_fluxes > 0 and not args.include_errors_in_feature_array:
         unused_filters = [
             filt
-            for filt in empirical_model_fitter.raw_photometry_names
+            for filt in empirical_model_fitter.raw_observation_names
             if filt not in list(empirical_noise_models.keys())
         ]
     else:
@@ -192,10 +213,21 @@ def main_task(args: Args) -> None:
             for filt in phot_to_remove
         ]
         unused_filters = [
-            filt for filt in unused_filters if filt in empirical_model_fitter.raw_photometry_names
+            filt for filt in unused_filters if filt in empirical_model_fitter.raw_observation_names
         ]
 
+    print("Photometry in grid:", empirical_model_fitter.raw_observation_names, file=sys.stdout)
+    for filt in empirical_model_fitter.raw_observation_names:
+        if (
+            args.scatter_fluxes > 0
+            and args.include_errors_in_feature_array
+            and filt not in empirical_noise_models
+        ):
+            unused_filters.append(filt)
+
     print(f"Unused filters: {unused_filters}", file=sys.stdout)
+
+    print(empirical_noise_models)
     empirical_model_fitter.create_feature_array_from_raw_photometry(
         extra_features=list(args.model_features),
         normalize_method=args.norm_method,
@@ -208,7 +240,7 @@ def main_task(args: Args) -> None:
         norm_mag_limit=args.norm_mag_limit,
         drop_dropouts=args.drop_dropouts,
         drop_dropout_fraction=args.drop_dropout_fraction,
-        parameters_to_add=args.parameters_to_add,
+        parameters_to_add=args.parameters_to_add[0].split(",") if args.parameters_to_add else [],
         parameter_transformations=parameter_transformations,
         max_rows=args.max_rows,
     )
@@ -221,6 +253,42 @@ def main_task(args: Args) -> None:
     # dx = 2 * (v75 - v25) / (n ** (1 / 3))
     empirical_model_fitter.plot_histogram_feature_array(bins="scott")
     empirical_model_fitter.plot_histogram_parameter_array(bins="scott")
+
+    if args.optimize:
+        if args.simformer:
+            raise NotImplementedError(
+                "Optimization for SimFormer is not implemented yet. Please set --optimize=False."
+            )
+        num_name = "num_components" if args.model_types == "mdn" else "num_transforms"
+        train_params = dict(
+            study_name=f"{args.model_name}{args.name_append}",
+            suggested_hyperparameters={
+                "learning_rate": [5e-6, 1e-3], # 1e-6 makes models very slow to train!
+                "hidden_features": [12, 500],
+                num_name: [2, 50],
+                "training_batch_size": [32, 128],
+                "stop_after_epochs": [10, 40],
+                "clip_max_norm": [0.1, 5.0],
+                "validation_fraction": [0.1, 0.3],
+            },
+            fixed_hyperparameters={
+                "n_nets": args.n_nets,
+                "model_type": args.model_types,
+                "backend": args.backend,
+                "engine": args.engine,
+            },
+            n_trials=args.n_trials,
+            n_jobs=1,
+            random_seed=42,
+            verbose=True,
+            persistent_storage=True,
+            score_metrics="log_prob",
+            direction="maximize",
+            timeout_minutes_trial_sampling=360.0,
+            sql_db_path=args.sql_db_path,
+        )
+
+        empirical_model_fitter.optimize_sbi(**train_params)
 
     if not args.simformer:
         args = dict(
@@ -240,6 +308,8 @@ def main_task(args: Args) -> None:
             name_append=args.name_append,
             plot=args.plot,
             additional_model_args=additional_model_args,
+            custom_config_yaml=args.custom_config_yaml,
+            sql_db_path=args.sql_db_path,
         )
     else:
         args = dict(
@@ -255,6 +325,8 @@ def main_task(args: Args) -> None:
             task_func=None,
         )
 
+    print('Runnin SBI training.')
+
     empirical_model_fitter.run_single_sbi(**args)
 
     print(f"Training finished at {datetime.datetime.now()}", file=sys.stdout)
@@ -263,13 +335,27 @@ def main_task(args: Args) -> None:
 if __name__ == "__main__":
     args = parse_args()
 
-    if args.background:
-        # Use multiprocessing to run the main task in a new 'spawned' process
-        print("Starting the task in a background process...")
-        process = mp.Process(target=main_task, args=(args,))
-        process.start()
-        print(f"Process started with PID: {process.pid}. The script will now exit.")
+    if args.optimize:
+        # Start N different processes for optimization
+        print(f"Starting optimization with {args.n_optimize_jobs} parallel jobs...")
+        processes = []
+        for i in range(args.n_optimize_jobs):
+            process = mp.Process(target=main_task, args=(args,))
+            processes.append(process)
+            process.start()
+            print(f"Process {i + 1} started with PID: {process.pid}")
+        for process in processes:
+            process.join()
+        print("All optimization processes completed.")
         sys.exit(0)
     else:
-        # Run in the foreground as normal
-        main_task(args)
+        if args.background:
+            # Use multiprocessing to run the main task in a new 'spawned' process
+            print("Starting the task in a background process...")
+            process = mp.Process(target=main_task, args=(args,))
+            process.start()
+            print(f"Process started with PID: {process.pid}. The script will now exit.")
+            sys.exit(0)
+        else:
+            # Run in the foreground as normal
+            main_task(args)
