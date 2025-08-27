@@ -3,7 +3,7 @@
 #SBATCH --ntasks 1
 #SBATCH --cpus-per-task=20
 #SBATCH -t 10:00:00
-#SBATCH -p cosma8shm
+#SBATCH -p cosma7
 #SBATCH -A dp276
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=thomas.harvey-3@manchester.ac.uk

@@ -11,7 +11,7 @@ requires-python = ">=3.10"
 dependencies = [
     "torch",
     "lampe",
-    "ltu-ili @ git+https://github.com/maho3/ltu-ili#egg=ltu-ili",
+    "ltu-ili @ git+https://github.com/maho3/ltu-ili",
     "tarp @ git+https://github.com/maho3/tarp.git",
     "cosmos-synthesizer",
     "scikit-learn",

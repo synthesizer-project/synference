@@ -6,7 +6,8 @@ import os
 import pickle
 import re
 import sys
-from typing import Dict, List, Union
+from typing import Any, Dict, List, Union, TextIO
+import logging
 
 import h5py
 import matplotlib.pyplot as plt
@@ -26,6 +27,7 @@ def load_grid_from_hdf5(
     supp_attr: str = "SupplementaryParameterNames",
     supp_units_attr: str = "SupplementaryParameterUnits",
     phot_unit_attr: str = "PhotometryUnits",
+    spectra_key: str = "Grid/Spectra",
 ) -> dict:
     """Load a grid from an HDF5 file.
 
@@ -48,7 +50,7 @@ def load_grid_from_hdf5(
 
     with h5py.File(hdf5_path, "r") as f:
         # Load the photometry and parameters from the HDF5 file
-        photometry = f[photometry_key][:]
+
         parameters = f[parameters_key][:]
 
         filter_codes = f.attrs[filter_codes_attr]
@@ -60,13 +62,19 @@ def load_grid_from_hdf5(
         parameter_units = f.attrs.get(parameters_units_attr, None)
 
         output = {
-            "photometry": photometry,
             "parameters": parameters,
             "filter_codes": filter_codes,
             "parameter_names": parameter_names,
             "photometry_units": photometry_units,
             "parameter_units": parameter_units,
         }
+
+        if photometry_key in f:
+            photometry = f[photometry_key][:]
+            output["photometry"] = photometry
+        if spectra_key in f:
+            spectra = f[spectra_key][:]
+            output["spectra"] = spectra
 
         # Load supplementary parameters if available
         if supp_key in f:
@@ -349,6 +357,135 @@ def create_sqlite_db(db_path: str):
 
     return storage_name
 
+def create_database_universal(
+    db_name: str,
+    password: str = "",
+    host: str = "localhost",
+    user: str = "root",
+    port: int = 31666,
+    db_type = "mysql+pymysql",
+    full_url: str = None
+):
+    """
+    Create database for MySQL, PostgreSQL, or CockroachDB
+    Returns the full connection URL for the created database.
+
+    Either provide a full URL or the individual parameters.
+    """
+    import sqlalchemy
+    from sqlalchemy.exc import SQLAlchemyError, ProgrammingError
+    from urllib.parse import urlparse, urlunparse
+    
+    assert db_type in ["mysql+pymysql", "postgresql+psycopg2", "cockroachdb"], (
+        "db_type must be one of 'mysql+pymysql', 'postgresql+psycopg2', or 'cockroachdb'."
+    )
+    # Determine database type and prepare connection details
+    if full_url is None:
+        sqlalchemy_url = f":{db_type}//{user}:{password}@{host}:{port}/"
+    else:
+        parsed = urlparse(full_url)
+        if full_url.startswith("mysql://"):
+            db_type = "mysql"
+            sqlalchemy_url = full_url.replace("mysql://", "mysql+pymysql://")
+        elif full_url.startswith("postgres://") or full_url.startswith("postgresql://"):
+            db_type = "postgresql"
+            if full_url.startswith("postgres://"):
+                sqlalchemy_url = full_url.replace("postgres://", "postgresql+psycopg2://")
+            else:
+                sqlalchemy_url = full_url.replace("postgresql://", "postgresql+psycopg2://")
+        elif full_url.startswith("cockroachdb://"):
+            db_type = "cockroachdb"
+            sqlalchemy_url = full_url  # Keep cockroachdb:// scheme
+        else:
+            db_type = "unknown"
+            sqlalchemy_url = full_url
+    
+    # Remove existing database name from URL to connect to system database
+    parsed = urlparse(sqlalchemy_url)
+    path_parts = parsed.path.strip('/').split('/') if parsed.path.strip('/') else []
+    
+    if db_type == "mysql":
+        # Connect to mysql system database
+        system_path = "/mysql"
+        cd = "`"  # MySQL uses backticks
+        create_sql = f"CREATE DATABASE IF NOT EXISTS {cd}{db_name}{cd}"
+        isolation_level = "AUTOCOMMIT"
+    elif db_type == "postgresql":
+        # Connect to postgres system database
+        system_path = "/postgres"
+        cd = '"'  # PostgreSQL uses double quotes
+        create_sql = f'CREATE DATABASE {cd}{db_name}{cd}'
+        isolation_level = "AUTOCOMMIT"
+    elif db_type == "cockroachdb":
+        # CockroachDB uses defaultdb as system database
+        system_path = "/defaultdb"
+        cd = ""  # CockroachDB doesn't require quotes for simple names
+        create_sql = f"CREATE DATABASE IF NOT EXISTS {db_name}"
+        db_name = db_name.lower()
+        isolation_level = "AUTOCOMMIT"
+    else:
+        # Fallback - try without quotes
+        system_path = "/"
+        cd = ""
+        create_sql = f"CREATE DATABASE IF NOT EXISTS {db_name}"
+        isolation_level = "AUTOCOMMIT"
+    
+    # Build system database URL
+    system_url = parsed._replace(path=system_path)
+    system_url = urlunparse(system_url)
+    
+    try:
+        engine = sqlalchemy.create_engine(system_url, isolation_level=isolation_level)
+        
+        with engine.connect() as connection:
+            if db_type == "postgresql":
+                # PostgreSQL: Check if database exists first
+                try:
+                    result = connection.execute(
+                        sqlalchemy.text("SELECT 1 FROM pg_database WHERE datname = :db_name"),
+                        {"db_name": db_name}
+                    )
+                    if not result.fetchone():
+                        connection.execute(sqlalchemy.text(create_sql))
+                        print(f"Database {db_name} created.")
+                    else:
+                        print(f"Database {db_name} already exists.")
+                except ProgrammingError as e:
+                    if "already exists" not in str(e).lower():
+                        raise
+                    print(f"Database {db_name} already exists.")
+            else:
+                # MySQL and CockroachDB: Use IF NOT EXISTS
+                connection.execute(sqlalchemy.text(create_sql))
+                print(f"Database {db_name} created or already exists.")
+        
+        engine.dispose()
+        
+    except SQLAlchemyError as e:
+        print(f"Failed to create database {db_name}:", e)
+        # Continue anyway - database might already exist
+    
+    # Build final database URL
+    if full_url is None:
+        final_url = f"mysql+pymysql://{user}:{password}@{host}:{port}/{db_name}"
+    else:
+        # Replace system database with target database in original URL
+        parsed = urlparse(sqlalchemy_url)
+        if db_type == "cockroachdb" and 'defaultdb' in sqlalchemy_url:
+            final_url = sqlalchemy_url.replace('defaultdb', db_name)
+        else:
+            final_url = parsed._replace(path=f"/{db_name}")
+            final_url = urlunparse(final_url)
+        
+        # Convert back to original scheme format if needed
+        if full_url.startswith("mysql://") and final_url.startswith("mysql+pymysql://"):
+            final_url = final_url.replace("mysql+pymysql://", "mysql://")
+        elif full_url.startswith("postgres://") and final_url.startswith("postgresql+psycopg2://"):
+            final_url = final_url.replace("postgresql+psycopg2://", "postgres://")
+        # CockroachDB keeps its original scheme
+    
+    return final_url
+
 
 def f_jy_to_asinh(
     f_jy: unyt_array,
@@ -515,6 +652,23 @@ class CPU_Unpickler(pickle.Unpickler):
             return lambda b: torch.load(io.BytesIO(b), map_location="cpu")
         else:
             return super().find_class(module, name)
+
+
+def check_log_scaling(arr: Union[unyt_array, unyt_quantity]):
+    """Check if the input array has dimensions that scale with logarithmic normalization."""
+    assert isinstance(arr, unyt_array) or isinstance(arr, unyt_quantity), (
+        "Input must be a unyt_array or unyt_quantity, got {}".format(type(arr))
+    )
+
+    if isinstance(arr, unyt_quantity):
+        arr = 1.0 * arr  # Ensure it is a unyt_array
+
+    if not isinstance(arr, unyt_array):
+        return False
+
+    # Check if the unit is dimensionless
+    if arr.units.is_dimensionless and "log" in str(arr.units):
+        return True
 
 
 def check_scaling(arr: Union[unyt_array, unyt_quantity]):
@@ -1434,6 +1588,72 @@ def compare_methods_feature_importance(base_distribution, observations, feature_
     return results
 
 
+def optimize_sfh_xlimit(ax, mass_threshold=0.001, buffer_fraction=0.2):
+    """Stolen from EXPANSE.
+
+    Optimizes the x-axis limits of a matplotlib plot containing SFR histories
+    to focus on periods after each galaxy has formed a certain fraction of its final mass.
+    Calculates cumulative mass from SFR data.
+
+    Parameters:
+    -----------
+    ax : matplotlib.axes.Axes
+        The axes object containing the SFR plots (SFR/yr vs time)
+    mass_threshold : float, optional
+        Fraction of final stellar mass to use as threshold (default: 0.01 for 1%)
+    buffer_fraction : float, optional
+        Fraction of the active time range to add as buffer (default: 0.1)
+
+    Returns:
+    --------
+    float
+        The optimal maximum x value for the plot
+    """
+    # Get all lines from the plot
+    lines = ax.get_lines()
+    if not lines:
+        raise ValueError("No lines found in the plot")
+
+    # Initialize variables to track the earliest time reaching mass threshold
+    earliest_activity = 0
+
+    # Check each line
+    for line in lines:
+        # Get the x and y data
+        xdata = line.get_xdata()
+        ydata = line.get_ydata()  # This is SFR/yr
+
+        # Calculate time intervals (assuming uniform spacing)
+        dt = np.abs(xdata[1] - xdata[0])
+
+        # Calculate cumulative mass formed
+        # Integrate SFR from observation time (x=0) backwards
+        # Remember: x-axis is negative lookback time, so we need to flip the integration
+        cumulative_mass = np.cumsum(ydata[::-1] * dt)[::-1]
+
+        # Normalize by total mass formed
+        total_mass = cumulative_mass[0]  # Mass at observation time
+        normalized_mass = cumulative_mass / total_mass
+
+        # Find indices where normalized mass exceeds threshold
+        active_indices = np.where(normalized_mass >= mass_threshold)[0]
+
+        if len(active_indices) > 0:
+            # Find the earliest time reaching threshold for this line
+            earliest_this_line = xdata[active_indices[-1]]  # Using -1 since time goes backwards
+
+            earliest_activity = max(earliest_activity, earliest_this_line)
+
+    if earliest_activity == 0:
+        raise ValueError("No galaxies found reaching the mass threshold")
+
+    # Add buffer to the range
+    buffer = abs(earliest_activity) * buffer_fraction
+    new_xlimit = earliest_activity + buffer
+
+    return new_xlimit
+
+
 # Example usage
 if __name__ == "__main__":
     # Generate sample data with known feature importance
@@ -1486,3 +1706,248 @@ if __name__ == "__main__":
     comparison_results = compare_methods_feature_importance(
         base_data, observations, feature_names=feature_names
     )
+
+
+def make_serializable(obj: Any, allowed_types=None) -> Any:
+    """Recursively convert a nested dictionary/object to be JSON serializable.
+
+    Handles common scientific computing types:
+    - NumPy arrays and scalars
+    - PyTorch tensors
+    - JAX arrays
+    - TensorFlow tensors
+    - Pandas Series/DataFrames
+    - Complex numbers
+    - Sets
+    - Bytes
+    - Custom objects with __dict__
+
+    Args:
+        obj: The object to make serializable
+        allowed_types: Optional list of additional types to allow (e.g., custom classes)
+
+    Returns:
+        A JSON-serializable version of the input object
+    """
+    # Handle None and basic JSON-serializable types
+
+    allowed_type = [str, int, float, bool]
+
+    if allowed_types is not None:
+        allowed_type.extend(allowed_types)
+
+    allowed_type = tuple(allowed_type)
+
+    if obj is None or isinstance(obj, allowed_type):
+        return obj
+
+    # Handle dictionaries recursively
+    if isinstance(obj, dict):
+        return {str(k): make_serializable(v, allowed_types=allowed_types) for k, v in obj.items()}
+
+    # Handle lists and tuples recursively
+    if isinstance(obj, (list, tuple)):
+        return [make_serializable(item, allowed_types=allowed_types) for item in obj]
+
+    # Handle sets
+    if isinstance(obj, set):
+        return list(obj)
+
+    # Handle bytes
+    if isinstance(obj, bytes):
+        try:
+            return obj.decode("utf-8")
+        except UnicodeDecodeError:
+            return obj.hex()
+
+    # Handle complex numbers
+    if isinstance(obj, complex):
+        return {"real": obj.real, "imag": obj.imag, "_type": "complex"}
+
+    # Try to import and handle NumPy types
+    try:
+        import numpy as np
+
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.floating):
+            return float(obj)
+        if isinstance(obj, np.bool_):
+            return bool(obj)
+        if isinstance(obj, np.complexfloating):
+            return {"real": float(obj.real), "imag": float(obj.imag), "_type": "complex"}
+    except ImportError:
+        pass
+
+    # Try to handle PyTorch tensors
+    try:
+        import torch
+
+        if isinstance(obj, torch.Tensor):
+            return obj.detach().cpu().numpy().tolist()
+    except ImportError:
+        pass
+
+    # Try to handle JAX arrays
+    try:
+        import jax.numpy as jnp
+
+        if hasattr(obj, "__array__") and hasattr(obj, "shape"):  # JAX array duck typing
+            try:
+                return jnp.asarray(obj).tolist()
+            except Exception:
+                pass
+    except ImportError:
+        pass
+
+    # Try to handle TensorFlow tensors
+    try:
+        import tensorflow as tf
+
+        if isinstance(obj, tf.Tensor):
+            return obj.numpy().tolist()
+        if isinstance(obj, tf.Variable):
+            return obj.numpy().tolist()
+    except ImportError:
+        pass
+
+    # Try to handle Pandas objects
+    try:
+        import pandas as pd
+
+        if isinstance(obj, pd.Series):
+            return obj.tolist()
+        if isinstance(obj, pd.DataFrame):
+            return obj.to_dict("records")
+        if isinstance(obj, pd.Index):
+            return obj.tolist()
+        if pd.isna(obj):  # Handle pandas NA values
+            return None
+    except ImportError:
+        pass
+
+    # Handle datetime objects
+    try:
+        from datetime import date, datetime, time
+
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        if isinstance(obj, date):
+            return obj.isoformat()
+        if isinstance(obj, time):
+            return obj.isoformat()
+    except ImportError:
+        pass
+
+    # Handle Decimal objects
+    try:
+        from decimal import Decimal
+
+        if isinstance(obj, Decimal):
+            return float(obj)
+    except ImportError:
+        pass
+
+    # Handle pathlib Path objects
+    try:
+        from pathlib import Path
+
+        if isinstance(obj, Path):
+            return str(obj)
+    except ImportError:
+        pass
+
+    # Handle UUID objects
+    try:
+        from uuid import UUID
+
+        if isinstance(obj, UUID):
+            return str(obj)
+    except ImportError:
+        pass
+
+    # Handle custom objects with __dict__ attribute
+    if hasattr(obj, "__dict__"):
+        return make_serializable(obj.__dict__, allowed_types=allowed_types)
+
+    # Handle objects with a .tolist() method (catch-all for array-like objects)
+    if hasattr(obj, "tolist") and callable(getattr(obj, "tolist")):
+        try:
+            return obj.tolist()
+        except Exception:
+            pass
+
+    # Handle objects with .item() method (scalar array-like objects)
+    if hasattr(obj, "item") and callable(getattr(obj, "item")):
+        try:
+            return obj.item()
+        except Exception:
+            pass
+
+    # Handle iterables as a last resort (but not strings which are already handled)
+    try:
+        if hasattr(obj, "__iter__") and not isinstance(obj, (str, bytes)):
+            return [make_serializable(item, allowed_types=allowed_types) for item in obj]
+    except (TypeError, ValueError):
+        pass
+
+    # If all else fails, convert to string representation
+    # This ensures the function doesn't crash on unknown types
+    try:
+        return str(obj)
+    except Exception:
+        return f"<unserializable object of type {type(obj).__name__}>"
+
+
+
+
+def setup_mpi_named_logger(
+    name: str, level: int = logging.INFO, stream: TextIO = sys.stdout
+) -> logging.Logger:
+    """
+    Sets up a named logger that only outputs messages from MPI rank 0.
+
+    This is more robust than configuring the root logger, as it won't
+    interfere with the logging settings of other libraries.
+
+    Args:
+        name: The name for the logger instance.
+        level: The logging level for the rank 0 process.
+        stream: The output stream for the rank 0 process.
+
+    Returns:
+        A configured logging.Logger instance.
+    """
+    try:
+        from mpi4py import MPI
+        # Get the MPI communicator, rank, and size
+        COMM = MPI.COMM_WORLD
+        RANK = COMM.Get_rank()
+        SIZE = COMM.Get_size()
+    except ImportError:
+        # Create dummy MPI variables for single-process execution
+        # This allows the script to run without mpi4py or mpiexec
+        COMM = None
+        RANK = 0
+        SIZE = 1
+    logger = logging.getLogger(name)
+    
+    # Prevent messages from propagating to the root logger
+    logger.propagate = False
+
+    if RANK == 0:
+        # Configure the logger for the main process (rank 0)
+        logger.setLevel(level)
+        handler = logging.StreamHandler(stream)
+        formatter = logging.Formatter(
+            "%(asctime)s | %(name)s | %(levelname)-8s | %(message)s"
+        )
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
+    else:
+        # Add a NullHandler to silence the logger on all other processes
+        logger.addHandler(logging.NullHandler())
+
+    return logger
