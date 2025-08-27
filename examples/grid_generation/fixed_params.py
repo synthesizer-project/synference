@@ -76,7 +76,7 @@ instrument = "HST+JWST"
 path = f"{os.path.dirname(__file__)}/filters/{instrument}.hdf5"
 
 if os.path.exists(path):
-    print(f'Loading filters from {path}')
+    print(f"Loading filters from {path}")
     filterset = FilterCollection(path=path)
 else:
     filterset = FilterCollection(filter_codes=filter_codes)
@@ -116,7 +116,7 @@ except Exception:
 
 # params
 
-Nmodels = 10_000 # 00
+Nmodels = 10_000  # 00
 redshifts = 0.1
 masses = (4, 12)  # log10 of stellar mass in solar masses
 max_redshift = 20  # gives maximum age of SFH at a given redshift
@@ -155,9 +155,7 @@ grid = Grid(
 )
 
 # Metallicity
-Z_dists = [
-    ZDist.DeltaConstant(log10metallicity=log_z) for i in range(len(masses))
-]
+Z_dists = [ZDist.DeltaConstant(log10metallicity=log_z) for i in range(len(masses))]
 
 # Create LogNormal SFH from parameters.
 taus = np.full((Nmodels,), tau, dtype=np.float64)
@@ -188,7 +186,7 @@ galaxy_params = {
 
 sfh_name = str(sfh_type).split(".")[-1].split("'")[0]
 
-name = f"BPASS_Chab_{sfh_name}_SFH_z={redshifts}_logN_{np.log10(Nmodels):.1f}_Calzetti_v1" # noqa: E501
+name = f"BPASS_Chab_{sfh_name}_SFH_z={redshifts}_logN_{np.log10(Nmodels):.1f}_Calzetti_v1"  # noqa: E501
 
 basis = GalaxyBasis(
     model_name=f"sps_{name}",
@@ -206,6 +204,7 @@ basis = GalaxyBasis(
     ],  # This is dependent on the redshift and should not be included in the basis
 )
 
+
 def z_to_max_age(params, max_redshift=20):
     """Convert redshift to maximum age of the SFH at that redshift."""
     z = params["redshift"]
@@ -214,6 +213,7 @@ def z_to_max_age(params, max_redshift=20):
     age = cosmo.age(z) - cosmo.age(max_redshift)
     age = age.to_value("Myr") * Myr
     return age
+
 
 # This is the simple way-
 # it runs the following three steps for you.
@@ -237,8 +237,10 @@ basis.create_mock_cat(
     batch_size=50_000,
     mUV=(calculate_muv, cosmo),  # Calculate mUV for the mock catalogue.
     mwa=calculate_mwa,  # Calculate MWA for the mock catalogue.
-    parameter_transforms_to_save={'max_age': z_to_max_age},  # Save function to calculate the maximum age of the SFH at that redshift.
-    emission_model_key='total',
+    parameter_transforms_to_save={
+        "max_age": z_to_max_age
+    },  # Save function to calculate the maximum age of the SFH at that redshift.
+    emission_model_key="total",
 )
 
 """

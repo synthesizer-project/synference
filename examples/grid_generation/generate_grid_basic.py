@@ -91,7 +91,9 @@ else:
 
 
 # Consistent wavelength grid for both SPS grids and filters
-new_wav = generate_constant_R(R=300, auto_start_stop=True, filterset=filterset, max_redshift=15)
+new_wav = generate_constant_R(
+    R=300, auto_start_stop=True, filterset=filterset, max_redshift=15
+)
 
 filterset.resample_filters(new_lam=new_wav)
 
@@ -169,7 +171,9 @@ grid = Grid(
 )
 
 # Metallicity
-Z_dists = [ZDist.DeltaConstant(log10metallicity=log_z) for log_z in all_param_dict["log_zmet"]]
+Z_dists = [
+    ZDist.DeltaConstant(log10metallicity=log_z) for log_z in all_param_dict["log_zmet"]
+]
 
 # Create LogNormal SFH from parameters.
 # These
