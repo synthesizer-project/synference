@@ -35,6 +35,7 @@ from ili.utils.samplers import (
     PyroSampler,
     VISampler,
 )
+from ili.utils.distributions_pt import Uniform
 from ili.validation.metrics import PlotSinglePosterior, PosteriorCoverage
 from ili.validation.runner import ValidationRunner
 from joblib import dump, load
@@ -69,6 +70,7 @@ from .utils import (
     optimize_sfh_xlimit,
 )
 from . import logger
+from . custom_runner import CustomIndependentUniform
 
 code_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -689,12 +691,13 @@ class SBI_Fitter:
             # copy any parameters in param_dict which are lists or strings to stats
             param_dict["stats"].append({})
             for key, value in param_dict.items():
-                if isinstance(value, (list, str, float, int, bool)):
+                if isinstance(value, (list, str, float, int, bool)) and key not in ['stats']:
                     param_dict["stats"][-1][key] = value
             try:
                 with open(stats_path, "w") as f:
                     json.dump(param_dict["stats"], f, indent=4)
             except Exception as e:
+                logger.info(param_dict["stats"])
                 logger.error(f"Error saving stats to {stats_path}: {e}")
             param_dict["stats"].pop()
 
@@ -1458,11 +1461,48 @@ class SBI_Fitter:
 
         else:
             if not converted:
-                phot = phot.to(normed_flux_units).value
-                if phot_errors is not None:
-                    phot_errors = phot_errors.to(normed_flux_units).value
+                norm_func = np.divide
+                try:
+                    phot.to(normed_flux_units)
+                    convertible = True
+                except Exception as e:
+                    convertible = False
 
-            norm_func = np.divide
+                if convertible:
+                    phot = phot.to(normed_flux_units).value
+                    if phot_errors is not None:
+                        phot_errors = phot_errors.to(normed_flux_units).value
+                else:
+                    try:
+                        scaling, unit = normed_flux_units.split(" ")
+                    except ValueError:
+                        raise ValueError(
+                            "Don't understand normed_flux_units. If a string, should be e.g. 'log10 nJy'. Otherwise pass a Unit directly."
+                        )
+                    scales = {'log10': np.log10, 'log': np.log, '': lambda x: x, 'sqrt': np.sqrt}
+                    if scaling not in scales:
+                        raise ValueError(
+                            f'Scaling "{scaling}" not recognized. Use "log10", "log", "", or "sqrt".')
+                    
+                    phot = phot.to(unit).value
+                    if phot_errors is not None:
+                        phot_errors = phot_errors.to(unit).value
+                    if scaling in scales:
+                        if phot_errors is not None:
+                            # Need error propagation for log scaling
+                            if scaling == 'log10':
+                                phot_errors = phot_errors / (phot * np.log(10))
+                                norm_func = np.subtract
+                            elif scaling == 'log':
+                                phot_errors = phot_errors / (phot)
+                                norm_func = np.subtract
+                            elif scaling == 'sqrt':
+                                phot_errors = phot_errors / (2 * np.sqrt(phot))
+                        phot = scales[scaling](phot)
+                    else:
+                        raise ValueError(
+                            f"Scaling {scaling} not recognized. Use 'log10', 'log', '', or 'sqrt'."
+                        )
 
         delete_rows = []
         # Normalize the photometry grid
@@ -2715,7 +2755,7 @@ class SBI_Fitter:
     def create_priors(
         self,
         override_prior_ranges: dict = {},
-        prior=ili.utils.Uniform,
+        prior=CustomIndependentUniform,
         verbose: bool = True,
     ):
         """Create parameter priors.
@@ -2799,14 +2839,25 @@ class SBI_Fitter:
         low = torch.tensor(low, dtype=torch.float32, device=self.device)
         high = torch.tensor(high, dtype=torch.float32, device=self.device)
 
+        extra_args = {}
+        if issubclass(prior, CustomIndependentUniform):
+            extra_args['name_list'] = list(self.fitted_parameter_names)
         # Create the priors
-        param_prior = prior(low=low, high=high, device=self.device)
+        param_prior = prior(low=low, high=high, device=self.device, **extra_args)
 
+        if isinstance(param_prior, CustomIndependentUniform):
+            from sbi.utils import process_prior
+            from torch.distributions import Independent
+            param_prior = Independent(param_prior, 1)
+            print('Processing prior...')
+            param_prior, _, _ = process_prior(param_prior)
+            print(type(param_prior))
+            
         return param_prior
 
     def create_restricted_priors(
         self,
-        prior: Optional[ili.utils.Uniform] = None,
+        prior: Optional[CustomIndependentUniform] = None,
         set_self=True,
     ):
         """Create restricted priors for the parameters."""
@@ -3493,7 +3544,7 @@ class SBI_Fitter:
                     prior_high = torch.tensor(
                         y_max + 3 * y_std, dtype=torch.float32, device=self.device
                     )
-                    prior = ili.utils.Uniform(low=prior_low, high=prior_high)
+                    prior = CustomIndependentUniform(low=prior_low, high=prior_high, names_list=self.fitted_parameter_names, device=self.device)
                 elif prior_method == "ili":
                     # Create the prior using the parameter array
                     prior = self.create_priors(
@@ -3551,7 +3602,7 @@ class SBI_Fitter:
                             """Drawing random photometry from prior to conditon on.
                             Results probably won't generalize well."""
                         )
-                        samples = prior.sample_n(1)
+                        samples = prior.sample((1,))
                         phot = []
                         for i in range(len(samples)):
                             p = simulator(samples[i]).cpu().numpy()
@@ -4833,6 +4884,9 @@ class SBI_Fitter:
         # Plot the loss
         self.plot_loss(stats, plots_dir=plots_dir)
 
+        #DEBUG
+        posteriors._modules['posteriors'][0].prior = self.create_priors()#prior=Uniform)
+
         if not online:
             # Plot the posterior
             self.plot_posterior(
@@ -5034,6 +5088,8 @@ class SBI_Fitter:
             else:
                 raise ValueError("X and y must be provided or set in the object.")
         # Drop leading dimensions and then ensure still 2D
+        print(X.shape)
+        
         X = np.squeeze(X)
         y = np.squeeze(y)
 
@@ -5057,9 +5113,12 @@ class SBI_Fitter:
         if posteriors is None:
             posteriors = self.posteriors
 
+        # give xobs a batch dimension
+        x_obs = torch.tensor(np.array([X[ind]]), dtype=torch.float32, device=self.device)
+
         fig = metric(
             posterior=posteriors,
-            x_obs=X[ind],
+            x_obs=x_obs,
             theta_fid=y[ind],
             plot_kws=plot_kwargs,
             signature=f"{self.name}_{ind}_",
