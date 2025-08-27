@@ -11,11 +11,11 @@ train_args:
       direction: 'maximize'
       load_if_exists: True
     pruner:
-      type: 'Hyperband'
-      min_resource: 10
-      max_resource: 1000
-      reduction_factor: 3
-      bootstrap_count: 10
+      type: 'None'
+      #max_resource: 1000
+      #reduction_factor: 3
+      #min_resource: 10
+      #bootstrap_count: 10
     search_space:
       model_choice: ["nsf"] # Must be a list
       optimizer_choice: ["AdamW"] # Must be a list
