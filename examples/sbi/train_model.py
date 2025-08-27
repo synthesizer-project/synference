@@ -75,7 +75,7 @@ class Args:
     n_trials: int = 100  # Number of trials for optimization
     optimize: bool = False  # If True, run Optuna optimization
     noise_model_class: str = "general"  # Type of noise model to use - general, depth or asinh.
-    custom_config_yaml: str = None,
+    custom_config_yaml: str = None
     sql_db_path: str = None  # Path to SQLite database for storing results
 
 
@@ -282,9 +282,9 @@ def main_task(args: Args) -> None:
             random_seed=42,
             verbose=True,
             persistent_storage=True,
-            score_metrics=["log_prob", "tarp"],
-            direction=["maximize", "minimize"],
-            timeout_minutes_trial_sampling=120.0,
+            score_metrics="log_prob",
+            direction="maximize",
+            timeout_minutes_trial_sampling=360.0,
             sql_db_path=args.sql_db_path,
         )
 

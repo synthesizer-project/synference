@@ -1875,6 +1875,22 @@ class GalaxyBasis:
             base.attrs["fixed_param_values"] = self.fixed_param_values
             base.attrs["fixed_param_units"] = self.fixed_param_units
 
+    def create_galaxy(
+        sfh: Type[SFH.Common],
+        redshift: float,
+        metal_dist: Type[ZDist.Common],
+        log_stellar_masses: Union[float, list] = 9,
+        grid: Optional[Grid] = None,
+        **galaxy_kwargs,
+        ) -> Type[Galaxy]:
+        return create_galaxy(
+            sfh=sfh,
+            redshift=redshift,
+            metal_dist=metal_dist,
+            log_stellar_masses=log_stellar_masses,
+            grid=grid,
+            **galaxy_kwargs,
+        )
 
     def create_galaxies_optimized(self, fixed_params, varying_param_names, log_base_masses, galaxies_mask=None, n_proc=28, batch_size=None):
         """Optimized version with reduced serialization overhead."""

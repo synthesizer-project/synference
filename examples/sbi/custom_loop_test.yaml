@@ -13,7 +13,7 @@ train_args:
     pruner:
       type: 'None'
     search_space:
-      model_choice: ["mdn"] # Must be a list
+      model_choice: ["maf"] # Must be a list
       optimizer_choice: ["AdamW"] # Must be a list
       learning_rate:
         type: "float"
@@ -33,12 +33,12 @@ train_args:
         low: 0.1
         high: 5.0
       models:
-        mdn:
+        maf:
           hidden_features:
             type: "int"
             low: 10
             high: 500
-          num_components:
+          num_transforms:
             type: "int"
             low: 2
             high: 50
