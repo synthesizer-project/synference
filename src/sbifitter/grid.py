@@ -3,10 +3,10 @@
 import copy
 import inspect
 import os
+import threading
 from collections import defaultdict
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple, Type, Union
-import threading
 
 import astropy.units as u
 import h5py
@@ -1161,8 +1161,8 @@ def create_galaxy(
     metal_dist: Type[ZDist.Common],
     grid: Grid,
     log_stellar_masses: Union[float, list] = 9,
-    bh_kwargs = None,
-    gas_kwargs = None,
+    bh_kwargs=None,
+    gas_kwargs=None,
     **galaxy_kwargs,
 ) -> Type[Galaxy]:
     """Create a new galaxy with the specified parameters."""
@@ -1207,32 +1207,28 @@ def create_galaxy(
         )  # Add any additional parameters to the stars object
         from synthesizer.particle import Galaxy
     else:
-        from Synthesizer.parametric import Galaxy
+        from synthesizer.parametric import Galaxy
+
         part_stars = param_stars
 
     if bh_kwargs is not None:
         from synthesizer.particle import BlackHoles
+
         bh = BlackHoles(**bh_kwargs)
     else:
         bh = None
 
     if gas_kwargs is not None:
         from synthesizer.particle import Gas
+
         gas = Gas(**gas_kwargs)
     else:
         gas = None
 
     # And create the galaxy
-    galaxy = Galaxy(
-        stars=part_stars,
-        redshift=redshift,
-        gas=gas, 
-        black_holes=bh
-    )
+    galaxy = Galaxy(stars=part_stars, redshift=redshift, gas=gas, black_holes=bh)
 
     return galaxy
-
-
 
 
 def _init_worker(grid, alt_parametrizations, fixed_params):
