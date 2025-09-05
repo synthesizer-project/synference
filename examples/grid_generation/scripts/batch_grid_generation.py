@@ -18,7 +18,7 @@ from synthesizer.grid import Grid
 from synthesizer.instruments import FilterCollection, Instrument
 from synthesizer.parametric import SFH, ZDist
 from tqdm import tqdm
-from unyt import K, Myr, dimensionless, unyt_array
+from unyt import K, Myr, dimensionless, unyt_array, Gyr
 
 from sbifitter import (
     CombinedBasis,
@@ -196,6 +196,19 @@ dust_birth_fraction = (
 log_zmet = (-4, -1.39)  # max of grid (e.g. 0.04)
 
 
+sfhs = {
+    "delayed_exponential": {
+        "sfh_type": SFH.DelayedExponential,
+        "sfh_param_names": ["tau", "max_age_norm"],
+        "sfh_units": [Gyr, None],
+        "tau": (-2, 2),  # log-uniform between 0.01 and 100 Gyr
+        "max_age_norm": (
+            0.01,
+            0.99,
+        ),  # normalized to maximum age of the universe at that redshift.
+        "unlog_keys": ["tau"],  # tau is in Gyr, so we need to unlog it
+    }
+}
 """
 "delayed_exponential": {
     "sfh_type": SFH.DelayedExponential,
@@ -309,7 +322,10 @@ for sfh_name, sfh_params in sfhs.items():
     # unlog_keys are keys which should be unlogged after drawing from the hypercube.
     # they will be renamed to not include 'log_' after drawing.
     all_param_dict = draw_from_hypercube(
-        full_params, Nmodels, rng=42, unlog_keys=["log_Av"] + sfh_params.get("unlog_keys", [])
+        full_params,
+        Nmodels,
+        rng=42,
+        unlog_keys=["log_Av"] + sfh_params.get("unlog_keys", []),
     )  # noqa: E501
 
     # Create the grid
@@ -508,10 +524,25 @@ for sfh_name, sfh_params in sfhs.items():
         sfr_3=(calculate_sfr, 3 * Myr),  # Calculate SFR averaged over the last 3 Myr
         sfr_10=(calculate_sfr, 10 * Myr),  # Calculate SFR averaged over the last 10 Myr
         sfr_30=(calculate_sfr, 30 * Myr),  # Calculate SFR averaged over the last 30 Myr
-        sfr_100=(calculate_sfr, 100 * Myr),  # Calculate SFR averaged over the last 100 Myr
-        sfh_quant_25=(calculate_sfh_quantile, 0.25, True),  # Calculate SFH quantile at 25%
-        sfh_quant_50=(calculate_sfh_quantile, 0.50, True),  # Calculate SFH quantile at 50%
-        sfh_quant_75=(calculate_sfh_quantile, 0.75, True),  # Calculate SFH quantile at 75%
+        sfr_100=(
+            calculate_sfr,
+            100 * Myr,
+        ),  # Calculate SFR averaged over the last 100 Myr
+        sfh_quant_25=(
+            calculate_sfh_quantile,
+            0.25,
+            True,
+        ),  # Calculate SFH quantile at 25%
+        sfh_quant_50=(
+            calculate_sfh_quantile,
+            0.50,
+            True,
+        ),  # Calculate SFH quantile at 50%
+        sfh_quant_75=(
+            calculate_sfh_quantile,
+            0.75,
+            True,
+        ),  # Calculate SFH quantile at 75%
         # UV=(calculate_colour, 'U','V', "total"), # These are broken as they need to be rest-frame
         log_surviving_mass=(calculate_surviving_mass, grid),  # Calculate surviving mass
         # VJ=(calculate_colour, 'V','J', "total"),
