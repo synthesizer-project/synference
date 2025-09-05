@@ -552,4 +552,9 @@ EW_OIII=(calculate_line_ew, emission_model, "O3", emission_key),
 # Calculate flux of OIII doublet noqa: E501
 flux_OIII=(calculate_line_flux, emission_model, "O3", emission_key, cosmo),
 # sfrs took 11 seconds
+
+
+# For Dense Basis
+# Creating 100, 000 galaxies took 46:48
+# Outputs took 160 minutes
 """
