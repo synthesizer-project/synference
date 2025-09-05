@@ -363,6 +363,9 @@ if __name__ == "__main__":
     else:
         if args.background:
             # Use multiprocessing to run the main task in a new 'spawned' process
+            # make sure we use spawn to avoid issues with CUDA and fork
+            mp.set_start_method('spawn')
+            
             print("Starting the task in a background process...")
             process = mp.Process(target=main_task, args=(args,))
             process.start()

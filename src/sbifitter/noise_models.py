@@ -155,7 +155,7 @@ class DepthUncertaintyModel(UncertaintyModel):
         if self.return_noise:
             return noisy_flux, uncertainty
 
-        return noisy_flux, None
+        return noisy_flux
 
     def apply_scalings(
         self, flux: np.ndarray, error: np.ndarray, flux_units: str, out_units: str
