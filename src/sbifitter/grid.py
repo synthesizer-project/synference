@@ -6,6 +6,7 @@ import os
 from collections import defaultdict
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple, Type, Union
+import threading
 
 import astropy.units as u
 import h5py
@@ -64,6 +65,8 @@ from .utils import check_log_scaling, check_scaling, list_parameters, save_emiss
 
 file_path = os.path.dirname(os.path.realpath(__file__))
 grid_folder = os.path.join(os.path.dirname(os.path.dirname(file_path)), "grids")
+# Global variables for thread-shared data (initialized once per process)
+_thread_local = threading.local()
 
 
 UNIT_DICT = {
@@ -1158,6 +1161,8 @@ def create_galaxy(
     metal_dist: Type[ZDist.Common],
     grid: Grid,
     log_stellar_masses: Union[float, list] = 9,
+    bh_kwargs = None,
+    gas_kwargs = None,
     **galaxy_kwargs,
 ) -> Type[Galaxy]:
     """Create a new galaxy with the specified parameters."""
@@ -1200,23 +1205,34 @@ def create_galaxy(
         part_stars.__dict__.update(
             galaxy_kwargs
         )  # Add any additional parameters to the stars object
+        from synthesizer.particle import Galaxy
     else:
+        from Synthesizer.parametric import Galaxy
         part_stars = param_stars
+
+    if bh_kwargs is not None:
+        from synthesizer.particle import BlackHoles
+        bh = BlackHoles(**bh_kwargs)
+    else:
+        bh = None
+
+    if gas_kwargs is not None:
+        from synthesizer.particle import Gas
+        gas = Gas(**gas_kwargs)
+    else:
+        gas = None
 
     # And create the galaxy
     galaxy = Galaxy(
         stars=part_stars,
         redshift=redshift,
+        gas=gas, 
+        black_holes=bh
     )
 
     return galaxy
 
 
-import copy
-import threading
-
-# Global variables for thread-shared data (initialized once per process)
-_thread_local = threading.local()
 
 
 def _init_worker(grid, alt_parametrizations, fixed_params):

@@ -2892,7 +2892,7 @@ class SBI_Fitter:
             param_prior = Independent(param_prior, 1)
             logger.info("Processing prior...")
             param_prior, _, _ = process_prior(param_prior)
-
+            
         return param_prior
 
     def create_restricted_priors(
@@ -5606,6 +5606,11 @@ class SBI_Fitter:
 
     def plot_latent_residual(self):
         """Plot the latent residual of the SBI model."""
+        pass
+
+    def calculate_MAP(self):
+        """Calculate the maximum a posteriori (MAP) estimate of the SBI model."""
+        # DirectPosterior has a MAP method - could use that
         pass
 
     def plot_coverage(
