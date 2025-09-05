@@ -15,8 +15,8 @@ from unyt import Myr
 
 from sbifitter import (
     GalaxyBasis,
-    calculate_muv,
     calculate_mass_weighted_age,
+    calculate_muv,
     draw_from_hypercube,
     generate_constant_R,
     generate_sfh_basis,

@@ -972,15 +972,14 @@ def generate_sfh_basis(
         if values are lambda functions the input will be the max age given max_redshift.
     redshifts : Union[Dict[str, Any], float]
         Either a single redshift value, an array of redshifts, or a dictionary with:
-        - 'prior': scipy.stats distribution
-        - 'min': minimum redshift
-        - 'max': maximum redshift
-        - 'size': number of redshift samples
+        'prior': scipy.stats distribution
+        'min': minimum redshift
+        'max': maximum redshift
+        'size': number of redshift samples
     max_redshift : float, optional
         Maximum possible redshift to consider for age calculations, by default 15
     cosmo : Type[Cosmology], optional
         Cosmology to use for age calculations, by default Planck18
-
     calculate_min_age : bool, optional
         If True, calculate the lookback time at which only min_age_frac of total mass
         is formed, by default True
@@ -989,15 +988,14 @@ def generate_sfh_basis(
     iterate_redshifts : bool, optional
         If True, iterate over redshifts and create SFH for each, by default True
         If False, assume input redshift SFH param array is a 1:1 mapping of
-            redshift to SFH parameters.
+        redshift to SFH parameters.
 
     Returns:
     -------
     Tuple[List[SFH], np.ndarray]
-        - List of SFH objects with parameters drawn from the priors
-        - Array of parameter combinations, where the first column is redshift
-            followed by SFH parameters
-
+        List of SFH objects with parameters drawn from the priors
+        Array of parameter combinations, where the first column is redshift
+        followed by SFH parameters
     """
     if isinstance(redshifts, dict):
         redshifts = redshifts["prior"].rvs(
@@ -1785,6 +1783,7 @@ class GalaxyBasis:
 
             em_group.attrs["parameter_keys"] = em_model_params["fixed_parameter_keys"]
             em_group.attrs["parameter_values"] = em_model_params["fixed_parameter_values"]
+            # if it can be an int or float, store as such
             em_group.attrs["parameter_units"] = em_model_params["fixed_parameter_units"]
 
             if em_model_params["dust_law"] is not None:
@@ -2299,6 +2298,9 @@ class GalaxyBasis:
 
         # Generate spectra
 
+        if isinstance(emission_model_keys, str):
+            emission_model_keys = [emission_model_keys]
+
         galaxy.stars.get_spectra(self.emission_model)
         galaxy.get_observed_spectra(cosmo=self.cosmo, igm=Inoue14)
 
@@ -2394,7 +2396,7 @@ class GalaxyBasis:
                 age = galaxy.stars.calculate_mean_age()
                 zmet = galaxy.stars.calculate_mean_metallicity()
 
-            text_gal[emission_model] = f"""**{emission_model}**
+            text_gal[emission_model] = f"""{emission_model}
 Age: {age.to(Myr):.0f}
 $\\log_{{10}}(Z)$: {np.log10(zmet):.2f}
 $\\log_{{10}}(M_\\star/M_\\odot)$: {np.log10(mass):.1f}"""
@@ -2463,6 +2465,11 @@ $\\log_{{10}}(M_\\star/M_\\odot)$: {np.log10(mass):.1f}"""
         # secax.set_xlabel("Redshift")
 
         # secax.set_xticks([6, 7, 8, 10, 12, 14, 15, 20])
+
+        ax[0].set_xlim(min_x, max_x)
+        ax[0].set_ylim(min_y, max_y)
+
+        print(min_x, max_x)
 
         if save:
             if not os.path.exists(out_dir):
@@ -4364,6 +4371,7 @@ class GalaxySimulator(object):
         fixed_params: dict = None,
         photometry_to_remove=None,
         ignore_params: list = None,
+        ignore_scatter: bool = False,
     ) -> None:
         """Parameters
 
@@ -4441,6 +4449,8 @@ class GalaxySimulator(object):
             Should match filter codes in the instrument filters.
         ignore_params : list
             List of parameters which are sampled which won't be checked for use against the model.
+        ignore_scatter : bool
+            If True, ignore scatter in the empirical uncertainty model. Default is False.
 
         """
         if fixed_params is None:
@@ -4484,14 +4494,12 @@ class GalaxySimulator(object):
         self.fixed_params = fixed_params
         self.depths = depths
         self.ignore_params = ignore_params
+        self.ignore_scatter = ignore_scatter
 
         if len(photometry_to_remove) > 0:
-            filter_codes = instrument.filters.filter_codes
-            new_filters = []
-            for filter_code in filter_codes:
-                if filter_code not in photometry_to_remove:
-                    new_filters.append(filter_code)
-            instrument.filters = FilterCollection(filter_codes=new_filters)
+            self.update_photo_filters(
+                photometry_to_remove=photometry_to_remove, photometry_to_add=None
+            )
 
         if noise_models is not None:
             assert isinstance(noise_models, dict), (
@@ -4570,6 +4578,44 @@ class GalaxySimulator(object):
             + required_keys
         )
 
+    def update_photo_filters(self, photometry_to_remove=None, photometry_to_add=None):
+        """Update the photometric filters used in the simulation.
+
+        This method allows you to modify the set of photometric filters
+        used in the simulation by removing or adding specific filters.
+        It updates the instrument's filter collection accordingly.
+
+        Parameters
+        ----------
+        photometry_to_remove : list, optional
+            List of filter codes to remove from the current set of filters.
+            If None, no filters will be removed.
+        photometry_to_add : list, optional
+            List of filter codes to add to the current set of filters.
+            If None, no filters will be added.
+
+        """
+        if photometry_to_remove is None:
+            photometry_to_remove = []
+        if photometry_to_add is None:
+            photometry_to_add = []
+
+        filter_codes = self.instrument.filters.filter_codes
+        new_filters = []
+
+        # Remove specified filters
+        for filter_code in filter_codes:
+            if filter_code not in photometry_to_remove:
+                new_filters.append(filter_code)
+
+        # Add specified filters if they are not already present
+        for filter_code in photometry_to_add:
+            if filter_code not in new_filters:
+                new_filters.append(filter_code)
+
+        self.instrument.filters = FilterCollection(filter_codes=new_filters)
+        print(f"Updated filters: {self.instrument.filters.filter_codes}")
+
     @classmethod
     def from_grid(
         cls,
@@ -4647,7 +4693,12 @@ class GalaxySimulator(object):
             # Step 3 - recreate cosmology
             cosmo_mapping = model_group.attrs.get("cosmology", None)
 
-            cosmo = Cosmology.from_format(cosmo_mapping, format="yaml")
+            try:
+                cosmo = Cosmology.from_format(cosmo_mapping, format="yaml")
+            except Exception:
+                from astropy.cosmology import Planck18 as cosmo
+
+                print("Failed to load cosmology from HDF5. Using Planck18 instead.")
 
             # Step 4 - Collect sfh_model
 
@@ -4673,6 +4724,9 @@ class GalaxySimulator(object):
             em_group = model_group["EmissionModel"]
             emission_model_key = model_group.attrs.get("emission_model_key", "total")
 
+            if "emission_model_key" in kwargs:
+                emission_model_key = kwargs.pop("emission_model_key")
+
             if override_emission_model is not None:
                 emission_model = override_emission_model
 
@@ -4680,7 +4734,7 @@ class GalaxySimulator(object):
                 emission_model_name = em_group.attrs["name"]
                 import synthesizer.emission_models as em
                 import synthesizer.emission_models.attenuation as dm
-                import synthesizer.emission_models.dust as dem
+                import synthesizer.emission_models.dust.emission as dem
 
                 emission_model = getattr(em, emission_model_name, None)
 
@@ -4695,7 +4749,7 @@ class GalaxySimulator(object):
 
                     if dust_model is None:
                         raise ValueError(
-                            f"Dust model {dust_model_name} not found in synthesizer.emission_models. Cannot create GalaxySimulator."  # noqa: E501
+                            f"Dust model {dust_model_name} not found in synthesizer.emission_models.dust. Cannot create GalaxySimulator."  # noqa: E501
                         )
 
                     dust_model_params = {}
@@ -4737,7 +4791,10 @@ class GalaxySimulator(object):
                             dust_emission_model_params[key] = unyt_array(value, unit)
                         else:
                             dust_emission_model_params[key] = value
-
+                    cmb = dust_emission_model_params.pop("cmb_factor", None)
+                    dust_emission_model_params.pop("temperature_z", None)
+                    if cmb is not None:
+                        dust_emission_model_params["cmb_heating"] = cmb != 1
                     dust_emission_model = dust_emission_model(**dust_emission_model_params)
                 else:
                     dust_emission_model = None
@@ -4750,6 +4807,8 @@ class GalaxySimulator(object):
                 for key, value, unit in zip(em_keys, em_values, em_units):
                     if unit != "":
                         emission_model_params[key] = unyt_array(value, unit)
+                    elif value.isnumeric() or value.replace(".", "", 1).isdigit():
+                        emission_model_params[key] = float(value)
                     else:
                         emission_model_params[key] = value
 
@@ -4758,6 +4817,12 @@ class GalaxySimulator(object):
 
                 if dust_emission_model is not None:
                     emission_model_params["dust_emission_model"] = dust_emission_model
+
+                # get arguments from inspect of emission_model
+                sig = inspect.signature(emission_model).parameters
+                if "dust_emission" in sig and "dust_emission_model" not in sig:
+                    emission_model_params["dust_emission"] = dust_emission_model
+                    emission_model_params.pop("dust_emission_model", None)
 
                 emission_model = emission_model(
                     grid=grid,
@@ -4810,6 +4875,8 @@ class GalaxySimulator(object):
                     # need to evaluate the function
                     code = transform_group[key][()].decode("utf-8")
                     code = f"\n{code}\n"
+                    # Remove excess indentation
+                    code = inspect.cleandoc(code)
                     func = exec(code, globals(), locals())
                     func_name = code.split("def ")[-1].split("(")[0]
                     func = locals()[func_name]
@@ -4818,7 +4885,7 @@ class GalaxySimulator(object):
                         new_key = transform_group[key].attrs["new_parameter_name"]
                         param_transforms[key] = (new_key, func)
 
-            return cls(
+            dict_create = dict(
                 sfh_model=sfh_model,
                 zdist_model=zdist_model,
                 grid=grid,
@@ -4831,8 +4898,9 @@ class GalaxySimulator(object):
                 param_units=param_units,
                 param_transforms=param_transforms,
                 fixed_params=fixed_params,
-                **kwargs,
             )
+            dict_create.update(kwargs)
+            return cls(**dict_create)
 
     def simulate(self, params):
         """Simulate photometry from the given parameters.
@@ -4912,7 +4980,6 @@ class GalaxySimulator(object):
         param_names = [i for i in params.keys() if i not in self.total_possible_keys]
 
         # Check if any param names named here are in emitter param dictionry lusts
-
         found_params = []
         for key in param_names:
             found = False
@@ -5004,15 +5071,16 @@ class GalaxySimulator(object):
                 fluxes = galaxy.stars.spectra[self.emission_model_key].get_photo_fnu(
                     self.instrument.filters
                 )
-                outputs["photo_fnu"] = copy.deepcopy(fluxes.photo_fnu)
-                outputs["photo_wav"] = copy.deepcopy(fluxes.filters.pivot_lams)
+                outputs["photo_fnu"] = fluxes.photo_fnu
+                outputs["photo_wav"] = fluxes.filters.pivot_lams
 
-                fluxes = galaxy.stars.spectra[self.emission_model_key]
-                outputs["fnu"] = copy.deepcopy(fluxes.fnu)
-                # print(np.sum(np.isnan(fluxes)), np.sum(fluxes == 0))
-                outputs["fnu_wav"] = copy.deepcopy(
-                    galaxy.stars.spectra[self.emission_model_key].lam * (1 + galaxy.redshift)
-                )
+                if "fnu" in self.output_type:
+                    fluxes = galaxy.stars.spectra[self.emission_model_key]
+                    outputs["fnu"] = copy.deepcopy(fluxes.fnu)
+                    # print(np.sum(np.isnan(fluxes)), np.sum(fluxes == 0))
+                    outputs["fnu_wav"] = copy.deepcopy(
+                        galaxy.stars.spectra[self.emission_model_key].lam * (1 + galaxy.redshift)
+                    )
 
         if self.out_flux_unit == "AB":
 
@@ -5155,6 +5223,9 @@ class GalaxySimulator(object):
             The scattered fluxes and their corresponding errors.
             If depths are not provided, returns the original fluxes and None for errors.
         """
+        if self.ignore_scatter:
+            return fluxes, None
+
         if self.depths is not None:
             depths = self.depths
             if depths is None:

@@ -32,9 +32,7 @@ filter_codes = [
 filterset = FilterCollection(filter_codes=filter_codes)
 
 # Consistent wavelength grid for both SPS grids and filters
-new_wav = generate_constant_R(
-    R=300, auto_start_stop=True, filterset=filterset, max_redshift=15
-)
+new_wav = generate_constant_R(R=300, auto_start_stop=True, filterset=filterset, max_redshift=15)
 
 filterset.resample_filters(new_lam=new_wav)
 
@@ -97,9 +95,7 @@ grid = Grid(
 )
 
 # Metallicity Distributions
-Z_dists = [
-    ZDist.DeltaConstant(log10metallicity=log_z) for log_z in all_param_dict["log_zmet"]
-]
+Z_dists = [ZDist.DeltaConstant(log10metallicity=log_z) for log_z in all_param_dict["log_zmet"]]
 
 # Redshifts
 redshifts = all_param_dict["redshift"]
@@ -131,9 +127,7 @@ emission_model = PacmanEmission(
 
 sfh_name = str(sfh_type).split(".")[-1].split("'")[0]
 
-galaxy_params = {
-    "tau_v": all_param_dict["tau_v"]
-}  # pass in any other emitter parameter here
+galaxy_params = {"tau_v": all_param_dict["tau_v"]}  # pass in any other emitter parameter here
 
 name = f"BPASS_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_Chab_min_example"  # noqa: E501
 

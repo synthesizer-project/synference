@@ -1,13 +1,16 @@
+"""
+Basic model for SBIFitter
+"""
+
 import os
+
 from sbifitter import SBI_Fitter
 
 file_path = os.path.dirname(os.path.realpath(__file__))
 grid_folder = os.path.join(os.path.dirname(os.path.dirname(file_path)), "grids")
 output_folder = os.path.join(os.path.dirname(os.path.dirname(file_path)), "models")
 
-grid_path = (
-    f"""{grid_folder}/grid_BPASS_Chab_LogNormal_SFH_z=0.1_logN_4.0_Calzetti_v1.hdf5"""  # noqa: E501
-)
+grid_path = f"""{grid_folder}/grid_BPASS_Chab_LogNormal_SFH_z=0.1_logN_4.0_Calzetti_v1.hdf5"""  # noqa: E501
 
 fitter = SBI_Fitter.init_from_hdf5(
     "basic_model",
@@ -17,9 +20,9 @@ fitter = SBI_Fitter.init_from_hdf5(
 )
 
 
-fitter.create_feature_array_from_raw_photometry(extra_features=[],
-                                                normalize_method=None,
-                                                parameters_to_remove=['redshift'])
+fitter.create_feature_array_from_raw_photometry(
+    extra_features=[], normalize_method=None, parameters_to_remove=["redshift"]
+)
 
 
 fitter.run_single_sbi(

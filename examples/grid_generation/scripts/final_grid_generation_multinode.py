@@ -1,5 +1,6 @@
 # ignore warnings for readability
 "Multinode variant of the grid generation script for SBIFitter."
+
 import copy
 import os
 import sys
@@ -19,9 +20,7 @@ from synthesizer.parametric import SFH, ZDist
 from tqdm import tqdm
 from unyt import K, Myr, unyt_array
 
-
 try:
-
     from mpi4py import MPI
 
     rank = MPI.COMM_WORLD.Get_rank()  # Get the rank of the current process
@@ -32,7 +31,6 @@ except ImportError:
 print(f"Rank {rank} with {size} processes available.")
 
 from sbifitter import (
-    CombinedBasis,
     GalaxyBasis,
     calculate_beta,
     calculate_colour,
@@ -166,7 +164,7 @@ logAv = (-3, 0.7)  # Log-uniform between 0.001 and 5.0 magnitudes
 log_zmet = (-4, -1.39)  # max of grid (e.g. 0.04)
 
 seed = 42  # Seed for reproducibility
-  
+
 mask = np.zeros(Nmodels, dtype=bool)
 galaxies_per_node = Nmodels // size
 start_idx = rank * galaxies_per_node
@@ -180,6 +178,7 @@ if int(sys.argv[2]) == 1:
 
 
 batch_size = np.sum(mask) + 1
+
 
 def continuity_agebins(
     redshift,
@@ -360,7 +359,7 @@ for sfh_name, sfh_params in sfhs.items():
     # Draw samples from Latin Hypercube.
     # unlog_keys are keys which should be unlogged after drawing from the hypercube.
     # they will be renamed to not include 'log_' after drawing.
-    print(f"Drawing samples from Latin Hypercube.")
+    print("Drawing samples from Latin Hypercube.")
     all_param_dict = draw_from_hypercube(
         full_params, Nmodels, rng=seed, unlog_keys=["log_Av"] + sfh_params.get("unlog_keys", [])
     )  # noqa: E501
@@ -372,7 +371,10 @@ for sfh_name, sfh_params in sfhs.items():
         new_lam=new_wav,
     )
     # Metallicity
-    Z_dists = [ZDist.DeltaConstant(log10metallicity=log_z) for log_z in tqdm(all_param_dict["log_zmet"], desc="Creating ZDist", disable=rank != 0)]
+    Z_dists = [
+        ZDist.DeltaConstant(log10metallicity=log_z)
+        for log_z in tqdm(all_param_dict["log_zmet"], desc="Creating ZDist", disable=rank != 0)
+    ]
 
     # Redshifts
     redshifts = np.array(all_param_dict["redshift"])
@@ -398,12 +400,14 @@ for sfh_name, sfh_params in sfhs.items():
                     logmass=logmass,
                 )
                 for j in range(Nparam_SFH):
-                    all_param_dict[f"sfh_quantile_{100 * (j + 1) / (Nparam_SFH + 1):.0f}"][i] = tx[j]
+                    all_param_dict[f"sfh_quantile_{100 * (j + 1) / (Nparam_SFH + 1):.0f}"][i] = tx[
+                        j
+                    ]
             else:
                 sfh = None
             sfh_models.append(sfh)
             # Reassign parameters
-            
+
         full_params.pop("ssfr", None)  # remove ssfr from full_params
         # Add logSFR to all_param_dict
         all_param_dict["log_sfr"] = np.array(logsfrs)
@@ -441,7 +445,7 @@ for sfh_name, sfh_params in sfhs.items():
     dust_emission = Greybody(temperature=40 * K, emissivity=1.5)
 
     # Essentially CF00 with explicit fesc and fesc_ly_alpha parameters.
-    print(f"Creating emission model.")
+    print("Creating emission model.")
     emission_model = PacmanEmission(
         grid=grid,
         tau_v="tau_v",
@@ -468,13 +472,14 @@ for sfh_name, sfh_params in sfhs.items():
     def make_db_tuple(params):
         nquant = 0
         for key in params:
-            if key.startswith('sfh_quantile_'):
+            if key.startswith("sfh_quantile_"):
                 nquant += 1
 
-        mass_quantiles = np.linspace(0,1,nquant+2)[1:-1]  # Exclude the 0 and 1 quantiles
+        mass_quantiles = np.linspace(0, 1, nquant + 2)[1:-1]  # Exclude the 0 and 1 quantiles
 
-        db_tuple = [params['log_mass'], params['log_sfr'], nquant] + \
-                    [params[f'sfh_quantile_{int(q*100)}'] for q in mass_quantiles]
+        db_tuple = [params["log_mass"], params["log_sfr"], nquant] + [
+            params[f"sfh_quantile_{int(q * 100)}"] for q in mass_quantiles
+        ]
         return db_tuple  # Return a tuple of (log_mass, SFR, nquant, [quantiles...])
 
     def db_sf_convert(param, param_dict, Nparam_SFH=3):
@@ -535,7 +540,7 @@ for sfh_name, sfh_params in sfhs.items():
         log_stellar_masses=all_param_dict["log_masses"],
     )
 
-    ''' for i in range(10):
+    """ for i in range(10):
         try:
             basis.plot_galaxy(
                 idx=i,
@@ -544,7 +549,7 @@ for sfh_name, sfh_params in sfhs.items():
             )
         except ValueError as e:
             print(f"Error plotting galaxy {i}: {e}")
-            continue'''
+            continue"""
 
     multinode = True if sys.argv[2] == "0" else False  # Check if running in multinode mode
     compile_grid = True if sys.argv[2] == "1" else False  # Check if running in multinode mode
@@ -573,11 +578,11 @@ for sfh_name, sfh_params in sfhs.items():
         batch_size=batch_size,
         parameter_transforms_to_save={
             "db_tuple": make_db_tuple,  # Save the Dense Basis SFH tuple
+            "tau_v": lambda x: x["Av"] / av_to_tau_v,  # Save Av instead of tau_v
         },
         compile_grid=compile_grid,
-        multi_node=multinode
+        multi_node=multinode,
     )
-
 
 
 """ Graveyard

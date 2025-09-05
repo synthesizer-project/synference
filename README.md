@@ -4,7 +4,7 @@
 [![License: GPLv3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 <center>
 
-<img src="gfx/sbi-logo-cropped-no-bkg.png" alt="logo" width="100"/><h1>SBIFitter</h1>
+<img src="docs/source/gfx/sbi-logo-cropped-no-bkg.png" alt="logo" width="100"/><h1>SBIFitter</h1>
 
 </center>
 

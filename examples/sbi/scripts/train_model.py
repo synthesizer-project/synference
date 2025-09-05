@@ -250,7 +250,7 @@ def main_task(args: Args) -> None:
         train_params = dict(
             study_name=f"{args.model_name}{args.name_append}",
             suggested_hyperparameters={
-                "learning_rate": [1e-5, 1e-3], # 1e-6 makes models very slow to train!
+                "learning_rate": [1e-5, 1e-3],  # 1e-6 makes models very slow to train!
                 "hidden_features": [12, 500],
                 num_name: [2, 30],
                 "training_batch_size": [32, 128],
