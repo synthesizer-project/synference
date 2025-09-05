@@ -152,7 +152,7 @@ from mpi4py import MPI
 
 av_to_tau_v = 1.086  # conversion factor from Av to tau_v for the dust attenuation curve
 overwrite = False  # whether to overwrite existing grids
-Nmodels = 300  # number of models to generate
+Nmodels = 100_000  # number of models to generate
 
 redshift = (0.01, 14)
 masses = (4, 12)
@@ -332,7 +332,7 @@ for sfh_name, sfh_params in sfhs.items():
 
     name = f"BPASS_Chab_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_Calzetti_v3_multinode"  # noqa: E501
     print(f"{out_dir}/grid_{name}.hdf5")
-    if os.path.exists(f"{out_dir}/v2/grid_{name}.hdf5") and not overwrite:
+    if os.path.exists(f"{out_dir}/grid_{name}.hdf5") and not overwrite:
         print(f"Grid {name} already exists, skipping.")
         continue
 
@@ -385,26 +385,30 @@ for sfh_name, sfh_params in sfhs.items():
         tx_alpha = sfh_params["tx_alpha"]  # tx_alpha for the Dense Basis SFH
         sfh_models = []
         logsfrs = []
+
+        skip = os.path.exists(f"{out_dir}/sps_{name}.hdf5") and not overwrite
+
         for i in tqdm(range(Nmodels), desc="Generating SFH models", disable=rank != 0):
-            z = all_param_dict["redshift"][i]
-            logmass = all_param_dict["log_masses"][i]
-            logssfr = all_param_dict["ssfr"][i]
-            logsfr = logmass + logssfr
-            logsfrs.append(logsfr)
-            if mask[i]:
-                sfh, tx = generate_random_DB_sfh(
-                    Nparam=Nparam_SFH,
-                    tx_alpha=tx_alpha,
-                    redshift=z,
-                    logsfr=logsfr,
-                    logmass=logmass,
-                )
-                for j in range(Nparam_SFH):
-                    all_param_dict[f"sfh_quantile_{100 * (j + 1) / (Nparam_SFH + 1):.0f}"][i] = tx[
-                        j
-                    ]
-            else:
-                sfh = None
+            if not skip or i == 0:
+                z = all_param_dict["redshift"][i]
+                logmass = all_param_dict["log_masses"][i]
+                logssfr = all_param_dict["ssfr"][i]
+                logsfr = logmass + logssfr
+                logsfrs.append(logsfr)
+                if mask[i] or skip:
+                    sfh, tx = generate_random_DB_sfh(
+                        Nparam=Nparam_SFH,
+                        tx_alpha=tx_alpha,
+                        redshift=z,
+                        logsfr=logsfr,
+                        logmass=logmass,
+                    )
+                    for j in range(Nparam_SFH):
+                        all_param_dict[f"sfh_quantile_{100 * (j + 1) / (Nparam_SFH + 1):.0f}"][
+                            i
+                        ] = tx[j]
+                else:
+                    sfh = None
             sfh_models.append(sfh)
             # Reassign parameters
 
