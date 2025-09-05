@@ -227,7 +227,7 @@ basis = GalaxyBasis(
 def z_to_max_age(params, max_redshift=20):
     """Convert redshift to maximum age of the SFH at that redshift."""
     z = params["redshift"]
-    from cosmology import Planck18 as cosmo
+    from astropy.cosmology import Planck18 as cosmo
 
     age = cosmo.age(z) - cosmo.age(max_redshift)
     age = age.to_value("Myr") * Myr

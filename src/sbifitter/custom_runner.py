@@ -277,11 +277,10 @@ class SBICustomRunner(SBIRunner):
         )
         if isinstance(final_estimator, list):
             final_estimator = final_estimator[0]
-        logger.info(final_estimator)
+        
         final_estimator = final_estimator(batch_x=x_train, batch_theta=theta_train)
         final_estimator.to(self.device)
-        logger.info(final_estimator, type(final_estimator), final_estimator.__dict__)
-
+        
         optimizer = (Adam if best_params["optimizer_choice"] == "Adam" else AdamW)(
             final_estimator.parameters(), lr=best_params["learning_rate"]
         )
@@ -369,15 +368,31 @@ class SBICustomRunner(SBIRunner):
 
         if metric_name in ["log_prob", "loss", "log_prob-pit"]:
             total_log_prob = 0.0
-            with torch.no_grad():
-                for x_batch, theta_batch in tqdm(val_loader, desc=f"Trial {trial.number}: Calculating {metric_name} for {len(x_val)} samples in {len(val_loader)} batches"):
-                    if theta_batch.dim() == 2:
-                        theta_batch = theta_batch.unsqueeze(0)
-                    logger.info(posterior.log_prob_batched)
-                    #Wrong shape? /cosma/apps/dp276/dc-harv3/venv_simformer/lib/python3.12/site-packages/sbi/samplers/rejection/rejection.py
-                    # /cosma/apps/dp276/dc-harv3/venv_simformer/lib/python3.12/site-packages/sbi/inference/posteriors/direct_posterior.py
-                    log_prob = posterior.log_prob_batched(theta_batch, x=x_batch, leakage_correction_params={'show_progress_bars': logging.getLogger().level <= logging.INFO})
-                    total_log_prob += log_prob.sum().item()
+            #with torch.no_grad():
+            '''for x_batch, theta_batch in tqdm(val_loader, desc=f"Trial {trial.number}: Calculating {metric_name} for {len(x_val)} samples in {len(val_loader)} batches"):
+                if theta_batch.dim() == 2:
+                    theta_batch = theta_batch.unsqueeze(0)
+                logger.info(posterior.log_prob_batched)
+                #Wrong shape? /cosma/apps/dp276/dc-harv3/venv_simformer/lib/python3.12/site-packages/sbi/samplers/rejection/rejection.py
+                # /cosma/apps/dp276/dc-harv3/venv_simformer/lib/python3.12/site-packages/sbi/inference/posteriors/direct_posterior.py
+                logger.info(f'log_prob {theta_batch.shape}, {x_batch.shape}')
+                log_prob = posterior.log_prob_batched(theta_batch, x=x_batch, leakage_correction_params={'show_progress_bars': logging.getLogger().level <= logging.INFO})
+                
+                total_log_prob += log_prob.sum().item()
+            '''
+
+            # alternate with pure log_prob, not batched
+            val_loader = data.DataLoader(val_dataset, shuffle=False)
+            for x_i, theta_i in tqdm(val_loader, desc=f"Trial {trial.number}: Calculating {metric_name} for {len(x_val)} samples"):
+                # add a batch dimension
+                if theta_i.dim() == 1:
+                    theta_i = theta_i.unsqueeze(0)
+                if x_i.dim() == 1:
+                    x_i = x_i.unsqueeze(0)
+                #logger.info(f'log_prob {theta_i.shape}, {x_i.shape}')
+                log_prob = posterior.log_prob(theta_i, x=x_i, leakage_correction_params={'show_progress_bars': logging.getLogger().level <= logging.INFO, 'num_rejection_samples': 1000})
+                total_log_prob += log_prob.sum().item()
+
             mean_log_prob = total_log_prob / len(x_val)
 
             if metric_name == "log_prob":
@@ -700,10 +715,10 @@ class SBICustomRunner(SBIRunner):
 
             if isinstance(density_estimator_builder, list):
                 density_estimator_builder = density_estimator_builder[0]
-            logger.info(f"Density Estimator: {density_estimator_builder}, type: {type(density_estimator_builder)}, params: {density_estimator_builder.__dict__}")
+            logger.debug(f"Density Estimator: {density_estimator_builder}, type: {type(density_estimator_builder)}, params: {density_estimator_builder.__dict__}")
             density_estimator = density_estimator_builder(batch_x=x_train, batch_theta=theta_train)
             density_estimator.to(self.device)
-            logger.info(f'{density_estimator}, type: {type(density_estimator)}, params: {density_estimator.__dict__}')
+            logger.debug(f'{density_estimator}, type: {type(density_estimator)}, params: {density_estimator.__dict__}')
             
             optimizer = (Adam if optimizer_name == "Adam" else AdamW)(
                 density_estimator.parameters(), lr=lr
