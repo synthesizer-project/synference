@@ -139,201 +139,120 @@ class SBICustomRunner(SBIRunner):
 
     def __call__(
         self, loader: _BaseLoader, validation_loader: Optional[_BaseLoader] = None, seed: int = None
-    ) -> "EnsemblePosterior":
-        """Run the custom SBI inference with Optuna hyperparameter optimization.
+    ) -> Tuple[Optional[EnsemblePosterior], List[Dict]]:
+        """
+        Run SBI inference.
+
+        If `train_args['skip_optimization']` is True, it trains a single model with fixed parameters.
+        Otherwise, it performs Optuna-based hyperparameter optimization.
 
         Args:
             loader (_BaseLoader): The data loader containing training data.
             validation_loader (_BaseLoader, optional): The data loader containing validation data.
-                If not provided, it will use the training loader for validation.
             seed (int, optional): Random seed for reproducibility. Defaults to None.
+        
+        Returns:
+            A tuple containing the trained posterior and a list of summary dictionaries.
         """
         if seed is not None:
             torch.manual_seed(seed)
-            optuna.samplers.TPESampler(seed=seed)
-
-        optuna_config = self.train_args["optuna"]
+            if "optuna" in self.train_args:
+                optuna.samplers.TPESampler(seed=seed)
 
         x_train = torch.from_numpy(loader.get_all_data()).float().to(self.device)
         theta_train = torch.from_numpy(loader.get_all_parameters()).float().to(self.device)
+        
+        final_summary = {}
+        trained_estimator = None
 
-        x_val, theta_val = None, None
-        if (
-            validation_loader is None
-            and "objective" in optuna_config
-            and "data_config" in optuna_config["objective"]
-        ):
-            val_data_config_path = optuna_config["objective"]["data_config"]
-            validation_loader = StaticNumpyLoader.from_config(val_data_config_path)
-        if validation_loader:
-            x_val = torch.from_numpy(validation_loader.get_all_data()).float().to(self.device)
-            theta_val = (
-                torch.from_numpy(validation_loader.get_all_parameters()).float().to(self.device)
-            )
-        study_direction = optuna_config["study"].get("direction", "minimize")
-        objective_fn, fixed_params = self._create_objective(x_train, theta_train, x_val, theta_val,
-                                              study_direction)
-
-        logger.info("Starting Optuna hyperparameter search...")
-        if "pruner" in optuna_config:
-            pruner_options = {
-                "Hyperband": optuna.pruners.HyperbandPruner,
-                "Median": optuna.pruners.MedianPruner,
-                "SuccessiveHalving": optuna.pruners.SuccessiveHalvingPruner,
-                "None": optuna.pruners.NopPruner,
-                "NoPruner": optuna.pruners.NopPruner,
-                "Threshold": optuna.pruners.ThresholdPruner,
-                "Patient": optuna.pruners.PatientPruner,
-                "Percentile": optuna.pruners.PercentilePruner,
-            }
-        if optuna_config["pruner"]["type"] not in pruner_options:
-            raise ValueError(
-                f"Pruner type '{optuna_config['pruner']['type']}' not recognized. "
-                f"Available options: {list(pruner_options.keys())}"
-            )
-
-        pruner_class = optuna_config["pruner"].pop("type")
-        pruner = pruner_options[pruner_class](**optuna_config["pruner"])
-
-        study_config = optuna_config["study"]
-        url = study_config.pop("storage", None)
-
-        retries = 5
-        import time
-        from sqlalchemy.exc import ProgrammingError
-        if '://' in url:
-            for attempt in range(retries):
-                try:
-                    storage = (
-                        optuna.storages.RDBStorage(url=url,
-                                                heartbeat_interval=study_config.pop("heartbeat_interval", 60),
-                                                grace_period=study_config.pop("grace_period", 120),
-                                                engine_kwargs={
-                                                'pool_pre_ping': True,
-                                                'pool_recycle': 3600,
-                                                'connect_args': {'sslmode': 'disable'} if 'cockroachdb://' in url else {}
-                                            })
-                        if url else None
-                    )
-                    logger.info(f"Successfully connected to Optuna storage on attempt {attempt + 1}")
-                    break
-
-                
-                except ProgrammingError as e:
-                    if "already exists" in str(e).lower() or "duplicate" in str(e).lower():
-                        logger.warning(f"Schema creation race condition detected (attempt {attempt + 1})")
-
-                        if attempt < retries - 1:
-                            # Wait with exponential backoff + jitter
-                            wait_time = (2 ** attempt) + np.random.uniform(0, 1)
-                            logger.info(f"Waiting {wait_time:.2f} seconds before retry...")
-                            time.sleep(wait_time)
-                            continue
-                        
-                    else:
-                        raise e
-                except Exception as e:
-                    if attempt == retries - 1:
-                        raise e
-                    wait_time = (2 ** attempt) + np.random.uniform(0, 1)
-                    time.sleep(wait_time)
-        else:
-            from optuna.storages import JournalStorage
-            from optuna.storages.journal import JournalFileBackend
-            storage = JournalStorage(JournalFileBackend(url))
-
+        if self.train_args.get("skip_optimization", False):
+            logger.info("Skipping hyperparameter optimization. Training a single model with fixed parameters.")
             
-        study = optuna.create_study(pruner=pruner, storage=storage, **study_config)
-        study.optimize(objective_fn, n_trials=optuna_config["n_trials"])
+            fixed_params = self.train_args.get("fixed_params")
+            if not fixed_params or "model_choice" not in fixed_params:
+                raise ValueError(
+                    "`skip_optimization` is True, but `fixed_params` (including 'model_choice') "
+                    "are not defined in `train_args`."
+                )
 
-        best_params = study.best_trial.params
-        
-        logger.info(f"\nBest trial is {study.best_trial.number}. Objective value: {study.best_trial.value:.4f}")
-        logger.info(f"Best hyperparameters: {best_params}")
+            study_direction = self.train_args.get("optuna", {}).get("study", {}).get("direction", "minimize")
 
-        if "build_final_model" in optuna_config and not optuna_config["build_final_model"]:
-            return None, []
+            trained_estimator, final_summary = self._build_and_train_model(
+                params=fixed_params,
+                x_train=x_train,
+                theta_train=theta_train,
+                study_direction=study_direction
+            )
+            final_summary["best_params"] = fixed_params
 
-        best_params.update(fixed_params)
-        logger.info("\nTraining final model with best hyperparameters...")
-        final_model_name = best_params["model_choice"]
+        else:
+            optuna_config = self.train_args["optuna"]
+            x_val, theta_val = None, None
 
-        base_model_config = next(
-            (cfg for cfg in self.net_configs if cfg["model"] == final_model_name), None
-        )
-        if base_model_config is None:
-            raise ValueError(f"Base config for model '{final_model_name}' not found.")
+            if (
+                validation_loader is None
+                and "objective" in optuna_config
+                and "data_config" in optuna_config["objective"]
+            ):
+                val_data_config_path = optuna_config["objective"]["data_config"]
+                validation_loader = StaticNumpyLoader.from_config(val_data_config_path)
+            if validation_loader:
+                x_val = torch.from_numpy(validation_loader.get_all_data()).float().to(self.device)
+                theta_val = (
+                    torch.from_numpy(validation_loader.get_all_parameters()).float().to(self.device)
+                )
+            
+            study_direction = optuna_config["study"].get("direction", "minimize")
+            objective_fn, fixed_params_from_obj = self._create_objective(x_train, theta_train, x_val, theta_val, study_direction)
 
-        final_model_params = base_model_config.copy()
-        trial_model_params = {
-            p.split("_", 1)[1]: v for p, v in best_params.items() if p.startswith(final_model_name)
-        }
-        final_model_params.update(trial_model_params)
+            logger.info("Starting Optuna hyperparameter search...")
+            pruner_options = {
+                "Hyperband": optuna.pruners.HyperbandPruner, "Median": optuna.pruners.MedianPruner,
+                "SuccessiveHalving": optuna.pruners.SuccessiveHalvingPruner, "None": optuna.pruners.NopPruner,
+                "NoPruner": optuna.pruners.NopPruner, "Threshold": optuna.pruners.ThresholdPruner,
+                "Patient": optuna.pruners.PatientPruner, "Percentile": optuna.pruners.PercentilePruner,
+            }
+            if optuna_config["pruner"]["type"] not in pruner_options:
+                raise ValueError(f"Pruner type '{optuna_config['pruner']['type']}' not recognized.")
 
-        final_model_params.pop("repeats", None)  # Ensure we build a single model for the trial
+            pruner_class = optuna_config["pruner"].pop("type")
+            pruner = pruner_options[pruner_class](**optuna_config["pruner"])
+            study_config = optuna_config["study"]
+            url = study_config.pop("storage", None)
+            storage = self._setup_optuna_storage(url, study_config) if url else None
+            
+            study = optuna.create_study(pruner=pruner, storage=storage, **study_config)
+            study.optimize(objective_fn, n_trials=optuna_config["n_trials"])
 
-        final_estimator = load_nde_sbi(
-            self.engine, embedding_net=self.embedding_net, **final_model_params
-        )
-        if isinstance(final_estimator, list):
-            final_estimator = final_estimator[0]
-        
-        final_estimator = final_estimator(batch_x=x_train, batch_theta=theta_train)
-        final_estimator.to(self.device)
-        
-        optimizer = (Adam if best_params["optimizer_choice"] == "Adam" else AdamW)(
-            final_estimator.parameters(), lr=best_params["learning_rate"]
-        )
+            best_params = study.best_trial.params
+            best_params.update(fixed_params_from_obj)
+            
+            logger.info(f"\nBest trial is {study.best_trial.number}. Objective value: {study.best_trial.value:.4f}")
+            logger.info(f"Best hyperparameters: {best_params}")
 
-        dataset = data.TensorDataset(theta_train, x_train)
-        num_train = int((1 - self.train_args.get("validation_fraction", 0.9)) * len(dataset))
-        train_indices, val_indices = torch.utils.data.random_split(
-            range(len(dataset)), [num_train, len(dataset) - num_train]
-        )
-        train_loader = data.DataLoader(
-            dataset,
-            batch_size=min(best_params["training_batch_size"], len(train_indices)),
-            sampler=SubsetRandomSampler(train_indices.indices),
-            drop_last=True,
-        )
-        val_loader = data.DataLoader(
-            dataset,
-            batch_size=min(best_params["training_batch_size"], len(val_indices)),
-            sampler=SubsetRandomSampler(val_indices.indices),
-            drop_last=True,
-        )
+            if "build_final_model" in optuna_config and not optuna_config["build_final_model"]:
+                return None, []
 
-        stop_after_epochs = best_params.get("stop_after_epochs", 20)
+            logger.info("\nTraining final model with best hyperparameters...")
+            trained_estimator, final_summary = self._build_and_train_model(
+                params=best_params,
+                x_train=x_train,
+                theta_train=theta_train,
+                study_direction=study_direction
+            )
+            final_summary["best_params"] = best_params
 
-        trained_estimator, final_loss, final_summary = self._train_model(
-            final_estimator,
-            optimizer,
-            train_loader,
-            val_loader,
-            study_direction=study_direction,
-            stop_after_epochs=stop_after_epochs,
-        )
-
+        final_loss = final_summary["best_validation_loss"][0]
         if "training_log_probs" in final_summary:
             final_summary["training_loss"] = [-1.0 * x for x in final_summary["training_log_probs"]]
-            final_summary["validation_loss"] = [
-                -1.0 * x for x in final_summary["validation_log_probs"]
-            ]
-            final_summary["best_validation_loss"] = [
-                -1.0 * x for x in final_summary["best_validation_log_prob"]
-            ]
+            final_summary["validation_loss"] = [-1.0 * x for x in final_summary["validation_log_probs"]]
+            final_summary["best_validation_loss"] = [-1.0 * x for x in final_summary["best_validation_log_prob"]]
         else:
             final_summary["training_log_probs"] = [-1.0 * x for x in final_summary["training_loss"]]
-            final_summary["validation_log_probs"] = [
-                -1.0 * x for x in final_summary["validation_loss"]
-            ]
-            final_summary["best_validation_log_prob"] = [
-                -1.0 * x for x in final_summary["best_validation_loss"]
-            ]
+            final_summary["validation_log_probs"] = [-1.0 * x for x in final_summary["validation_loss"]]
+            final_summary["best_validation_log_prob"] = [-1.0 * x for x in final_summary["best_validation_loss"]]
 
-        final_summary["best_params"] = best_params
-        logger.info(f"\nFinal model trained. Best training validation loss: {final_loss:.4f}")
-        logger.info(type(trained_estimator), trained_estimator.__dict__)
+        logger.info(f"\nFinal model trained. Best validation loss: {final_loss:.4f}")
         posterior = DirectPosterior(posterior_estimator=trained_estimator, prior=self.prior)
         posterior = EnsemblePosterior(
             posteriors=[posterior],
@@ -346,6 +265,128 @@ class SBICustomRunner(SBIRunner):
         if self.out_dir:
             self._save_models(posterior, [final_summary])
         return posterior, [final_summary]
+    
+    def _build_and_train_model(
+        self,
+        params: Dict,
+        x_train: torch.Tensor,
+        theta_train: torch.Tensor,
+        study_direction: str,
+    ) -> Tuple[nn.Module, Dict]:
+        """Builds, trains, and returns a single density estimator based on the given parameters."""
+        
+        model_name = params["model_choice"]
+        logger.info(f"Building and training model: '{model_name}'")
+
+        base_model_config = next(
+            (cfg for cfg in self.net_configs if cfg["model"] == model_name), None
+        )
+        if base_model_config is None:
+            raise ValueError(f"Base config for model '{model_name}' not found.")
+
+        model_params = base_model_config.copy()
+        
+        trial_model_params = {
+            p.split("_", 1)[1]: v for p, v in params.items() if p.startswith(model_name)
+        }
+        model_params.update(trial_model_params)
+        
+        valid_model_keys = base_model_config.keys()
+        non_prefixed_params = {k: v for k, v in params.items() if k in valid_model_keys}
+        model_params.update(non_prefixed_params)
+
+        model_params.pop("repeats", None)
+
+        estimator_builder = load_nde_sbi(
+            self.engine, embedding_net=self.embedding_net, **model_params
+        )
+        if isinstance(estimator_builder, list):
+            estimator_builder = estimator_builder[0]
+        
+        estimator = estimator_builder(batch_x=x_train, batch_theta=theta_train)
+        estimator.to(self.device)
+        
+        optimizer_name = params.get("optimizer_choice", "Adam")
+        optimizer = (Adam if optimizer_name == "Adam" else AdamW)(
+            estimator.parameters(), lr=params["learning_rate"]
+        )
+
+        batch_size = params.get("training_batch_size", 32)
+        dataset = data.TensorDataset(theta_train, x_train)
+        
+        validation_fraction = self.train_args.get("validation_fraction", 0.1)
+        num_val = int(validation_fraction * len(dataset))
+        num_train = len(dataset) - num_val
+        
+        train_indices, val_indices = torch.utils.data.random_split(
+            range(len(dataset)), [num_train, num_val]
+        )
+        
+        train_loader = data.DataLoader(
+            dataset,
+            batch_size=min(batch_size, len(train_indices.indices)),
+            sampler=SubsetRandomSampler(train_indices.indices),
+            drop_last=len(train_indices.indices) > batch_size
+        )
+        val_loader = data.DataLoader(
+            dataset,
+            batch_size=min(batch_size, len(val_indices.indices)),
+            sampler=SubsetRandomSampler(val_indices.indices),
+            drop_last=len(val_indices.indices) > batch_size
+        )
+
+        stop_after_epochs = params.get("stop_after_epochs", 20)
+        clip_max_norm = params.get("clip_max_norm", 5.0)
+
+        trained_estimator, _, summary = self._train_model(
+            estimator,
+            optimizer,
+            train_loader,
+            val_loader,
+            study_direction=study_direction,
+            stop_after_epochs=stop_after_epochs,
+            clip_max_norm=clip_max_norm
+        )
+        
+        return trained_estimator, summary
+
+    def _setup_optuna_storage(self, url: str, study_config: Dict):
+        """Sets up the Optuna storage backend with retries for database connections."""
+        if '://' in url:
+            from sqlalchemy.exc import ProgrammingError
+            retries = 5
+            for attempt in range(retries):
+                try:
+                    storage = optuna.storages.RDBStorage(
+                        url=url,
+                        heartbeat_interval=study_config.pop("heartbeat_interval", 60),
+                        grace_period=study_config.pop("grace_period", 120),
+                        engine_kwargs={
+                            'pool_pre_ping': True, 'pool_recycle': 3600,
+                            'connect_args': {'sslmode': 'disable'} if 'cockroachdb://' in url else {}
+                        }
+                    )
+                    logger.info(f"Successfully connected to Optuna storage on attempt {attempt + 1}")
+                    return storage
+                except ProgrammingError as e:
+                    if "already exists" in str(e).lower() or "duplicate" in str(e).lower():
+                        logger.warning(f"Schema creation race condition detected (attempt {attempt + 1})")
+                        if attempt < retries - 1:
+                            wait_time = (2 ** attempt) + np.random.uniform(0, 1)
+                            logger.info(f"Waiting {wait_time:.2f} seconds before retry...")
+                            time.sleep(wait_time)
+                            continue
+                    else:
+                        raise e
+                except Exception as e:
+                    if attempt == retries - 1:
+                        raise e
+                    wait_time = (2 ** attempt) + np.random.uniform(0, 1)
+                    time.sleep(wait_time)
+            raise ConnectionError("Failed to connect to Optuna storage after multiple retries.")
+        else:
+            from optuna.storages import JournalStorage, JournalFileBackend
+            return JournalStorage(JournalFileBackend(url))
 
 
     def _calculate_objective_metric(
