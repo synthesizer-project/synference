@@ -1,3 +1,10 @@
+# Custom
+examples/plots/*.png
+docs/source/_autosummary
+docs/source/auto_examples/
+docs/source/gen_modules/
+docs/source/sg_execution_times.rst
+
 # Python-generated files
 __pycache__/
 *.py[oc]

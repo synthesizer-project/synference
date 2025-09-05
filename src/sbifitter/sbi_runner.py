@@ -3891,7 +3891,278 @@ class SBI_Fitter:
             **model_args,
         )
 
-    def recreate_simulator_from_grid(self, set_self=True, **kwargs):
+    def fit_observation_using_sampler(
+        self,
+        observation: np.ndarray,
+        override_prior_ranges: dict = {},
+        sampler: str = "dynesty",
+        truths: np.ndarray = None,
+        min_flux_error: float = 0.0,
+        interpolate_grid: bool = False,
+        time_loglikelihood: bool = False,
+        out_dir: str = f"{code_path}/models/name/nested_logs/",
+        sampler_kwargs: dict = dict(
+            nlive=500, bound="multi", sample="rwalk", update_interval=0.6, walks=25
+        ),
+    ) -> None:
+        """Fit the observation using the Dynesty sampler.
+
+        Args:
+            observation: The observed data to fit.
+            override_prior_ranges: Dictionary of prior ranges to
+                override the default ranges.
+            sampler: The sampler to use. Currently 'dynesty', 'nautilus ' or 'ultranest'.
+            truths: The true parameter values for the observation, if known.
+            min_flux_error: Minimum flux error added in quadrature to the observation errors.
+            interpolate_grid: Whether to recreate the simulator using interpolation.
+            sampler_kwargs: Additional keyword arguments to pass to the sampler.
+            out_dir: directory for outputs.
+            time_loglikelihood: whether to print execution times for log likelhood calls.
+
+        Returns:
+            The result of the fitting.
+
+        """
+        if not self.has_simulator and not interpolate_grid:
+            self.recreate_simulator_from_grid(set_self=True)
+
+            if not self.has_simulator:
+                raise ValueError("Simulator must be set to fit the observation.")
+
+        if not hasattr(self, "_prior"):
+            raise ValueError("Prior must be set to fit the observation.")
+
+        assert len(observation.shape) == 1, "Observation must be a 1D array."
+        assert len(observation) == len(self.feature_names), (
+            "Observation must have the same length as the number of features: "
+            f"{len(self.feature_names)}"
+        )
+
+        if out_dir is not None:
+            out_dir = out_dir.replace("name", self.name)
+            if not os.path.exists(out_dir):
+                os.makedirs(out_dir)
+
+        # Split observation into photometry and errors if errors are included
+        # treat everything as numpy array for dynesty
+        observation = np.array(observation)
+        phot_obs = []
+        phot_err = []
+        for i, name in enumerate(self.feature_names):
+            if name in self.feature_array_flags.get("error_names", []):
+                phot_err.append(observation[i])
+            if name in self.feature_array_flags.get("raw_observation_names", []):
+                phot_obs.append(observation[i])
+
+        phot_obs = np.array(phot_obs)
+        phot_err = np.array(phot_err) if len(phot_err) > 0 else None
+
+        # assume phot_units are self.feature_array_flags["normed_flux_units"]
+        # convert to nJy if needed
+
+        if self.feature_array_flags.get("normed_flux_units", "AB") == "AB":
+            # Convert AB to nJy
+            phot_obs = 3631e9 * 10 ** (-0.4 * phot_obs)
+            if phot_err is not None:
+                phot_err = (phot_obs * phot_err * np.log(10)) / 2.5
+
+        if phot_err is not None and min_flux_error > 0.0:
+            phot_err = np.sqrt(phot_err**2 + min_flux_error**2)
+
+        # Convert the tensor prior to a dynesty prior function
+        # Define a function to transform from the unit cube `u` to our prior `p`.
+        prior = self._prior
+        if prior is None:
+            prior = self.create_priors(verbose=True, override_prior_ranges=override_prior_ranges)
+        low = prior.base_dist.low.cpu().numpy()
+        high = prior.base_dist.high.cpu().numpy()
+
+        def dynesty_prior(u):
+            """Transform from the unit cube to the prior."""
+            return low + (high - low) * u
+
+        if interpolate_grid:
+            from scipy.spatial import cKDTree
+
+            # Just need photometry grid and parameter grid.
+            phot = self.raw_observation_grid[
+                [self.feature_names.index(name) for name in self.raw_observation_names]
+            ]  # noqa: E501
+            param = self.fitted_parameter_array
+
+            def simulator_func(theta):
+                """Interpolate the photometry grid to the parameter grid."""
+                tree = cKDTree(param)
+                dist, idx = tree.query(theta, k=1)
+                return phot[:, idx]
+
+            self.simulator = simulator_func
+
+        else:
+            self.simulator.output_type = ["photo_fnu"]
+            self.simulator.out_flux_unit = "nJy"
+            self.simulator.ignore_scatter = True
+
+            filters_to_remove = [
+                f for f in self.raw_observation_names if f not in self.feature_names
+            ]
+            self.simulator.update_photo_filters(
+                photometry_to_remove=filters_to_remove, photometry_to_add=None
+            )
+
+            assert len(phot_obs) == len(self.simulator.instrument.filters), (
+                f"Observation length {len(phot_obs)} does not match number of filters in simulator {len(self.simulator.instrument.filters)}."  # noqa: E501
+            )
+
+            assert all(
+                self.simulator.instrument.filters.filter_codes
+                == self.feature_array_flags.get("raw_observation_names", [])
+            ), (  # noqa: E501
+                "Simulator filters do not match feature array raw observation names."
+            )
+
+        # print('Phot:', phot_obs)
+        # print('Phot Err:', phot_err)
+
+        # print('SNR:', phot_obs/phot_err)
+
+        def log_likelihood(theta):
+            """Calculate the log likelihood of the observation given the parameters."""  #
+            if time_loglikelihood:
+                start_time = datetime.now()
+            sim = self.simulator(theta)
+            # Assuming Gaussian errors with sigma=1 for simplicity
+            if phot_err is not None and len(phot_err) == len(phot_obs):
+                chi2 = np.sum(((phot_obs - sim) / phot_err) ** 2)
+            else:
+                chi2 = np.sum((phot_obs - sim) ** 2)
+
+            loglike = -0.5 * chi2
+
+            if not np.isfinite(loglike):
+                raise ValueError("Non-finite log likelihood for theta: ", theta)
+
+            if time_loglikelihood:
+                end_time = datetime.now()
+                elapsed_time = end_time - start_time
+                print(f"Time to compute log likelihood: {elapsed_time}")
+
+            return loglike
+
+        import dynesty
+
+        ndim = len(self.fitted_parameter_names)
+
+        """
+        import dill
+        import hickle
+        dynesty.utils.pickle_module = hickle
+
+        with dynesty.pool.Pool(n_proc, loglike=log_likelihood,
+                                prior_transform=dynesty_prior) as pool:
+        """
+
+        if sampler.lower() == "dynesty":
+            print("Using Dynesty sampler.")
+            sampler = dynesty.NestedSampler(log_likelihood, dynesty_prior, ndim, **sampler_kwargs)
+            sampler.run_nested()
+
+            result = sampler.results
+
+            print("Dynesty fitting complete.")
+
+            print(result.summary())
+
+            # use dynesty plotting functions to plot the results
+            try:
+                import dynesty.plotting as dyplot
+
+                fig = dyplot.cornerplot(
+                    results=result,
+                    truths=truths,
+                    show_titles=True,
+                    title_fmt=".2f",
+                    quantiles=[0.16, 0.5, 0.84],
+                    labels=self.fitted_parameter_names,
+                )
+
+                if out_dir is not None:
+                    fig.savefig(f"{out_dir}/dynesty_corner.png", dpi=300)
+                # print table of the results
+                from dynesty import utils as dyfunc
+
+                samples, weights = result.samples, result.importance_weights()
+                mean, cov = dyfunc.mean_and_cov(samples, weights)
+                print("Parameter means and 1-sigma uncertainties:")
+                for i, name in enumerate(self.parameter_names):
+                    std = np.sqrt(cov[i, i])
+                    print(f"{name}: {mean[i]:.3f} ± {std:.3f}")
+            except Exception as e:
+                print(f"Issue importing dynesty plotting module: {e}")
+            return result
+        elif sampler.lower() == "ultranest":
+            try:
+                import ultranest
+            except ImportError:
+                raise ImportError(
+                    "Ultranest is not installed. Please install it to use this sampler."
+                )
+            print("Using Ultranest sampler.")
+            sampler = ultranest.ReactiveNestedSampler(
+                self.fitted_parameter_names,
+                log_likelihood,
+                transform=dynesty_prior,
+                log_dir=out_dir,
+                resume=True,
+            )
+            sampler.run(**sampler_kwargs)
+            print("Ultranest fitting complete.")
+
+            sampler.print_results()
+
+            sampler.plot()
+            sampler.plot_trace()
+
+            return result
+        elif sampler.lower() == "nautilus":
+            try:
+                import nautilus
+            except ImportError:
+                raise ImportError(
+                    "Nautilus is not installed. Please install it to use this sampler."
+                )
+            print("Using Nautilus sampler.")
+
+            prior = nautilus.Prior()
+
+            for low, high, name in zip(low, high, self.fitted_parameter_names):
+                prior.add_parameter(name, dist=(low, high))
+
+            sampler = nautilus.Sampler(prior, log_likelihood, **sampler_kwargs)
+            sampler.run(verbose=True)
+
+            points, log_w, log_l = sampler.posterior()
+            print("Nautilus fitting complete.")
+            import corner
+
+            fig = corner.corner(
+                points,
+                weights=np.exp(log_w),
+                bins=20,
+                labels=prior.keys,
+                color="purple",
+                plot_datapoints=False,
+                range=np.repeat(0.999, len(prior.keys)),
+            )
+
+            if out_dir is not None:
+                fig.savefig(f"{out_dir}/nautilus_corner.png", dpi=300)
+
+            return sampler
+        else:
+            raise ValueError("Sampler must be either 'dynesty', 'ultranest' or 'nautilus'.")
+
+    def recreate_simulator_from_grid(self, set_self=True, overwrite=False, **kwargs):
         """Recreate the simulator from the HDF5 grid.
 
         Simple grids (single SFH, ZDist, one basis)
@@ -3911,7 +4182,7 @@ class SBI_Fitter:
         # grid path
         grid_path = self.grid_path
 
-        if self.has_simulator:
+        if self.has_simulator and not overwrite:
             return self.simulator
 
         default_kwargs = {
@@ -3945,12 +4216,13 @@ class SBI_Fitter:
 
         try:
             simulator = GalaxySimulator.from_grid(grid_path, **default_kwargs)
-        except ValueError:
+        except ValueError as e:
             print(
                 "Could not recreate simulator from grid. This model"
                 " may not be compatible. A GalaxySimulator object can"
                 " be provided manually to recover the SED."
             )
+            print(f"Error message: {e}")
             return None
 
         removed_params = flags.get("parameters_to_remove", [])

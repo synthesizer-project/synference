@@ -4,7 +4,7 @@ import warnings
 
 from .grid import (
     generate_sfh_grid, generate_metallicity_distribution, generate_emission_models,
-    generate_sfh_basis, GalaxyBasis, CombinedBasis,  calculate_sfr,
+    generate_sfh_basis, GalaxyBasis, CombinedBasis,  calculate_sfr, grid_folder,
     calculate_muv, draw_from_hypercube, GalaxySimulator, generate_random_DB_sfh,
     test_out_of_distribution, calculate_mass_weighted_age, calculate_lum_weighted_age,
     calculate_flux_weighted_age, calculate_colour, calculate_d4000, calculate_beta, calculate_balmer_decrement,
@@ -45,6 +45,7 @@ __all__ = [
     "GalaxyBasis",
     "generate_constant_R",
     "draw_from_hypercube",
+    "grid_folder",
     "CombinedBasis",
     "calculate_muv",
     "calculate_sfr",
