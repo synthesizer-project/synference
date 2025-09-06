@@ -1,4 +1,4 @@
-Posterior inference
+Posterior Inference
 *******************
 
 .. toctree::
