@@ -337,7 +337,7 @@ def main_task(args: Args) -> None:
             task_func=None,
         )
 
-    print("Runnin SBI training.")
+    print("Running SBI training.")
 
     empirical_model_fitter.run_single_sbi(**args)
 
@@ -364,8 +364,8 @@ if __name__ == "__main__":
         if args.background:
             # Use multiprocessing to run the main task in a new 'spawned' process
             # make sure we use spawn to avoid issues with CUDA and fork
-            mp.set_start_method('spawn')
-            
+            mp.set_start_method("spawn")
+
             print("Starting the task in a background process...")
             process = mp.Process(target=main_task, args=(args,))
             process.start()

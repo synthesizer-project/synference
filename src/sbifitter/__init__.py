@@ -9,7 +9,7 @@ from .utils import (
     list_parameters, rename_overlapping_parameters, FilterArithmeticParser,
     timeout_handler, TimeoutException, create_sqlite_db, f_jy_err_to_asinh, create_database_universal,
     f_jy_to_asinh, check_scaling, detect_outliers, compare_methods_feature_importance,
-    analyze_feature_contributions, optimize_sfh_xlimit, make_serializable, setup_mpi_named_logger
+    analyze_feature_contributions, optimize_sfh_xlimit, make_serializable, setup_mpi_named_logger, move_to_device
 )
 # Set up logging
 logger = setup_mpi_named_logger("sbifitter", level=logging.INFO)
@@ -96,5 +96,9 @@ __all__ = [
     "GeneralEmpiricalUncertaintyModel",
     "save_unc_model_to_hdf5",
     "load_unc_model_from_hdf5",
-    "optimize_sfh_xlimit"
+    "optimize_sfh_xlimit",
+    "make_serializable",
+    "setup_mpi_named_logger",
+    "move_to_device",
+    "create_database_universal",
 ]
