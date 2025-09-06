@@ -1,6 +1,7 @@
 """Custom runner like LtU-ILI's SBIRunner, but with Optuna-based hyperparam optimization."""
 
 import logging
+import os
 import time
 from copy import deepcopy
 from datetime import datetime
@@ -651,14 +652,17 @@ class SBICustomRunner(SBIRunner):
                     raise optuna.TrialPruned()
             else:
                 time_elapsed = time.time() - start_time
-                update_plot(train_log, val_log, epoch=epoch, time_elapsed=time_elapsed)
 
-                """logger.info(
-                    f"Epoch {epoch}: TL: {train_loss_average:.3f}, "
-                    f"VL: {current_val_loss:.3f}, "
-                    f"Best VL: {best_val_loss:.3f}, "
-                    f"ESI: {epochs_since_improvement}/{stop_after_epochs}"
-                )"""
+                # are we running in slurm
+                if "SLURM_JOB_ID" in os.environ:
+                    logger.info(
+                        f"Epoch {epoch}: TL: {train_loss_average:.3f}, "
+                        f"VL: {current_val_loss:.3f}, "
+                        f"Best VL: {best_val_loss:.3f}, "
+                        f"ESI: {epochs_since_improvement}/{stop_after_epochs}"
+                    )
+                else:
+                    update_plot(train_log, val_log, epoch=epoch, time_elapsed=time_elapsed)
 
         # Restore best model state
         if best_model_state_dict is not None:
