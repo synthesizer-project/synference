@@ -4846,7 +4846,7 @@ class GalaxySimulator(object):
                     if grid_dir is None:
                         raise ValueError("SYNTHESIZER_GRID_DIR environment variable not set.")
 
-            grid = Grid(grid_name, grid_dir, new_lam=lam)
+            grid = Grid(grid_name, grid_dir)  # new_lam=lam)
 
             # Step 2. Make instrument
             instrument = Instrument._from_hdf5(model_group["Instrument"])

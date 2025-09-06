@@ -8,5 +8,5 @@ train_args:
     training_batch_size: 52
     stop_after_epochs: 47
     clip_max_norm: 4.778606871366431
-    hidden_features: 69
-    num_transforms: 15
+    nsf_hidden_features: 69
+    nsf_num_transforms: 15

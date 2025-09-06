@@ -21,6 +21,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import optuna
 import pandas as pd
+import sbi
 import tarp
 import torch
 import torch.nn as nn
@@ -49,7 +50,7 @@ from .custom_runner import CustomIndependentUniform
 
 # astropy, scipy, matplotlib, tqdm, synthesizer, unyt, h5py, numpy,
 # ili, torch, sklearn, optuna, joblib, pandas, tarp, astropy.table
-from .grid import CombinedBasis, GalaxySimulator
+from .grid import GalaxySimulator
 from .noise_models import (
     EmpiricalUncertaintyModel,
     UncertaintyModel,
@@ -68,6 +69,7 @@ from .utils import (
     f_jy_to_asinh,
     load_grid_from_hdf5,
     make_serializable,
+    move_to_device,
     optimize_sfh_xlimit,
 )
 
@@ -317,6 +319,10 @@ class SBI_Fitter:
         # Needs to load the training data and parameters from HDF5 file.
         # Training data if unnormalized and not setup as correct features yet.
 
+        if not os.path.isfile(hdf5_path):
+            if os.path.exists(f"{code_path}/grids/{hdf5_path}"):
+                hdf5_path = f"{code_path}/grids/{hdf5_path}"
+
         output = load_grid_from_hdf5(hdf5_path)
 
         if return_output:
@@ -366,28 +372,13 @@ class SBI_Fitter:
         )
 
     @classmethod
-    def init_from_basis(
-        cls,
-        basis: CombinedBasis,
-    ):
-        """Initialize the SBI fitter from a basis.
-
-        Args:
-            basis: The basis to be used for fitting.
-
-        Returns:
-            An instance of the SBI_Fitter class.
-        """
-        # Needs to load the training data and parameters from the basis
-        pass
-
-    @classmethod
     def load_saved_model(
         cls,
         model_file,
         grid_path: Optional[str] = None,
         model_name: str = None,
         load_arrays: bool = True,
+        **kwargs,
     ):
         """Load a prefit SBI model from a file.
 
@@ -395,10 +386,20 @@ class SBI_Fitter:
             model_file: Path to the saved model file.
             grid_path: Optional path to the grid file. If not provided,
                 it will be loaded from the model file parameters.
+            model_name: Optional name of the model. If not provided,
+                it will be loaded from the model file parameters.
+            load_arrays: Whether to load the feature and parameter arrays
+            **kwargs: Additional keyword arguments to pass to the SBI_Fitter constructor.
 
         Returns:
             Instance of SBI_Fitter initialized with the loaded model.
         """
+        if not os.path.exists(model_file):
+            if os.path.exists(f"{code_path}/models/{model_file}"):
+                model_file = f"{code_path}/models/{model_file}"
+            else:
+                raise ValueError(f"Model file {model_file} does not exist.")
+
         if grid_path is None or model_name is None:
             posterior, stats, params = cls.load_model_from_pkl(
                 cls, model_file, set_self=False, load_arrays=False
@@ -418,9 +419,7 @@ class SBI_Fitter:
 
         # Initialize the SBI_Fitter with the loaded parameters
         fitter = cls.init_from_hdf5(
-            model_name=model_name,
-            hdf5_path=grid_path,
-            return_output=False,
+            model_name=model_name, hdf5_path=grid_path, return_output=False, **kwargs
         )
 
         fitter.load_model_from_pkl(model_file, set_self=True, load_arrays=load_arrays)
@@ -449,7 +448,8 @@ class SBI_Fitter:
             parameters_to_add: List of parameters to add to the parameter array.
                 Only parameters from self.supplementary_parameters are currently supported
         """
-        logger.info(f"{len(delete_rows)} rows to delete from parameter array.")
+        if len(delete_rows) > 0:
+            logger.info(f"{len(delete_rows)} rows to delete from parameter array.")
         self.fitted_parameter_array = copy.deepcopy(self.parameter_array)
         self.fitted_parameter_names = copy.deepcopy(self.parameter_names)
         self.fitted_parameter_units = copy.deepcopy(self.parameter_units)
@@ -858,6 +858,13 @@ class SBI_Fitter:
             organization={Springer}
         }
         """
+        from packaging import version
+
+        if version.parse(sbi.__version__) < version.parse("0.25.0"):
+            raise ImportError(
+                "sbi version >= 0.25.0 is required for misspecification detection. "
+                f"Current version: {sbi.__version__}"
+            )
         from sbi.diagnostics.misspecification import (
             calc_misspecification_logprob,
         )
@@ -2797,6 +2804,8 @@ class SBI_Fitter:
         override_prior_ranges: dict = {},
         prior=CustomIndependentUniform,
         verbose: bool = True,
+        debug_sample_acceptance: bool = False,
+        extend_prior_range_pc: float = 0.0,
     ):
         """Create parameter priors.
 
@@ -2810,6 +2819,13 @@ class SBI_Fitter:
                 for the parameters.
             prior: The prior distribution to be used.
             verbose: Whether to print the prior ranges.
+            debug_sample_acceptance: Whether to print debug information
+                about sample acceptance in the prior. Only used if prior is
+                CustomIndependentUniform.
+            extend_prior_range_pc: Percentage to extend the prior range for
+                parameters. However will not be applied to extend parameters
+                to negative values, or parameters close to unity.
+
 
         Returns:
             A prior object.
@@ -2845,6 +2861,19 @@ class SBI_Fitter:
             if param in override_prior_ranges:
                 lo = override_prior_ranges[param][0]
                 hi = override_prior_ranges[param][1]
+            elif extend_prior_range_pc > 0.0:
+                param_min = np.min(self.fitted_parameter_array[:, i])
+                param_max = np.max(self.fitted_parameter_array[:, i])
+                param_range = param_max - param_min
+                extend = param_range * extend_prior_range_pc / 100.0
+                lo = param_min - extend
+                hi = param_max + extend
+                # Don't extend to negative values
+                if lo < 0 and param_min >= 0:
+                    lo = 0.0
+                # Don't extend parameters close to unity
+                if np.isclose(param_max, 1.0, atol=0.05) and (hi > 1.0):
+                    hi = 1.0
             else:
                 lo = np.min(self.fitted_parameter_array[:, i])
                 hi = np.max(self.fitted_parameter_array[:, i])
@@ -2882,6 +2911,7 @@ class SBI_Fitter:
         extra_args = {}
         if issubclass(prior, CustomIndependentUniform):
             extra_args["name_list"] = list(self.fitted_parameter_names)
+            extra_args["verbose"] = debug_sample_acceptance
         # Create the priors
         param_prior = prior(low=low, high=high, device=self.device, **extra_args)
 
@@ -2892,7 +2922,7 @@ class SBI_Fitter:
             param_prior = Independent(param_prior, 1)
             logger.info("Processing prior...")
             param_prior, _, _ = process_prior(param_prior)
-            
+
         return param_prior
 
     def create_restricted_priors(
@@ -3498,10 +3528,12 @@ class SBI_Fitter:
                 storage = create_sqlite_db(
                     f"{out_dir}/{self.name}_{name_append}_optuna_study_storage.db"
                 )  # noqa: E501
-
-            train_args["optuna"]["study"]["study_name"] = f"{self.name}_{name_append}"
-            train_args["optuna"]["study"]["storage"] = storage
-            net_configs = [{"model": train_args["optuna"]["search_space"]["model_choice"][0]}]
+            if not train_args.get("skip_optimization", False):
+                train_args["optuna"]["study"]["study_name"] = f"{self.name}_{name_append}"
+                train_args["optuna"]["study"]["storage"] = storage
+                net_configs = [{"model": train_args["optuna"]["search_space"]["model_choice"][0]}]
+            else:
+                net_configs = [{"model": train_args["fixed_params"]["model_choice"]}]
 
         if not run:
             if learning_type == "offline" or initial_training_from_grid:
@@ -4814,6 +4846,7 @@ class SBI_Fitter:
 
             if plot_name is None:
                 plot_name = f"{self.name}_SED_{self._timestamp}.png"
+            plt.show(block=False)
             fig.savefig(os.path.join(plots_dir, plot_name), dpi=200)
 
         else:
@@ -4876,6 +4909,7 @@ class SBI_Fitter:
         if X_test_array.ndim == 1 or (X_test_array.ndim == 2 and X_test_array.shape[0] == 1):
             return sample_with_timeout(sampler, num_samples, X_test_array, timeout_seconds_per_test)
 
+        """ ISSUE! sample_batched seems to be much slower than sampling one by one!
         if hasattr(posteriors, "sample_batched"):
             X_test_array = torch.squeeze(X_test_array)
             samples = (
@@ -4886,7 +4920,7 @@ class SBI_Fitter:
             )  # noqa E501
             samples = np.transpose(samples, (1, 0, 2))
             return samples
-
+"""
         # Handle multiple samples case
         shape = len(self.fitted_parameter_names)
         # test_sample = sample_with_timeout(
@@ -5098,13 +5132,15 @@ class SBI_Fitter:
             logger.info("=" * 60)
 
             if len(full_metrics) > 0:
-                logger.info("\nFull Model Metrics:")
+                logger.info("Full Model Metrics:")
                 logger.info("-" * 40)
                 for metric in full_metrics:
                     metric_name = metric.replace("_", " ").upper()
                     num = metrics[metric]
                     if isinstance(num, np.ndarray):
                         num = num.item()
+                    elif isinstance(num, list) and len(num) == 1:
+                        num = num[0]
                     try:
                         logger.info(f"{metric_name:.<25} {num:.6f}")
                     except Exception:
@@ -5112,7 +5148,7 @@ class SBI_Fitter:
 
             # Print parameter-specific metrics
             if len(param_metrics) > 0:
-                logger.info("\nParameter-Specific Metrics:")
+                logger.info("Parameter-Specific Metrics:")
                 logger.info("-" * 40)
 
                 # Calculate column widths
@@ -5486,6 +5522,7 @@ class SBI_Fitter:
 
         return fig
 
+    '''
     def plot_posterior_samples(self):
         """Plot the posterior samples of the SBI model."""
         pass
@@ -5493,6 +5530,7 @@ class SBI_Fitter:
     def plot_posterior_predictions(self):
         """Plot the posterior predictions of the SBI model."""
         pass
+    '''
 
     def calculate_TARP(
         self,
@@ -5829,6 +5867,12 @@ class SBI_Fitter:
         params : dict
             Dictionary of parameters loaded from the model file.
         """
+        if not os.path.exists(model_file):
+            if os.path.exists(f"{code_path}/models/{model_file}"):
+                model_file = f"{code_path}/models/{model_file}"
+            else:
+                raise ValueError(f"Model file {model_file} does not exist.")
+
         if os.path.isdir(model_file):
             files = glob.glob(os.path.join(model_file, "*_posterior.pkl"))
             if len(files) == 0:
@@ -5867,6 +5911,8 @@ class SBI_Fitter:
         else:
             stats = None
             logger.info(f"Warning: No summary file found for {model_file}.")
+
+        posteriors = move_to_device(posteriors, self.device)
 
         if set_self:
             self.posteriors = posteriors
@@ -6476,12 +6522,13 @@ class Simformer_Fitter(SBI_Fitter):
         )
 
     @classmethod
-    def load_saved_model(cls, model_name: str, grid_path: str, model_file: str):
+    def load_saved_model(cls, model_name: str, grid_path: str, model_file: str, **kwargs):
         """Load a saved Simformer model from a file."""
         model = cls.init_from_hdf5(
             model_name=model_name,
             hdf5_path=grid_path,
             return_output=False,
+            **kwargs,
         )
 
         model.load_model_from_pkl(
@@ -6917,6 +6964,7 @@ class Simformer_Fitter(SBI_Fitter):
         rng_seed: int = 42,
         plots_dir: str = f"{code_path}/models/name/plots/",
         metric_path: str = f"{code_path}/models/name/name_metrics.json",
+        overwrite: bool = False,
     ):
         """Plot diagnostics for the Simformer model.
 
@@ -6942,6 +6990,8 @@ class Simformer_Fitter(SBI_Fitter):
         metric_path : str, optional
             Path to save the metrics JSON file. Default is f"{code_path}/models/{name
         }/{name}_metrics.json".
+        overwrite : bool, optional
+            If True, overwrites existing plots and metrics. Default is False.
 
         Returns:
         None
@@ -7004,6 +7054,7 @@ class Simformer_Fitter(SBI_Fitter):
             posteriors=posteriors,
             rng_seed=rng_seed,
             plots_dir=plots_dir,
+            overwrite=overwrite,
         )
 
     def plot_sample_accuracy(
