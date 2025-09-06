@@ -26,6 +26,8 @@ dependencies = [
     "jax",
     "simple_parsing",
     "corner",
+    "plotext",
+    "matplotlib",
 ]
 
 [project.optional-dependencies]
