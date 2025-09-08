@@ -70,7 +70,7 @@ class UncertaintyModel(ABC):
     @staticmethod
     def jy_err_to_ab(flux_err_jy: unyt_array, flux_jy: unyt_array) -> np.ndarray:
         """Converts flux uncertainty in Janskys to AB magnitude uncertainty."""
-        return (2.5 / np.log(10)) * (flux_err_jy.to_value(Jy) / flux_jy.to_value(Jy))
+        return np.abs((2.5 / np.log(10)) * (flux_err_jy.to_value(Jy) / flux_jy.to_value(Jy)))
 
 
 class DepthUncertaintyModel(UncertaintyModel):
@@ -118,13 +118,13 @@ class DepthUncertaintyModel(UncertaintyModel):
             if true_flux_units == "AB":
                 true_flux_jy = self.ab_to_jy(flux)
             else:
-                if not isinstance(flux, unyt_array):
+                if isinstance(flux, unyt_array):
                     assert true_flux_units == flux.units, (
                         "If true_flux_units is specified, "
                         "flux must be a unyt_array with the same units."
                     )
                     flux = flux.to_value(true_flux_units)
-                true_flux_jy = (flux * true_flux_units).to("Jy").value
+                true_flux_jy = (flux * true_flux_units).to("Jy")
         else:
             if not isinstance(flux, unyt_array):
                 true_flux_jy = unyt_array(flux, "Jy")
@@ -135,15 +135,12 @@ class DepthUncertaintyModel(UncertaintyModel):
             print(f"WARNING {kwargs} arguments will have no effect with this model")
 
         flux_jy = true_flux_jy.to("Jy")
-
         if flux_jy.units.dimensions != Jy.dimensions:
             raise Exception("Input flux must be in Janskys (Jy).")
         noise = np.random.normal(loc=0.0, scale=self.sigma.to_value(Jy), size=flux_jy.shape) * Jy
         noisy_flux = flux_jy + noise
 
         uncertainty = np.ones_like(noisy_flux.value) * self.sigma
-
-        clipped_uncertainty = np.clip(uncertainty, self.min_flux_error, self.max_flux_error)
 
         if out_units is not None:
             if out_units == "AB":
@@ -153,8 +150,11 @@ class DepthUncertaintyModel(UncertaintyModel):
                 noisy_flux = (noisy_flux * Jy).to_value(out_units)
                 uncertainty = (uncertainty * Jy).to_value(out_units)
 
+        uncertainty = np.clip(uncertainty, self.min_flux_error, self.max_flux_error)
+
         if self.return_noise:
-            return noisy_flux, clipped_uncertainty
+            return noisy_flux, uncertainty
+
         return noisy_flux
 
     def apply_scalings(

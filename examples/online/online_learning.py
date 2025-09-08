@@ -1,3 +1,12 @@
+"""
+Online learning example with a simulator
+========================================
+
+Here we setup a `GalaxySimulator` to generate samples from our model,
+and train an online model where we condition the posterior to a specific observation.
+
+"""
+
 import os
 
 import numpy as np
@@ -11,7 +20,7 @@ from unyt import Myr
 
 from sbifitter import GalaxySimulator, SBI_Fitter, calculate_muv
 
-device = "cuda"
+device = "cpu"
 
 
 grid_dir = os.environ["SYNTHESIZER_GRID_DIR"]
@@ -95,6 +104,7 @@ inputs = [
 ]
 
 
+# Create a simulator function
 def run_simulator(params, return_type="tensor"):
     if isinstance(params, torch.Tensor):
         params = params.cpu().numpy()
@@ -110,6 +120,7 @@ def run_simulator(params, return_type="tensor"):
         return phot
 
 
+# Create our fitter and pass in the simulator.
 fitter = SBI_Fitter(
     name="online_test",
     simulator=run_simulator,
@@ -117,6 +128,7 @@ fitter = SBI_Fitter(
     raw_observation_names=simulator.instrument.filters.filter_codes + ["norm"],
 )
 
+# Run our SBI.
 fitter.run_single_sbi(
     engine="SNPE",
     learning_type="online",

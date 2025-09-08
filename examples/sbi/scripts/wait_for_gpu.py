@@ -1,7 +1,8 @@
 """A Python wrapper to delay a command until a GPU is available.
 
 This script checks the availability of GPUs based on VRAM and utilization thresholds,
-and waits until a GPU is free before executing a specified command. It uses the NVIDIA Management Library (NVML) to monitor GPU status
+and waits until a GPU is free before executing a specified command.
+It uses the NVIDIA Management Library (NVML) to monitor GPU status
 so will only work on systems with NVIDIA GPUs and the appropriate drivers installed.
 
 Usage:
@@ -58,6 +59,7 @@ def find_free_gpu(max_vram: float, max_util: float) -> Optional[int]:
     except NVMLError as e:
         print(f"NVML Error while checking GPUs: {e}", file=sys.stderr)
     return None
+
 
 def get_gpu_statuses(max_vram: float, max_util: float) -> str:
     """Gets a string summary of all GPU statuses."""
@@ -172,7 +174,7 @@ def main() -> None:
         try:
             nvmlShutdown()
         except NVMLError:
-            pass # Can happen if nvmlInit() failed
+            pass  # Can happen if nvmlInit() failed
 
 
 if __name__ == "__main__":

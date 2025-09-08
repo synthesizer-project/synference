@@ -1,4 +1,9 @@
+"""
+Basic model for SBIFitter
+"""
+
 import os
+
 from sbifitter import SBI_Fitter
 
 # Get the paths to your training catalogue and where to save your trained model
@@ -20,6 +25,7 @@ fitter = SBI_Fitter.init_from_hdf5(
 fitter.create_feature_array_from_raw_photometry(
     extra_features=[], normalize_method=None, parameters_to_remove=["redshift"]
 )
+
 
 # Run SBI with an emsemble network!
 fitter.run_single_sbi(
