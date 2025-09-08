@@ -1,6 +1,5 @@
 import os
 
-import numpy as np
 from astropy.cosmology import Planck18
 from synthesizer.emission_models.attenuation import Calzetti2000  # noqa
 from synthesizer.emission_models.dust.emission import Greybody, IR_templates  # noqa
@@ -35,9 +34,7 @@ filter_codes = [
 filterset = FilterCollection(filter_codes=filter_codes)
 
 # Consistent wavelength grid for both SPS grids and filters
-new_wav = generate_constant_R(
-    R=300, auto_start_stop=True, filterset=filterset, max_redshift=15
-)
+new_wav = generate_constant_R(R=300, auto_start_stop=True, filterset=filterset, max_redshift=15)
 
 filterset.resample_filters(new_lam=new_wav)
 
@@ -82,9 +79,7 @@ full_params = {
 }
 
 # Sample these parameters using a latin hypercube
-all_param_dict = draw_from_hypercube(
-    full_params, Nmodels, rng=42, unlog_keys=["log_tau"]
-)
+all_param_dict = draw_from_hypercube(full_params, Nmodels, rng=42, unlog_keys=["log_tau"])
 
 # Create a grid object in synthesizer with your chosen SPS model
 grid = Grid(
@@ -94,9 +89,7 @@ grid = Grid(
 )
 
 # Choose your metallicity distributions
-Z_dists = [
-    ZDist.DeltaConstant(log10metallicity=log_z) for log_z in all_param_dict["log_zmet"]
-]
+Z_dists = [ZDist.DeltaConstant(log10metallicity=log_z) for log_z in all_param_dict["log_zmet"]]
 
 # Define your redshifts
 redshifts = all_param_dict["redshift"]
@@ -129,8 +122,7 @@ emission_model = PacmanEmission(
 # Get nice version of SFH name
 sfh_name = str(sfh_type).split(".")[-1].split("'")[0]
 
-# Place any other parameters you want to train with here
-galaxy_params = {"tau_v": all_param_dict["tau_v"]}
+galaxy_params = {"tau_v": all_param_dict["tau_v"]}  # pass in any other emitter parameter here
 
 # Name your model
 name = "BPASS_min_example"

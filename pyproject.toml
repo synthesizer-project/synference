@@ -26,6 +26,8 @@ dependencies = [
     "jax",
     "simple_parsing",
     "corner",
+    "plotext",
+    "matplotlib",
 ]
 
 [project.optional-dependencies]
@@ -46,6 +48,22 @@ test = [
     "pytest",
     "ruff==0.11.7",
     "mypy>=0.910",
+]
+
+# Documentation building
+docs = [
+    "nbmake",
+    "sphinx==7.4.7",
+    "pandoc",
+    "furo",
+    "sphinx_autodoc_typehints",
+    "ipython",
+    "sphinx_gallery",
+    "pillow",
+    "sphinx-toolbox",
+    "nbsphinx",
+    "sphinx-copybutton",
+    "readthedocs-sphinx-search",
 ]
 
 [build-system]

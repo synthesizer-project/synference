@@ -18,7 +18,7 @@ from synthesizer.grid import Grid
 from synthesizer.instruments import FilterCollection, Instrument
 from synthesizer.parametric import SFH, ZDist
 from tqdm import tqdm
-from unyt import K, Myr, dimensionless, unyt_array
+from unyt import K, Myr, dimensionless, unyt_array, Gyr
 
 from sbifitter import (
     CombinedBasis,
@@ -86,9 +86,7 @@ else:
 
 
 # Consistent wavelength grid for both SPS grids and filters
-new_wav = generate_constant_R(
-    R=300, auto_start_stop=True, filterset=filterset, max_redshift=15
-)
+new_wav = generate_constant_R(R=300, auto_start_stop=True, filterset=filterset, max_redshift=15)
 
 filterset.resample_filters(new_lam=new_wav)
 
@@ -167,9 +165,7 @@ def continuity_agebins(
 
     # reshape to (N, 2) and readd relevant bins to mathc shape.
     # e.g. (0, 1e7), (1e7, 1e8), (1e8, 1.5e8), (1.5e8, 2.0e8), (2.0e8, 3.0e8), (3.0e8, 4.0e8)
-    all_bins = np.array(
-        [(all_bins[i], all_bins[i + 1]) for i in range(len(all_bins) - 1)]
-    )
+    all_bins = np.array([(all_bins[i], all_bins[i + 1]) for i in range(len(all_bins) - 1)])
     all_bins = unyt_array(all_bins, "Myr")
 
     return all_bins
@@ -339,10 +335,7 @@ for sfh_name, sfh_params in sfhs.items():
         new_lam=new_wav,
     )
     # Metallicity
-    Z_dists = [
-        ZDist.DeltaConstant(log10metallicity=log_z)
-        for log_z in all_param_dict["log_zmet"]
-    ]
+    Z_dists = [ZDist.DeltaConstant(log10metallicity=log_z) for log_z in all_param_dict["log_zmet"]]
 
     # Redshifts
     redshifts = np.array(all_param_dict["redshift"])
@@ -369,9 +362,7 @@ for sfh_name, sfh_params in sfhs.items():
             sfh_models.append(sfh)
             # Reassign parameters
             for j in range(Nparam_SFH):
-                all_param_dict[f"sfh_quantile_{100 * (j + 1) / (Nparam_SFH + 1):.0f}"][
-                    i
-                ] = tx[j]
+                all_param_dict[f"sfh_quantile_{100 * (j + 1) / (Nparam_SFH + 1):.0f}"][i] = tx[j]
         full_params.pop("ssfr", None)  # remove ssfr from full_params
         # Add logSFR to all_param_dict
         all_param_dict["log_sfr"] = np.array(logsfrs)
@@ -393,9 +384,7 @@ for sfh_name, sfh_params in sfhs.items():
 
     else:
         if "beta" in sfh_param_names:
-            all_param_dict["beta"] = (
-                -1 * all_param_dict["beta"]
-            )  # log-normal SFH has negative beta
+            all_param_dict["beta"] = -1 * all_param_dict["beta"]  # log-normal SFH has negative beta
         sfh_models, _ = generate_sfh_basis(
             sfh_type=sfh_type,
             sfh_param_names=sfh_param_names,
@@ -478,10 +467,7 @@ for sfh_name, sfh_params in sfhs.items():
     if sfh_type == SFH.DenseBasis:
         alt_parametrizations["db_tuple"] = (
             ["log_sfr"]
-            + [
-                f"sfh_quantile_{100 * (j + 1) / (Nparam_SFH + 1):.0f}"
-                for j in range(Nparam_SFH)
-            ],
+            + [f"sfh_quantile_{100 * (j + 1) / (Nparam_SFH + 1):.0f}" for j in range(Nparam_SFH)],
             db_sf_convert,
         )  # noqa: E501
     """elif sfh_type == SFH.Continuity:

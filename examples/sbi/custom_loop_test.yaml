@@ -1,4 +1,5 @@
 train_args:
+  skip_optimization: False
   validation_fraction: 0.1
   optuna:
     n_trials: 50

@@ -78,9 +78,7 @@ else:
 
 
 # Consistent wavelength grid for both SPS grids and filters
-new_wav = generate_constant_R(
-    R=300, auto_start_stop=True, filterset=filterset, max_redshift=15
-)
+new_wav = generate_constant_R(R=300, auto_start_stop=True, filterset=filterset, max_redshift=15)
 
 filterset.resample_filters(new_lam=new_wav)
 
@@ -163,9 +161,7 @@ elif sfh_type == SFH.DelayedExponential:
 # Draw samples from Latin Hypercube.
 # unlog_keys are keys which should be unlogged after drawing from the hypercube.
 # they will be renamed to not include 'log_' after drawing.
-all_param_dict = draw_from_hypercube(
-    full_params, Nmodels, rng=42, unlog_keys=["log_Av"]
-)
+all_param_dict = draw_from_hypercube(full_params, Nmodels, rng=42, unlog_keys=["log_Av"])
 
 
 # Create the grid
@@ -176,9 +172,7 @@ grid = Grid(
 )
 
 # Metallicity
-Z_dists = [
-    ZDist.DeltaConstant(log10metallicity=log_z) for log_z in all_param_dict["log_zmet"]
-]
+Z_dists = [ZDist.DeltaConstant(log10metallicity=log_z) for log_z in all_param_dict["log_zmet"]]
 
 # Redshifts
 redshifts = np.array(all_param_dict["redshift"])
@@ -204,9 +198,7 @@ if sfh_type == SFH.DenseBasis:
         sfh_models.append(sfh)
         # Reassign parameters
         for j in range(Nparam_SFH):
-            all_param_dict[f"sfh_quantile_{100 * (j + 1) / (Nparam_SFH + 1):.0f}"][
-                i
-            ] = tx[j]
+            all_param_dict[f"sfh_quantile_{100 * (j + 1) / (Nparam_SFH + 1):.0f}"][i] = tx[j]
     full_params.pop("ssfr", None)  # remove ssfr from full_params
     # Add logSFR to all_param_dict
     all_param_dict["log_sfr"] = np.array(logsfrs)
@@ -294,10 +286,7 @@ alt_parametrizations = {
     "tau_v_ism": ("Av", lambda x: x["tau_v_ism"] * av_to_tau_v),
     "db_tuple": (
         ["log_sfr"]
-        + [
-            f"sfh_quantile_{100 * (j + 1) / (Nparam_SFH + 1):.0f}"
-            for j in range(Nparam_SFH)
-        ],
+        + [f"sfh_quantile_{100 * (j + 1) / (Nparam_SFH + 1):.0f}" for j in range(Nparam_SFH)],
         db_sf_convert,
     ),  # noqa: E501
 }
@@ -305,7 +294,9 @@ alt_parametrizations = {
 
 sfh_name = str(sfh_type).split(".")[-1].split("'")[0]
 
-name = f"BPASS_Chab_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_CF00_v1"  # noqa: E501
+name = (
+    f"BPASS_Chab_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_CF00_v1"  # noqa: E501
+)
 
 basis = GalaxyBasis(
     model_name=f"sps_{name}",

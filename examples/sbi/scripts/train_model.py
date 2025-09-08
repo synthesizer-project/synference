@@ -6,7 +6,6 @@ from ast import literal_eval
 from dataclasses import dataclass
 
 import numpy as np
-import torch
 from astropy.table import Table
 from simple_parsing import ArgumentParser
 
@@ -16,12 +15,12 @@ from sbifitter import (
     create_uncertainty_models_from_EPOCHS_cat,
 )
 
-'''try:
+"""try:
     mp.set_start_method("spawn", force=True)
     torch.multiprocessing.set_start_method("spawn", force=True)
     print("Multiprocessing start method set to 'spawn'.")
 except RuntimeError as e:
-    print(f"Start method already set: {e}")'''
+    print(f"Start method already set: {e}")"""
 
 
 # Setup parsing
@@ -30,10 +29,11 @@ parser = ArgumentParser(description="SBI SED Fitting")
 file_dir = os.path.dirname(__file__)
 
 import logging
+
 logging.getLogger().handlers.clear()
-logging.basicConfig(level=logging.INFO, 
-                    format='%(asctime)s - %(levelname)s - %(message)s',
-                    stream=sys.stdout)
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s", stream=sys.stdout
+)
 
 
 @dataclass
@@ -68,9 +68,7 @@ class Args:
     plot: bool = True
     additional_model_args: tuple = ()
     parameters_to_add: tuple = ()
-    data_err_file: str = (
-        """/home/tharvey/Downloads/JADES-Deep-GS_MASTER_Sel-f277W+f356W+f444W_v9_loc_depth_masked_10pc_EAZY_matched_selection_ext_src_UV.fits"""  # noqa
-    )
+    data_err_file: str = """/home/tharvey/Downloads/JADES-Deep-GS_MASTER_Sel-f277W+f356W+f444W_v9_loc_depth_masked_10pc_EAZY_matched_selection_ext_src_UV.fits"""  # noqa
     data_err_hdu: str = "OBJECTS"  # The HDU name in the FITS file
     background: bool = False
     model_features: tuple = ()
@@ -121,11 +119,7 @@ def main_task(args: Args) -> None:
             bands = [band for band in bands if band not in phot_to_remove]
 
         new_band_names = [
-            (
-                f"HST/ACS_WFC.{band.upper()}"
-                if band in hst_bands
-                else f"JWST/NIRCam.{band.upper()}"
-            )
+            (f"HST/ACS_WFC.{band.upper()}" if band in hst_bands else f"JWST/NIRCam.{band.upper()}")
             for band in bands
         ]
 
@@ -170,10 +164,16 @@ def main_task(args: Args) -> None:
         """
         Logarithm base 10 with a floor value.
         """
-        return np.log10(np.maximum(x, 10 ** floor))
+        return np.log10(np.maximum(x, 10**floor))
 
     if args.parameter_transformations:
-        pos_vals = {"log10": np.log10, "log": np.log, "exp": np.exp, "sqrt": np.sqrt, "log10_floor":log10_floor}
+        pos_vals = {
+            "log10": np.log10,
+            "log": np.log,
+            "exp": np.exp,
+            "sqrt": np.sqrt,
+            "log10_floor": log10_floor,
+        }
         # Assuming args.parameter_transformations is a string like 'key1=val1,key2=val2'
         try:
             transformations_str = args.parameter_transformations[0]
@@ -225,9 +225,7 @@ def main_task(args: Args) -> None:
             for filt in phot_to_remove
         ]
         unused_filters = [
-            filt
-            for filt in unused_filters
-            if filt in empirical_model_fitter.raw_observation_names
+            filt for filt in unused_filters if filt in empirical_model_fitter.raw_observation_names
         ]
 
     print("Photometry in grid:", empirical_model_fitter.raw_observation_names, file=sys.stdout)
@@ -277,7 +275,7 @@ def main_task(args: Args) -> None:
         train_params = dict(
             study_name=f"{args.model_name}{args.name_append}",
             suggested_hyperparameters={
-                "learning_rate": [5e-6, 1e-3], # 1e-6 makes models very slow to train!
+                "learning_rate": [1e-5, 1e-3],  # 1e-6 makes models very slow to train!
                 "hidden_features": [12, 500],
                 num_name: [2, 50],
                 "training_batch_size": [32, 128],
@@ -339,7 +337,7 @@ def main_task(args: Args) -> None:
             task_func=None,
         )
 
-    print('Runnin SBI training.')
+    print("Running SBI training.")
 
     empirical_model_fitter.run_single_sbi(**args)
 
@@ -365,6 +363,9 @@ if __name__ == "__main__":
     else:
         if args.background:
             # Use multiprocessing to run the main task in a new 'spawned' process
+            # make sure we use spawn to avoid issues with CUDA and fork
+            mp.set_start_method("spawn")
+
             print("Starting the task in a background process...")
             process = mp.Process(target=main_task, args=(args,))
             process.start()
