@@ -1,19 +1,26 @@
 """Utility functions for SBIFitter."""
 
+import atexit
 import io
+import logging
 import operator
 import os
 import pickle
 import re
 import sys
-from typing import Any, Dict, List, Union, TextIO
-import logging
+from typing import Any, Dict, List, Optional, Set, TextIO, Union
 
 import h5py
 import matplotlib.pyplot as plt
 import numpy as np
 import scipy.stats as stats
+import torch
 from unyt import Angstrom, Jy, nJy, unyt_array, unyt_quantity
+
+try:
+    import plotext as plt
+except ImportError:
+    plt = None
 
 
 def load_grid_from_hdf5(
@@ -357,25 +364,27 @@ def create_sqlite_db(db_path: str):
 
     return storage_name
 
+
 def create_database_universal(
     db_name: str,
     password: str = "",
     host: str = "localhost",
     user: str = "root",
     port: int = 31666,
-    db_type = "mysql+pymysql",
-    full_url: str = None
+    db_type="mysql+pymysql",
+    full_url: str = None,
 ):
-    """
-    Create database for MySQL, PostgreSQL, or CockroachDB
+    """Create database for MySQL, PostgreSQL, or CockroachDB.
+
     Returns the full connection URL for the created database.
 
     Either provide a full URL or the individual parameters.
     """
-    import sqlalchemy
-    from sqlalchemy.exc import SQLAlchemyError, ProgrammingError
     from urllib.parse import urlparse, urlunparse
-    
+
+    import sqlalchemy
+    from sqlalchemy.exc import ProgrammingError, SQLAlchemyError
+
     assert db_type in ["mysql+pymysql", "postgresql+psycopg2", "cockroachdb"], (
         "db_type must be one of 'mysql+pymysql', 'postgresql+psycopg2', or 'cockroachdb'."
     )
@@ -399,11 +408,11 @@ def create_database_universal(
         else:
             db_type = "unknown"
             sqlalchemy_url = full_url
-    
+
     # Remove existing database name from URL to connect to system database
     parsed = urlparse(sqlalchemy_url)
-    path_parts = parsed.path.strip('/').split('/') if parsed.path.strip('/') else []
-    
+    # path_parts = parsed.path.strip("/").split("/") if parsed.path.strip("/") else []
+
     if db_type == "mysql":
         # Connect to mysql system database
         system_path = "/mysql"
@@ -414,7 +423,7 @@ def create_database_universal(
         # Connect to postgres system database
         system_path = "/postgres"
         cd = '"'  # PostgreSQL uses double quotes
-        create_sql = f'CREATE DATABASE {cd}{db_name}{cd}'
+        create_sql = f"CREATE DATABASE {cd}{db_name}{cd}"
         isolation_level = "AUTOCOMMIT"
     elif db_type == "cockroachdb":
         # CockroachDB uses defaultdb as system database
@@ -429,21 +438,21 @@ def create_database_universal(
         cd = ""
         create_sql = f"CREATE DATABASE IF NOT EXISTS {db_name}"
         isolation_level = "AUTOCOMMIT"
-    
+
     # Build system database URL
     system_url = parsed._replace(path=system_path)
     system_url = urlunparse(system_url)
-    
+
     try:
         engine = sqlalchemy.create_engine(system_url, isolation_level=isolation_level)
-        
+
         with engine.connect() as connection:
             if db_type == "postgresql":
                 # PostgreSQL: Check if database exists first
                 try:
                     result = connection.execute(
                         sqlalchemy.text("SELECT 1 FROM pg_database WHERE datname = :db_name"),
-                        {"db_name": db_name}
+                        {"db_name": db_name},
                     )
                     if not result.fetchone():
                         connection.execute(sqlalchemy.text(create_sql))
@@ -458,32 +467,32 @@ def create_database_universal(
                 # MySQL and CockroachDB: Use IF NOT EXISTS
                 connection.execute(sqlalchemy.text(create_sql))
                 print(f"Database {db_name} created or already exists.")
-        
+
         engine.dispose()
-        
+
     except SQLAlchemyError as e:
         print(f"Failed to create database {db_name}:", e)
         # Continue anyway - database might already exist
-    
+
     # Build final database URL
     if full_url is None:
         final_url = f"mysql+pymysql://{user}:{password}@{host}:{port}/{db_name}"
     else:
         # Replace system database with target database in original URL
         parsed = urlparse(sqlalchemy_url)
-        if db_type == "cockroachdb" and 'defaultdb' in sqlalchemy_url:
-            final_url = sqlalchemy_url.replace('defaultdb', db_name)
+        if db_type == "cockroachdb" and "defaultdb" in sqlalchemy_url:
+            final_url = sqlalchemy_url.replace("defaultdb", db_name)
         else:
             final_url = parsed._replace(path=f"/{db_name}")
             final_url = urlunparse(final_url)
-        
+
         # Convert back to original scheme format if needed
         if full_url.startswith("mysql://") and final_url.startswith("mysql+pymysql://"):
             final_url = final_url.replace("mysql+pymysql://", "mysql://")
         elif full_url.startswith("postgres://") and final_url.startswith("postgresql+psycopg2://"):
             final_url = final_url.replace("postgresql+psycopg2://", "postgres://")
         # CockroachDB keeps its original scheme
-    
+
     return final_url
 
 
@@ -1901,13 +1910,10 @@ def make_serializable(obj: Any, allowed_types=None) -> Any:
         return f"<unserializable object of type {type(obj).__name__}>"
 
 
-
-
 def setup_mpi_named_logger(
     name: str, level: int = logging.INFO, stream: TextIO = sys.stdout
 ) -> logging.Logger:
-    """
-    Sets up a named logger that only outputs messages from MPI rank 0.
+    """Sets up a named logger that only outputs messages from MPI rank 0.
 
     This is more robust than configuring the root logger, as it won't
     interfere with the logging settings of other libraries.
@@ -1922,18 +1928,17 @@ def setup_mpi_named_logger(
     """
     try:
         from mpi4py import MPI
+
         # Get the MPI communicator, rank, and size
         COMM = MPI.COMM_WORLD
         RANK = COMM.Get_rank()
-        SIZE = COMM.Get_size()
     except ImportError:
         # Create dummy MPI variables for single-process execution
         # This allows the script to run without mpi4py or mpiexec
         COMM = None
         RANK = 0
-        SIZE = 1
     logger = logging.getLogger(name)
-    
+
     # Prevent messages from propagating to the root logger
     logger.propagate = False
 
@@ -1941,9 +1946,7 @@ def setup_mpi_named_logger(
         # Configure the logger for the main process (rank 0)
         logger.setLevel(level)
         handler = logging.StreamHandler(stream)
-        formatter = logging.Formatter(
-            "%(asctime)s | %(name)s | %(levelname)-8s | %(message)s"
-        )
+        formatter = logging.Formatter("%(asctime)s | %(name)s | %(levelname)-8s | %(message)s")
         handler.setFormatter(formatter)
         logger.addHandler(handler)
     else:
@@ -1951,3 +1954,170 @@ def setup_mpi_named_logger(
         logger.addHandler(logging.NullHandler())
 
     return logger
+
+
+def move_to_device(obj: Any, device: str | torch.device, visited: Set[int] | None = None) -> Any:
+    """Move tensors and objects with a .to() method to the specified device.
+
+    Recursively traverses an object and its components, moving tensors and objects
+    with a .to() method to the specified device. Also sets a ._device or
+    .device attribute if present.
+
+    Gracefully handles read-only attributes by ignoring AttributeError on setattr.
+
+    Args:
+        obj: The object to move.
+        device: The target device (e.g., 'cpu', 'cuda:0').
+        visited: A set of object ids to prevent infinite recursion in case of
+                 circular references. Should not be set by the user.
+
+    Returns:
+        The object, with its components moved to the specified device.
+    """
+    if visited is None:
+        visited = set()
+
+    if id(obj) in visited:
+        return obj
+    visited.add(id(obj))
+
+    # --- 1. Handle collections ---
+    if isinstance(obj, (list, tuple)):
+        new_iterable = [move_to_device(item, device, visited) for item in obj]
+        return tuple(new_iterable) if isinstance(obj, tuple) else new_iterable
+
+    if isinstance(obj, dict):
+        return {k: move_to_device(v, device, visited) for k, v in obj.items()}
+
+    # --- 2. Process the object itself ---
+    if hasattr(obj, "to") and callable(getattr(obj, "to")):
+        try:
+            obj = obj.to(device)
+        except Exception:
+            pass
+
+    # Set device attributes, ignoring errors if they are not writable
+    if hasattr(obj, "_device"):
+        try:
+            setattr(obj, "_device", device)
+        except AttributeError:
+            pass  # Attribute is not writable
+    if hasattr(obj, "device"):
+        try:
+            setattr(obj, "device", device)
+        except AttributeError:
+            pass  # Attribute is not writable
+
+    # --- 3. Recurse into attributes of a custom object ---
+    if hasattr(obj, "__dict__"):
+        for attr, value in vars(obj).items():
+            new_value = move_to_device(value, device, visited)
+            try:
+                setattr(obj, attr, new_value)
+            except AttributeError:
+                # This attribute is not writable (e.g., a property without a setter).
+                # We can safely ignore it.
+                pass
+
+    return obj
+
+
+_alternate_screen_active = False
+
+
+def _enter_alternate_screen():
+    """Internal function to switch the terminal to the alternate screen buffer."""
+    global _alternate_screen_active
+    if plt is not None and not _alternate_screen_active:
+        sys.stdout.write("\x1b[?1049h")
+        sys.stdout.flush()
+        _alternate_screen_active = True
+
+
+def _exit_alternate_screen():
+    """Internal function to switch back from the alternate screen buffer."""
+    global _alternate_screen_active
+    if plt is not None and _alternate_screen_active:
+        sys.stdout.write("\x1b[?1049l")
+        sys.stdout.flush()
+        _alternate_screen_active = False
+
+
+# Register the exit function to be called automatically when the script finishes.
+# This ensures the terminal is always restored to its original state.
+atexit.register(_exit_alternate_screen)
+
+
+def update_plot(
+    train_loss: List[float],
+    val_loss: List[float],
+    epoch: int,
+    time_elapsed: Optional[float] = None,
+    trial_number: Optional[int] = None,
+    alt_screen: bool = True,
+):
+    """Updates a live plot of training and validation loss in the terminal.
+
+    This function uses the terminal's alternate screen buffer to create a
+    full-screen plot that disappears when the script ends, restoring the
+    previous terminal content.
+
+    Args:
+        train_loss (List[float]): A list of the training loss at each epoch.
+        val_loss (List[float]): A list of the validation loss at each epoch.
+        epoch (int): The current epoch number.
+        time_elapsed (Optional[float]): The time elapsed since the start of training.
+        trial_number (Optional[int]): The Optuna trial number, for display.
+        alt_screen (bool): Whether to use the alternate screen buffer. Defaults to True.
+    """
+    if plt is None:
+        return
+
+    # Ensure we are in the alternate screen buffer. This is called on every
+    # update but only has an effect the first time.
+    if alt_screen:
+        _enter_alternate_screen()
+
+        # Use ANSI escape codes to clear the screen and move cursor to top-left.
+        sys.stdout.write("\x1b[2J\x1b[H")
+        sys.stdout.flush()
+
+    # Get the size of the terminal to make the plot fit.
+    plt.clf()  # Clear the previous plot data
+
+    # Plot the training and validation loss.
+    plt.plot(train_loss, label="Training Loss", color="blue")
+    plt.plot(val_loss, label="Validation Loss", color="red")
+
+    # Set the plot dimensions and labels.
+    if trial_number is not None:
+        title = f"Training Progress (Trial {trial_number}, Epoch {epoch})"
+    else:
+        title = f"Training Progress (Epoch {epoch})"
+    if time_elapsed is not None:
+        # format time nicely
+        if time_elapsed < 60:
+            title += f" - Time Elapsed: {time_elapsed:.1f}s"
+        elif time_elapsed < 3600:
+            title += f" - Time Elapsed: {time_elapsed / 60:.1f}m"
+        else:
+            title += f" - Time Elapsed: {time_elapsed / 3600:.1f}h"
+
+    plt.title(title)
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.xfrequency(5)  # Set the frequency of x-axis ticks
+    plt.grid(True, True)
+
+    # Add a vertical line at the best validation loss epoch
+    if len(val_loss) > 0:
+        best_epoch = np.argmin(val_loss)
+        plt.plot(
+            [best_epoch, best_epoch],
+            [min(min(train_loss), min(val_loss)), max(max(train_loss), max(val_loss))],
+            label="Best Val Loss = {:.4f}".format(val_loss[best_epoch]),
+            color="green",
+        )
+
+    # Display the plot.
+    plt.show()

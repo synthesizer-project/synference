@@ -3,7 +3,7 @@
 import copy
 import inspect
 import os
-import sys
+import threading
 from collections import defaultdict
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple, Type, Union
@@ -15,10 +15,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 from astropy.cosmology import Cosmology, Planck18, z_at_value
 from dill.source import getsource
-from joblib import Parallel, delayed, parallel_config, cpu_count
+from joblib import Parallel, delayed, parallel_config
 from matplotlib.ticker import FuncFormatter, ScalarFormatter
 from scipy.linalg import inv
 from scipy.stats import qmc
+
+from . import logger
 
 try:
     from synthesizer.conversions import lnu_to_fnu
@@ -33,7 +35,9 @@ try:
 
     synthesizer_available = True
 except Exception:
-    logger.warning("Synthesizer dependencies not installed. Only the SBI functions will be available.")
+    logger.warning(
+        "Synthesizer dependencies not installed. Only the SBI functions will be available."
+    )
     synthesizer_available = False
 
 from tqdm import tqdm
@@ -59,10 +63,10 @@ from .noise_models import (
 )
 from .utils import check_log_scaling, check_scaling, list_parameters, save_emission_model
 
-from . import logger
-
 file_path = os.path.dirname(os.path.realpath(__file__))
 grid_folder = os.path.join(os.path.dirname(os.path.dirname(file_path)), "grids")
+# Global variables for thread-shared data (initialized once per process)
+_thread_local = threading.local()
 
 
 UNIT_DICT = {
@@ -173,7 +177,7 @@ def calculate_muv(galaxy, cosmo=Planck18):
     Returns:
     -------
     dict
-        Dictionary containing the MUV magnitude for each stellar spectrum in the galaxy.
+        Dictionary containing the MUV malogginggnitude for each stellar spectrum in the galaxy.
     """
     z = galaxy.redshift
 
@@ -974,15 +978,14 @@ def generate_sfh_basis(
         if values are lambda functions the input will be the max age given max_redshift.
     redshifts : Union[Dict[str, Any], float]
         Either a single redshift value, an array of redshifts, or a dictionary with:
-        - 'prior': scipy.stats distribution
-        - 'min': minimum redshift
-        - 'max': maximum redshift
-        - 'size': number of redshift samples
+        'prior': scipy.stats distribution
+        'min': minimum redshift
+        'max': maximum redshift
+        'size': number of redshift samples
     max_redshift : float, optional
         Maximum possible redshift to consider for age calculations, by default 15
     cosmo : Type[Cosmology], optional
         Cosmology to use for age calculations, by default Planck18
-
     calculate_min_age : bool, optional
         If True, calculate the lookback time at which only min_age_frac of total mass
         is formed, by default True
@@ -991,15 +994,14 @@ def generate_sfh_basis(
     iterate_redshifts : bool, optional
         If True, iterate over redshifts and create SFH for each, by default True
         If False, assume input redshift SFH param array is a 1:1 mapping of
-            redshift to SFH parameters.
+        redshift to SFH parameters.
 
     Returns:
     -------
     Tuple[List[SFH], np.ndarray]
-        - List of SFH objects with parameters drawn from the priors
-        - Array of parameter combinations, where the first column is redshift
-            followed by SFH parameters
-
+        List of SFH objects with parameters drawn from the priors
+        Array of parameter combinations, where the first column is redshift
+        followed by SFH parameters
     """
     if isinstance(redshifts, dict):
         redshifts = redshifts["prior"].rvs(
@@ -1159,7 +1161,8 @@ def create_galaxy(
     metal_dist: Type[ZDist.Common],
     grid: Grid,
     log_stellar_masses: Union[float, list] = 9,
-  
+    bh_kwargs=None,
+    gas_kwargs=None,
     **galaxy_kwargs,
 ) -> Type[Galaxy]:
     """Create a new galaxy with the specified parameters."""
@@ -1202,21 +1205,31 @@ def create_galaxy(
         part_stars.__dict__.update(
             galaxy_kwargs
         )  # Add any additional parameters to the stars object
+        from synthesizer.particle import Galaxy
     else:
+        from synthesizer.parametric import Galaxy
+
         part_stars = param_stars
 
+    if bh_kwargs is not None:
+        from synthesizer.particle import BlackHoles
+
+        bh = BlackHoles(**bh_kwargs)
+    else:
+        bh = None
+
+    if gas_kwargs is not None:
+        from synthesizer.particle import Gas
+
+        gas = Gas(**gas_kwargs)
+    else:
+        gas = None
+
     # And create the galaxy
-    galaxy = Galaxy(
-        stars=part_stars,
-        redshift=redshift,
-    )
+    galaxy = Galaxy(stars=part_stars, redshift=redshift, gas=gas, black_holes=bh)
 
     return galaxy
-import threading
-import copy
 
-# Global variables for thread-shared data (initialized once per process)
-_thread_local = threading.local()
 
 def _init_worker(grid, alt_parametrizations, fixed_params):
     """Initialize worker process with shared data."""
@@ -1224,36 +1237,37 @@ def _init_worker(grid, alt_parametrizations, fixed_params):
     _thread_local.alt_parametrizations = alt_parametrizations
     _thread_local.fixed_params = fixed_params
 
+
 def _process_galaxy_batch(galaxy_indices_and_data):
     """Process a batch of galaxies in a single worker."""
     # Access shared data from thread-local storage
     grid = _thread_local.grid
     alt_parametrizations = _thread_local.alt_parametrizations
     base_params = _thread_local.fixed_params
-    
+
     galaxies = []
-    
+
     for galaxy_idx, galaxy_data in galaxy_indices_and_data:
         # Reconstruct minimal parameters for this galaxy
         params = base_params.copy()  # Only copy once per batch item
-        params.update(galaxy_data['varying_params'])
-        
+        params.update(galaxy_data["varying_params"])
+
         # Create galaxy
         gal = create_galaxy(
-            sfh=galaxy_data['sfh'],
-            redshift=galaxy_data['redshift'],
-            metal_dist=galaxy_data['metal_dist'],
-            log_stellar_masses=galaxy_data['log_stellar_mass'],
+            sfh=galaxy_data["sfh"],
+            redshift=galaxy_data["redshift"],
+            metal_dist=galaxy_data["metal_dist"],
+            log_stellar_masses=galaxy_data["log_stellar_mass"],
             grid=grid,  # Use shared reference
             **params,
         )
-        
+
         # Process parameters (reuse logic from original)
         save_params = copy.deepcopy(params)
-        save_params["redshift"] = galaxy_data['redshift']
-        save_params.update(galaxy_data['sfh'].parameters)
-        save_params.update(galaxy_data['metal_dist'].parameters)
-        
+        save_params["redshift"] = galaxy_data["redshift"]
+        save_params.update(galaxy_data["sfh"].parameters)
+        save_params.update(galaxy_data["metal_dist"].parameters)
+
         # Apply alternative parametrizations
         if len(alt_parametrizations) > 0:
             to_remove = set()
@@ -1266,13 +1280,13 @@ def _process_galaxy_batch(galaxy_indices_and_data):
                         for k in new_key:
                             save_params[k] = func(k, save_params)
                         to_remove.add(key)
-            
+
             for key in to_remove:
                 save_params.pop(key, None)
-        
+
         gal.all_params = save_params
         galaxies.append((galaxy_idx, gal))
-    
+
     return galaxies
 
 
@@ -1486,8 +1500,7 @@ class GalaxyBasis:
             List of Galaxy objects.
         """
         if not self.build_grid:
-            raise ValueError("You probably meant to call"
-                "_create_matched_galaxies instead.")
+            raise ValueError("You probably meant to call_create_matched_galaxies instead.")
 
         varying_param_values = [
             i for i in self.galaxy_params.values() if type(i) in [list, np.ndarray]
@@ -1666,7 +1679,9 @@ class GalaxyBasis:
         sfh_classes = set(type(sfh) for sfh in self.sfhs)
         if len(sfh_classes) > 1:
             if verbose:
-                logger.warning(f"SFH classes are not all the same: {sfh_classes}. Cannot store model.")
+                logger.warning(
+                    f"SFH classes are not all the same: {sfh_classes}. Cannot store model."
+                )
             accept = False
 
         if type(self.sfhs[0]).__name__ not in SFH.parametrisations:
@@ -1805,6 +1820,7 @@ class GalaxyBasis:
 
             em_group.attrs["parameter_keys"] = em_model_params["fixed_parameter_keys"]
             em_group.attrs["parameter_values"] = em_model_params["fixed_parameter_values"]
+            # if it can be an int or float, store as such
             em_group.attrs["parameter_units"] = em_model_params["fixed_parameter_units"]
 
             if em_model_params["dust_law"] is not None:
@@ -1884,7 +1900,23 @@ class GalaxyBasis:
         log_stellar_masses: Union[float, list] = 9,
         grid: Optional[Grid] = None,
         **galaxy_kwargs,
-        ) -> Type[Galaxy]:
+    ) -> Type[Galaxy]:
+        """Create a galaxy from parameters.
+
+        Parameters:
+        -----------
+        sfh: SFH model class, e.g. SFH.LogNormal
+        redshift: redshift of the galaxy
+        metal_dist: metallicity distriution of the galaxy
+        log_stellar_masses: float or list of floats, log10 stellar mass in solar masses
+        grid: Grid object, if None use self.grid
+        galaxy_kwargs: additional keyword arguments to pass to the Galaxy class
+
+        Returns:
+        -------
+        Type[Galaxy]
+            Galaxy object created with the specified parameters.
+        """
         return create_galaxy(
             sfh=sfh,
             redshift=redshift,
@@ -1894,9 +1926,16 @@ class GalaxyBasis:
             **galaxy_kwargs,
         )
 
-    def create_galaxies_optimized(self, fixed_params, varying_param_names, log_base_masses, galaxies_mask=None, n_proc=28, batch_size=None):
+    def create_galaxies_optimized(
+        self,
+        fixed_params,
+        varying_param_names,
+        log_base_masses,
+        galaxies_mask=None,
+        n_proc=28,
+        batch_size=None,
+    ):
         """Optimized version with reduced serialization overhead."""
-        
         # Determine optimal batch size if not provided
         if batch_size is None:
             total_galaxies = len(self.sfhs)
@@ -1908,73 +1947,72 @@ class GalaxyBasis:
         # Prepare lightweight job inputs (grouped into batches)
         job_batches = []
         current_batch = []
-        
+
         for i in tqdm(range(len(self.sfhs)), desc="Preparing galaxy batches", disable=(rank != 0)):
             # Skip this galaxy if the mask is provided and is False
             if galaxies_mask is not None and len(galaxies_mask) > 0 and not galaxies_mask[i]:
                 continue
-                
+
             # Create minimal data structure (no large objects)
             varying_params = {}
             for key in varying_param_names:
                 varying_params[key] = self.galaxy_params[key][i]
-            
+
             # Determine the stellar mass for this galaxy
             try:
                 mass = log_base_masses[i]
             except (IndexError, TypeError):
                 mass = log_base_masses
-            
+
             galaxy_data = {
-                'sfh': self.sfhs[i],
-                'redshift': self.redshifts[i],
-                'metal_dist': self.metal_dists[i],
-                'log_stellar_mass': mass,
-                'varying_params': varying_params,  # Only varying parameters
+                "sfh": self.sfhs[i],
+                "redshift": self.redshifts[i],
+                "metal_dist": self.metal_dists[i],
+                "log_stellar_mass": mass,
+                "varying_params": varying_params,  # Only varying parameters
             }
-            
+
             current_batch.append((i, galaxy_data))
-            
+
             # Create batch when it reaches desired size
             if len(current_batch) >= batch_size:
                 job_batches.append(current_batch)
                 current_batch = []
-        
+
         # Add remaining galaxies to final batch
         if current_batch:
             job_batches.append(current_batch)
-        
+
         if n_proc > 1:
             logger.info(f"Creating {len(job_batches)} batches across {n_proc} processes.")
-            logger.info(f"Average batch size: {sum(len(batch) for batch in job_batches) / len(job_batches):.1f}")
-            
+            logger.info(
+                f"Average batch size: {sum(len(batch) for batch in job_batches) / len(job_batches):.1f}"  # noqa: E501
+            )
+
             # Create a wrapper function that includes the shared data
             def process_batch_with_shared_data(batch):
                 # Initialize thread-local data for this worker
                 _init_worker(self.grid, self.alt_parametrizations, fixed_params)
                 return _process_galaxy_batch(batch)
-            
-            # Use threading backend 
+
+            # Use threading backend
             with parallel_config("threading"):
-                tasks = [
-                    delayed(process_batch_with_shared_data)(batch) 
-                    for batch in job_batches
-                ]
-                
+                tasks = [delayed(process_batch_with_shared_data)(batch) for batch in job_batches]
+
                 # Process batches
                 batch_results = Parallel(n_jobs=n_proc)(
                     tqdm(tasks, desc="Creating galaxy batches", disable=(rank != 0))
                 )
-            
+
             # Flatten results and sort by original index
             all_results = []
             for batch_result in batch_results:
                 all_results.extend(batch_result)
-            
+
             # Sort by original galaxy index to maintain order
             all_results.sort(key=lambda x: x[0])
             self.galaxies = [galaxy for _, galaxy in all_results]
-            
+
         else:
             # Sequential processing - initialize once for the main thread
             _init_worker(self.grid, self.alt_parametrizations, fixed_params)
@@ -1982,7 +2020,6 @@ class GalaxyBasis:
             for batch in tqdm(job_batches, desc="Creating galaxies", disable=(rank != 0)):
                 batch_galaxies = _process_galaxy_batch(batch)
                 self.galaxies.extend([galaxy for _, galaxy in batch_galaxies])
-
 
     def _create_matched_galaxies(
         self,
@@ -2056,7 +2093,7 @@ class GalaxyBasis:
         ):
             self.per_particle = True
 
-        '''
+        """
         job_inputs: List[Dict[str, Any]] = []
         for i in tqdm(range(len(self.sfhs)), desc="Batching galaxy inputs", disable=(rank != 0)):
             # Skip this galaxy if the mask is provided and is False
@@ -2085,15 +2122,17 @@ class GalaxyBasis:
                     "alt_parametrizations": self.alt_parametrizations,
                 }
             )
-        '''
+        """
 
-                # Use the optimized version
-        self.create_galaxies_optimized(galaxies_mask=galaxies_mask,
-                                        varying_param_names=varying_param_names,
-                                        log_base_masses=log_base_masses,
-                                        fixed_params=fixed_params,
-                                        n_proc=1)
-        
+        # Use the optimized version
+        self.create_galaxies_optimized(
+            galaxies_mask=galaxies_mask,
+            varying_param_names=varying_param_names,
+            log_base_masses=log_base_masses,
+            fixed_params=fixed_params,
+            n_proc=1,
+        )
+
         logger.info(f"Created {len(self.galaxies)} galaxies.")
 
         # Use sets instead of lists for faster lookups and unique values
@@ -2258,7 +2297,9 @@ class GalaxyBasis:
                 final_fullpath = fullpath.replace(".hdf5", f"_{batch_i + 1}.hdf5")
                 init_fullpath = fullpath.replace(".hdf5", "_0.hdf5")
                 if os.path.exists(final_fullpath) and not overwrite:
-                    logger.warning(f"Skipping batch {batch_i + 1} as {final_fullpath} already exists.")
+                    logger.warning(
+                        f"Skipping batch {batch_i + 1} as {final_fullpath} already exists."
+                    )
                     galaxies[batch_i] = None  # Clear the batch to free memory
                     skip = True
 
@@ -2417,6 +2458,9 @@ class GalaxyBasis:
 
         # Generate spectra
 
+        if isinstance(emission_model_keys, str):
+            emission_model_keys = [emission_model_keys]
+
         galaxy.stars.get_spectra(self.emission_model)
         galaxy.get_observed_spectra(cosmo=self.cosmo, igm=Inoue14)
 
@@ -2512,7 +2556,7 @@ class GalaxyBasis:
                 age = galaxy.stars.calculate_mean_age()
                 zmet = galaxy.stars.calculate_mean_metallicity()
 
-            text_gal[emission_model] = f"""**{emission_model}**
+            text_gal[emission_model] = f"""{emission_model}
 Age: {age.to(Myr):.0f}
 $\\log_{{10}}(Z)$: {np.log10(zmet):.2f}
 $\\log_{{10}}(M_\\star/M_\\odot)$: {np.log10(mass):.1f}"""
@@ -2581,6 +2625,11 @@ $\\log_{{10}}(M_\\star/M_\\odot)$: {np.log10(mass):.1f}"""
         # secax.set_xlabel("Redshift")
 
         # secax.set_xticks([6, 7, 8, 10, 12, 14, 15, 20])
+
+        ax[0].set_xlim(min_x, max_x)
+        ax[0].set_ylim(min_y, max_y)
+
+        print(min_x, max_x)
 
         if save:
             if not os.path.exists(out_dir):
@@ -3031,8 +3080,7 @@ class CombinedBasis:
         outputs = {}
         for i, base in enumerate(self.bases):
             logger.info(
-                f"Emission model key for base {base.model_name}:"
-                f"{self.base_emission_model_keys[i]}"
+                f"Emission model key for base {base.model_name}:{self.base_emission_model_keys[i]}"
             )
 
             full_out_path = f"{self.out_dir}/{base.model_name}.hdf5"
@@ -3049,8 +3097,10 @@ class CombinedBasis:
                         key=lambda x: int(x.split("_")[-1].split(".")[0]),
                     )
                 else:
-                    raise ValueError(f"Synthesizer pipeline output {full_out_path} does not exist. "
-                                     "Have you run the pipeline using `combined_basis.process_bases` first?")  # noqa E501
+                    raise ValueError(
+                        f"Synthesizer pipeline output {full_out_path} does not exist. "
+                        "Have you run the pipeline using `combined_basis.process_bases` first?"
+                    )  # noqa E501
             else:
                 full_out_paths = [full_out_path]
 
@@ -4482,6 +4532,7 @@ class GalaxySimulator(object):
         fixed_params: dict = None,
         photometry_to_remove=None,
         ignore_params: list = None,
+        ignore_scatter: bool = False,
     ) -> None:
         """Parameters
 
@@ -4559,6 +4610,8 @@ class GalaxySimulator(object):
             Should match filter codes in the instrument filters.
         ignore_params : list
             List of parameters which are sampled which won't be checked for use against the model.
+        ignore_scatter : bool
+            If True, ignore scatter in the empirical uncertainty model. Default is False.
 
         """
         if fixed_params is None:
@@ -4602,14 +4655,12 @@ class GalaxySimulator(object):
         self.fixed_params = fixed_params
         self.depths = depths
         self.ignore_params = ignore_params
+        self.ignore_scatter = ignore_scatter
 
         if len(photometry_to_remove) > 0:
-            filter_codes = instrument.filters.filter_codes
-            new_filters = []
-            for filter_code in filter_codes:
-                if filter_code not in photometry_to_remove:
-                    new_filters.append(filter_code)
-            instrument.filters = FilterCollection(filter_codes=new_filters)
+            self.update_photo_filters(
+                photometry_to_remove=photometry_to_remove, photometry_to_add=None
+            )
 
         if noise_models is not None:
             assert isinstance(noise_models, dict), (
@@ -4688,6 +4739,44 @@ class GalaxySimulator(object):
             + required_keys
         )
 
+    def update_photo_filters(self, photometry_to_remove=None, photometry_to_add=None):
+        """Update the photometric filters used in the simulation.
+
+        This method allows you to modify the set of photometric filters
+        used in the simulation by removing or adding specific filters.
+        It updates the instrument's filter collection accordingly.
+
+        Parameters
+        ----------
+        photometry_to_remove : list, optional
+            List of filter codes to remove from the current set of filters.
+            If None, no filters will be removed.
+        photometry_to_add : list, optional
+            List of filter codes to add to the current set of filters.
+            If None, no filters will be added.
+
+        """
+        if photometry_to_remove is None:
+            photometry_to_remove = []
+        if photometry_to_add is None:
+            photometry_to_add = []
+
+        filter_codes = self.instrument.filters.filter_codes
+        new_filters = []
+
+        # Remove specified filters
+        for filter_code in filter_codes:
+            if filter_code not in photometry_to_remove:
+                new_filters.append(filter_code)
+
+        # Add specified filters if they are not already present
+        for filter_code in photometry_to_add:
+            if filter_code not in new_filters:
+                new_filters.append(filter_code)
+
+        self.instrument.filters = FilterCollection(filter_codes=new_filters)
+        print(f"Updated filters: {self.instrument.filters.filter_codes}")
+
     @classmethod
     def from_grid(
         cls,
@@ -4757,7 +4846,7 @@ class GalaxySimulator(object):
                     if grid_dir is None:
                         raise ValueError("SYNTHESIZER_GRID_DIR environment variable not set.")
 
-            grid = Grid(grid_name, grid_dir, new_lam=lam)
+            grid = Grid(grid_name, grid_dir)  # new_lam=lam)
 
             # Step 2. Make instrument
             instrument = Instrument._from_hdf5(model_group["Instrument"])
@@ -4765,7 +4854,12 @@ class GalaxySimulator(object):
             # Step 3 - recreate cosmology
             cosmo_mapping = model_group.attrs.get("cosmology", None)
 
-            cosmo = Cosmology.from_format(cosmo_mapping, format="yaml")
+            try:
+                cosmo = Cosmology.from_format(cosmo_mapping, format="yaml")
+            except Exception:
+                from astropy.cosmology import Planck18 as cosmo
+
+                print("Failed to load cosmology from HDF5. Using Planck18 instead.")
 
             # Step 4 - Collect sfh_model
 
@@ -4791,6 +4885,9 @@ class GalaxySimulator(object):
             em_group = model_group["EmissionModel"]
             emission_model_key = model_group.attrs.get("emission_model_key", "total")
 
+            if "emission_model_key" in kwargs:
+                emission_model_key = kwargs.pop("emission_model_key")
+
             if override_emission_model is not None:
                 emission_model = override_emission_model
 
@@ -4798,7 +4895,7 @@ class GalaxySimulator(object):
                 emission_model_name = em_group.attrs["name"]
                 import synthesizer.emission_models as em
                 import synthesizer.emission_models.attenuation as dm
-                import synthesizer.emission_models.dust as dem
+                import synthesizer.emission_models.dust.emission as dem
 
                 emission_model = getattr(em, emission_model_name, None)
 
@@ -4813,7 +4910,7 @@ class GalaxySimulator(object):
 
                     if dust_model is None:
                         raise ValueError(
-                            f"Dust model {dust_model_name} not found in synthesizer.emission_models. Cannot create GalaxySimulator."  # noqa: E501
+                            f"Dust model {dust_model_name} not found in synthesizer.emission_models.dust. Cannot create GalaxySimulator."  # noqa: E501
                         )
 
                     dust_model_params = {}
@@ -4855,7 +4952,10 @@ class GalaxySimulator(object):
                             dust_emission_model_params[key] = unyt_array(value, unit)
                         else:
                             dust_emission_model_params[key] = value
-
+                    cmb = dust_emission_model_params.pop("cmb_factor", None)
+                    dust_emission_model_params.pop("temperature_z", None)
+                    if cmb is not None:
+                        dust_emission_model_params["cmb_heating"] = cmb != 1
                     dust_emission_model = dust_emission_model(**dust_emission_model_params)
                 else:
                     dust_emission_model = None
@@ -4868,6 +4968,8 @@ class GalaxySimulator(object):
                 for key, value, unit in zip(em_keys, em_values, em_units):
                     if unit != "":
                         emission_model_params[key] = unyt_array(value, unit)
+                    elif value.isnumeric() or value.replace(".", "", 1).isdigit():
+                        emission_model_params[key] = float(value)
                     else:
                         emission_model_params[key] = value
 
@@ -4876,6 +4978,12 @@ class GalaxySimulator(object):
 
                 if dust_emission_model is not None:
                     emission_model_params["dust_emission_model"] = dust_emission_model
+
+                # get arguments from inspect of emission_model
+                sig = inspect.signature(emission_model).parameters
+                if "dust_emission" in sig and "dust_emission_model" not in sig:
+                    emission_model_params["dust_emission"] = dust_emission_model
+                    emission_model_params.pop("dust_emission_model", None)
 
                 emission_model = emission_model(
                     grid=grid,
@@ -4928,6 +5036,8 @@ class GalaxySimulator(object):
                     # need to evaluate the function
                     code = transform_group[key][()].decode("utf-8")
                     code = f"\n{code}\n"
+                    # Remove excess indentation
+                    code = inspect.cleandoc(code)
                     func = exec(code, globals(), locals())
                     func_name = code.split("def ")[-1].split("(")[0]
                     func = locals()[func_name]
@@ -4936,7 +5046,7 @@ class GalaxySimulator(object):
                         new_key = transform_group[key].attrs["new_parameter_name"]
                         param_transforms[key] = (new_key, func)
 
-            return cls(
+            dict_create = dict(
                 sfh_model=sfh_model,
                 zdist_model=zdist_model,
                 grid=grid,
@@ -4949,8 +5059,9 @@ class GalaxySimulator(object):
                 param_units=param_units,
                 param_transforms=param_transforms,
                 fixed_params=fixed_params,
-                **kwargs,
             )
+            dict_create.update(kwargs)
+            return cls(**dict_create)
 
     def simulate(self, params):
         """Simulate photometry from the given parameters.
@@ -5030,7 +5141,6 @@ class GalaxySimulator(object):
         param_names = [i for i in params.keys() if i not in self.total_possible_keys]
 
         # Check if any param names named here are in emitter param dictionry lusts
-
         found_params = []
         for key in param_names:
             found = False
@@ -5122,15 +5232,16 @@ class GalaxySimulator(object):
                 fluxes = galaxy.stars.spectra[self.emission_model_key].get_photo_fnu(
                     self.instrument.filters
                 )
-                outputs["photo_fnu"] = copy.deepcopy(fluxes.photo_fnu)
-                outputs["photo_wav"] = copy.deepcopy(fluxes.filters.pivot_lams)
+                outputs["photo_fnu"] = fluxes.photo_fnu
+                outputs["photo_wav"] = fluxes.filters.pivot_lams
 
-                fluxes = galaxy.stars.spectra[self.emission_model_key]
-                outputs["fnu"] = copy.deepcopy(fluxes.fnu)
-                # print(np.sum(np.isnan(fluxes)), np.sum(fluxes == 0))
-                outputs["fnu_wav"] = copy.deepcopy(
-                    galaxy.stars.spectra[self.emission_model_key].lam * (1 + galaxy.redshift)
-                )
+                if "fnu" in self.output_type:
+                    fluxes = galaxy.stars.spectra[self.emission_model_key]
+                    outputs["fnu"] = copy.deepcopy(fluxes.fnu)
+                    # print(np.sum(np.isnan(fluxes)), np.sum(fluxes == 0))
+                    outputs["fnu_wav"] = copy.deepcopy(
+                        galaxy.stars.spectra[self.emission_model_key].lam * (1 + galaxy.redshift)
+                    )
 
         if self.out_flux_unit == "AB":
 
@@ -5273,6 +5384,9 @@ class GalaxySimulator(object):
             The scattered fluxes and their corresponding errors.
             If depths are not provided, returns the original fluxes and None for errors.
         """
+        if self.ignore_scatter:
+            return fluxes, None
+
         if self.depths is not None:
             depths = self.depths
             if depths is None:
