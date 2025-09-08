@@ -9,7 +9,7 @@ import numpy as np
 from astropy.table import Table
 from simple_parsing import ArgumentParser
 
-from sbifitter import (
+from synference import (
     SBI_Fitter,
     Simformer_Fitter,
     create_uncertainty_models_from_EPOCHS_cat,

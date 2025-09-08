@@ -25,7 +25,7 @@ try:
         SFH,
         ZDist,
     )  # Need concrete SFH, ZDist classese
-except:
+except Exception:
     pass
 
 from unyt import (
@@ -80,18 +80,14 @@ class GalaxyPhotometryTask(InferenceTask):
             test_theta_data: Optional test data for theta (parameters).
             attention_mask_type: Type of attention mask to use, can be "full", "causal",
                 or a custom jnp.ndarray defining the mask structure.
-            
+
         """
         super().__init__(name, backend)
 
         if run_simulator_fn is None and (test_X_data is None or test_theta_data is None):
-            print('Warning! No simulator function or test data provided. ')
+            print("Warning! No simulator function or test data provided. ")
 
-        if (
-            prior_dict is None
-            or param_names_ordered is None
-            or num_filters is None
-        ):
+        if prior_dict is None or param_names_ordered is None or num_filters is None:
             raise ValueError(
                 """prior_dict, param_names_ordered,
                 and num_filters must be provided."""
@@ -114,7 +110,8 @@ class GalaxyPhotometryTask(InferenceTask):
 
         if run_simulator_fn is None:
             self.fake_simulator = True
-            def run_simulator_fn(X, return_type='jax'):
+
+            def run_simulator_fn(X, return_type="jax"):
                 return None
         else:
             self.fake_simulator = False
@@ -171,15 +168,14 @@ class GalaxyPhotometryTask(InferenceTask):
 
         if self.fake_simulator:
             if self.test_X_data is None or self.test_theta_data is None:
-                raise ValueError(
-                    "No simulator function provided and no test data available."
-                )
+                raise ValueError("No simulator function provided and no test data available.")
             # Use test data if available
             if num_samples > self.test_X_data.shape[0]:
                 raise ValueError(
-                    f"Requested {num_samples} samples, but only {self.test_X_data.shape[0]} are available."
+                    f"Requested {num_samples} samples"
+                    f" but only {self.test_X_data.shape[0]} are available."
                 )
-            thetas_torxh = self.test_theta_data[:num_samples]
+            thetas_torch = self.test_theta_data[:num_samples]
             xs_out = self.test_X_data[:num_samples]
         else:
             # Sample thetas (parameters) using the prior
@@ -214,16 +210,16 @@ class GalaxyPhotometryTask(InferenceTask):
         """Defines the base attention mask for the transformer."""
         theta_dim = self.get_theta_dim()
         x_dim = self.get_x_dim()
-        
+
         if self.attention_mask_type == "full":
             # Block for θ attending to θ (Full self-attention) for parameters
             thetas_self_mask = jnp.ones((theta_dim, theta_dim), dtype=jnp.bool_)
             # Block for x attending to x (Full self-attention) for data
             xs_self_mask = jnp.ones((x_dim, x_dim), dtype=jnp.bool_)
             # Block for x attending to θ - data can attend to parameters
-            xs_attends_theta_mask = jnp.ones((x_dim, theta_dim), dtype=jnp.bool_)
+            # xs_attends_theta_mask = jnp.ones((x_dim, theta_dim), dtype=jnp.bool_)
             # Block for θ attending to x (NO attention) - parameters do not attend to data
-            thetas_attends_xs_mask = jnp.zeros((theta_dim, x_dim), dtype=jnp.bool_)
+            # thetas_attends_xs_mask = jnp.zeros((theta_dim, x_dim), dtype=jnp.bool_)
         elif self.attention_mask_type == "causal":
             # Parameters only attend to themselves (or causal if ordered)
             thetas_self_mask = jnp.eye(theta_dim, dtype=jnp.bool_)
@@ -242,8 +238,10 @@ class GalaxyPhotometryTask(InferenceTask):
                     "Custom attention mask must be of shape (theta_dim + x_dim, theta_dim + x_dim)."
                 )
             base_mask = base_mask.astype(jnp.bool_)
+
             def base_mask_fn(node_ids, node_meta_data):
                 return base_mask[jnp.ix_(node_ids, node_ids)]
+
             return base_mask_fn
         else:
             raise ValueError(
@@ -432,19 +430,17 @@ def load_full_model(dir_path, model_id, simulator=None):
         model = joblib.load(file)
 
     try:
-        meta = load(f'{dir_path}/{model_id.replace("posterior", "params")}.pkl')
+        meta = load(f"{dir_path}/{model_id.replace('posterior', 'params')}.pkl")
         model.__dict__.update(meta)
         task_name = model.edge_mask_fn_params.get("task")
         task = get_task(task_name)
         task.__dict__.update(meta)
 
-        if getattr(task, 'prior_dict', None) is None:
-            prior_dict = meta['prior']
+        if getattr(task, "prior_dict", None) is None:
+            prior_dict = meta["prior"]
         else:
             prior_dict = task.prior_dict
-        task.prior_dist = GalaxyPrior(
-            prior_ranges=prior_dict, param_order=task.param_names_ordered
-        )
+        task.prior_dist = GalaxyPrior(prior_ranges=prior_dict, param_order=task.param_names_ordered)
 
         model.edge_mask_fn = get_edge_mask_fn(model.edge_mask_fn_params["name"], task)
 
@@ -453,11 +449,11 @@ def load_full_model(dir_path, model_id, simulator=None):
         else:
             print("No simulator provided. Please provide a simulator to use with the model.")
     except FileNotFoundError as e:
-        print(f'not found {e}')
+        print(f"not found {e}")
         meta = {}
         task = None
     except (EOFError, AttributeError):
-        print(f'Pickle corrupted?')
+        print("Pickle corrupted?")
         meta = {}
         task = None
 
@@ -517,7 +513,7 @@ if __name__ == "__main__":
         dust_emission_model=None,
     )
     emitter_params_dict = {"stellar": ["tau_v"]}
-    from sbifitter import GalaxySimulator
+    from synference import GalaxySimulator
 
     galaxy_simulator_instance = GalaxySimulator(
         sfh_model=sfh_model_class,  # Pass the class

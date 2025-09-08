@@ -20,7 +20,7 @@ test_dir = os.path.dirname(os.path.abspath(__file__))
 grid_dir = test_dir + "/test_grids/"
 os.environ["SYNTHESIZER_GRID_DIR"] = grid_dir
 
-from sbifitter import (  # noqa E402
+from synference import (  # noqa E402
     CombinedBasis,
     GalaxyBasis,
     SBI_Fitter,
@@ -572,7 +572,7 @@ class TestCombinedBasis:
 
 @pytest.fixture
 def test_sbi_grid():
-    """Fixture to create a test SBI grid for testing SBIFitter."""
+    """Fixture to create a test SBI grid for testing synference."""
     return f"{test_dir}/test_grids/sbi_test_grid.hdf5"
 
 
@@ -580,28 +580,28 @@ class TestSBIFitter:
     """Test suite for the SBI_Fitter class."""
 
     def test_init_sbifitter_from_grid(self, test_sbi_grid):
-        """Test that SBIFitter initializes correctly with a valid grid."""
+        """Test that synference initializes correctly with a valid grid."""
         fitter = SBI_Fitter.init_from_hdf5(model_name="test_sbi", hdf5_path=test_sbi_grid)
 
         assert fitter.grid_path == test_sbi_grid, (
-            "SBIFitter did not initialize with the correct grid file."
+            "synference did not initialize with the correct grid file."
         )
 
     def test_sbifitter_feature_array_creation(self, test_sbi_grid):
-        """Test that SBIFitter can create a basic feature array from the grid."""
+        """Test that synference can create a basic feature array from the grid."""
         fitter = SBI_Fitter.init_from_hdf5(model_name="test_sbi", hdf5_path=test_sbi_grid)
 
         fitter.create_feature_array_from_raw_photometry()
 
         assert fitter.has_features, (
-            "SBIFitter did not create a feature array from the raw photometry."
+            "synference did not create a feature array from the raw photometry."
         )
         assert (
             len(fitter.simple_fitted_parameter_names) > 0
-        ), """SBIFitter simple fitted parameter names are empty
+        ), """synference simple fitted parameter names are empty
              after feature array creation."""
         assert np.shape(fitter.feature_array)[0] == len(fitter.fitted_parameter_array), (
-            "SBIFitter feature array shape does not match the expected shape."
+            "synference feature array shape does not match the expected shape."
         )
 
         # Test no normalization
@@ -694,10 +694,10 @@ class TestSBIFitter:
 
 
 class TestFullPipeline:
-    """Test suite for full runthrough of grids and SBIFitter."""
+    """Test suite for full runthrough of grids and synference."""
 
     def test_full_lhc(self, lhc_basis_params):
-        """Test the full runthrough of LHC grid creation and SBIFitter."""
+        """Test the full runthrough of LHC grid creation and synference."""
         # Create the GalaxyBasis with LHC parameters
         basis = GalaxyBasis(**lhc_basis_params)
 
@@ -712,7 +712,7 @@ class TestFullPipeline:
             overwrite=True,
         )
 
-        # Initialize SBIFitter from the created grid
+        # Initialize synference from the created grid
         fitter = SBI_Fitter.init_from_hdf5(
             model_name="test_sbi_lhc",
             hdf5_path=f"{test_dir}/test_output/test_full_simple.hdf5",
@@ -722,7 +722,7 @@ class TestFullPipeline:
         fitter.create_feature_array()
 
         assert fitter.has_features, (
-            "SBIFitter did not create a feature array from the raw photometry."
+            "synference did not create a feature array from the raw photometry."
         )
 
         fitter.run_single_sbi()
@@ -733,7 +733,7 @@ class TestSuppFunctions:
 
     def param_functions(self, function):
         """Get a parameter function from the SUPP_FUNCTIONS module."""
-        from sbifitter import SUPP_FUNCTIONS
+        from synference import SUPP_FUNCTIONS
 
         return getattr(SUPP_FUNCTIONS, function)
 

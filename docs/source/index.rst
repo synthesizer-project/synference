@@ -1,14 +1,14 @@
-SBIFitter
+synference
 ^^^^^^^^^
 
-SBIFitter is an open-source python package for SED fitting of photometric and spectroscopic data using Simulation-Based Inference (SBI) methods. It is part of the broader Synthesizer project, which aims to provide tools for generating and analyzing synthetic astronomical observables.
+synference is an open-source python package for SED fitting of photometric and spectroscopic data using Simulation-Based Inference (SBI) methods. It is part of the broader Synthesizer project, which aims to provide tools for generating and analyzing synthetic astronomical observables.
 
 For the Synthesizer project homepage, see https://synthesizer-project.github.io/.
 
-This documentation provides a broad overview of the various components in SBIFitter and how they interact.
+This documentation provides a broad overview of the various components in synference and how they interact.
 The `getting started guide <getting_started/getting_started>`_ contains download and installation instructions, as well as an overview of the code.
 
-For detailed examples of what SBIFitter can do, take a look at the `examples <auto_examples/index>`_ page.
+For detailed examples of what synference can do, take a look at the `examples <auto_examples/index>`_ page.
 A full description of the code base is provided in the `API <API>`_.
 
 Contents
@@ -31,7 +31,7 @@ Contents
 Citation & Acknowledgement
 --------------------------
 
-Please cite **all** of the following papers (Harvey et al. 2025 (in prep.), `Lovell et al. 2025 <https://ui.adsabs.harvard.edu/abs/2025arXiv250803888L/abstract>`_, `Roper et al. 2025 <https://ui.adsabs.harvard.edu/abs/2025arXiv250615811R/abstract>`_, `Ho et al. 2024 <https://ui.adsabs.harvard.edu/abs/2024OJAp....7E..54H/abstract>`_) if you use SBIFitter in your research:
+Please cite **all** of the following papers (Harvey et al. 2025 (in prep.), `Lovell et al. 2025 <https://ui.adsabs.harvard.edu/abs/2025arXiv250803888L/abstract>`_, `Roper et al. 2025 <https://ui.adsabs.harvard.edu/abs/2025arXiv250615811R/abstract>`_, `Ho et al. 2024 <https://ui.adsabs.harvard.edu/abs/2024OJAp....7E..54H/abstract>`_) if you use synference in your research:
 
 .. code-block:: bibtex
 
@@ -87,7 +87,7 @@ Please cite **all** of the following papers (Harvey et al. 2025 (in prep.), `Lov
 Contributing
 ------------
 
-Please see `here <https://github.com/synthesizer-project/sbifitter/blob/main/docs/CONTRIBUTING.md>`_ for contribution guidelines.
+Please see `here <https://github.com/synthesizer-project/synference/blob/main/docs/CONTRIBUTING.md>`_ for contribution guidelines.
 
 Primary Contributors
 ---------------------
@@ -97,4 +97,4 @@ Primary Contributors
 License
 -------
 
-SBIFItter is free software made available under the GNU General Public License v3.0. For details see the `LICENSE <https://github.com/synthesizer-project/sbifitter/blob/main/LICENSE.md>`_.
+synference is free software made available under the GNU General Public License v3.0. For details see the `LICENSE <https://github.com/synthesizer-project/synference/blob/main/LICENSE.md>`_.

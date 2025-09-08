@@ -13,7 +13,7 @@ from synthesizer.instruments import FilterCollection, Instrument
 from synthesizer.parametric import SFH, ZDist
 from unyt import Myr
 
-from sbifitter import (
+from synference import (
     GalaxyBasis,
     calculate_muv,
     calculate_mwa,
