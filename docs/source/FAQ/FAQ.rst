@@ -1,7 +1,7 @@
 Frequently Asked Questions
 **************************
 
-Here are some frequently asked questions about SBIFitter. If you have a question that is not answered here, please open an issue on the `GitHub repository <https://github.com/synthesizer-project/sbifitter/issues>`_.
+Here are some frequently asked questions about synference. If you have a question that is not answered here, please open an issue on the `GitHub repository <https://github.com/synthesizer-project/synference/issues>`_.
 
 Q: How do I move a model trained with GPU to CPU for inference?
 ----------------------------------------------------------------

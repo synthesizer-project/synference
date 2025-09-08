@@ -1,4 +1,4 @@
-"""Utility functions for SBIFitter."""
+"""Utility functions for synference."""
 
 import atexit
 import io

@@ -6,7 +6,7 @@
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
-project = "SBIFitter"
+project = "synference"
 copyright = "2025, Thomas Harvey, Christopher Lovell, Sophie Newman."
 author = "Thomas Harvey, Christopher Lovell, Sophie Newman."
 release = "v0.1.0"
@@ -38,7 +38,7 @@ sphinx_gallery_conf = {
     # Directory where function/class granular galleries are stored
     "backreferences_dir": "_autosummary/backreferences",
     # Modules for which function/class level galleries are created
-    "doc_module": ("sbifitter"),
+    "doc_module": ("synference"),
     "abort_on_example_error": True,
     # "show_memory": True,
     # "recommender": {
@@ -80,6 +80,6 @@ html_theme_options = {
     "sidebar_hide_name": True,
 }
 
-html_title = "SBIFitter"
+html_title = "synference"
 
 ignore_pattern = ["basic_model.py"]
