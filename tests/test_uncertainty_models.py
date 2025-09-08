@@ -1,4 +1,4 @@
-"""Tests for the uncertainty model classes in sbifitter."""
+"""Tests for the uncertainty model classes in synference."""
 
 import os
 import pickle
@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 from unyt import Jy, uJy
 
-from sbifitter import (
+from synference import (
     AsinhEmpiricalUncertaintyModel,
     DepthUncertaintyModel,
     GeneralEmpiricalUncertaintyModel,
@@ -83,7 +83,7 @@ def test_depth_model_apply_noise():
 
     noisy_flux = model.apply_noise(input_flux)
     noise = (noisy_flux - input_flux).to_value(Jy)
-    pytest.skip('Should have better statistical tests')
+    pytest.skip("Should have better statistical tests")
 
     assert np.mean(noise) == pytest.approx(0.0, abs=5e-9)
     assert np.std(noise) == pytest.approx(model.sigma.to_value(Jy), rel=5e-2)
@@ -97,7 +97,7 @@ def test_depth_model_apply_scalings():
     flux_jy, error_jy = model.apply_scalings(flux_ab, error_ab, flux_units="AB", out_units="Jy")
 
     expected_flux_jy = UncertaintyModel.ab_to_jy(flux_ab).to_value(Jy)
-    pytest.skip('Should have better statistical tests')
+    pytest.skip("Should have better statistical tests")
 
     assert flux_jy == pytest.approx(expected_flux_jy)
 
@@ -114,7 +114,7 @@ def test_depth_model_serialization(temp_dir):
 
     assert isinstance(model_loaded, DepthUncertaintyModel)
     assert model_orig.depth_ab == model_loaded.depth_ab
-    pytest.skip('Should have better statistical tests')
+    pytest.skip("Should have better statistical tests")
 
     assert model_orig.sigma.to_value(Jy) == pytest.approx(model_loaded.sigma.to_value(Jy))
 
@@ -260,7 +260,7 @@ def test_already_binned_path(mock_data):
     test_flux = np.array([24, 25, 26])
     mu1 = model1.sample_uncertainty(test_flux)
     mu2 = model2.sample_uncertainty(test_flux)
-    pytest.skip('Should have better statistical tests')
+    pytest.skip("Should have better statistical tests")
 
     np.testing.assert_allclose(mu1, mu2, atol=0.3)
 
@@ -280,8 +280,8 @@ def test_apply_noise_statistical_properties(mock_data):
 
     # The expected standard deviation is the error the model samples for that flux
     expected_std = model.sample_uncertainty(np.array([test_flux]))[0]
-    pytest.skip('Should have better statistical tests')
-    
+    pytest.skip("Should have better statistical tests")
+
     assert np.mean(noise) == pytest.approx(0.0, abs=0.1)
     assert np.std(noise) == pytest.approx(expected_std, rel=0.1)
 
@@ -303,7 +303,7 @@ def test_upper_limit_logic(mock_data):
     # A very faint flux that should always become an upper limit
     faint_flux = np.array([30.0])
     noisy_flux, _ = model.apply_noise(faint_flux)
-    pytest.skip('Should have better statistical tests')
+    pytest.skip("Should have better statistical tests")
 
     assert model.upper_limit_value is not None
     # The output flux should be close to the pre-calculated upper limit value
@@ -335,7 +335,7 @@ def test_general_model_apply_scalings(mock_data):
         flux_units="AB",
         out_units="AB",  # Keep units the same for a clear comparison
     )
-    pytest.skip('Should have better statistical tests')
+    pytest.skip("Should have better statistical tests")
 
     # 4. Assert the high-SNR point is unchanged.
     # Since input and output units are the same, the values should be identical.
@@ -430,7 +430,7 @@ def test_apply_noise_preemptive_snr_check(mock_data):
     # Since the source was caught by the pre-emptive mask, it should never
     # have had random noise added. The flux should be set deterministically
     # to the upper limit value every single time.
-    pytest.skip('Should have better statistical tests')
+    pytest.skip("Should have better statistical tests")
 
     assert len(np.unique(output_fluxes)) == 1
     assert output_fluxes[0] == pytest.approx(model.upper_limit_value)
@@ -463,7 +463,7 @@ def test_upper_limit_flux_behaviours(mock_data, flux_behaviour, expected_is_scat
 
     is_scattered = len(np.unique(output_fluxes)) > 1
     assert is_scattered == expected_is_scattered
-    pytest.skip('Should have better statistical tests')
+    pytest.skip("Should have better statistical tests")
 
     if not expected_is_scattered:
         # If deterministic, check it's the correct value
@@ -501,7 +501,7 @@ def test_upper_limit_error_behaviours(mock_data, err_behaviour, expected_error_f
 
     faint_flux = np.array([35.0])  # This flux is guaranteed to become an upper limit
     _, output_error = model.apply_noise(faint_flux, true_flux_units="AB")
-    pytest.skip('Should have better statistical tests')
+    pytest.skip("Should have better statistical tests")
 
     expected_error = expected_error_func(model)
     assert output_error[0] == pytest.approx(expected_error), (
