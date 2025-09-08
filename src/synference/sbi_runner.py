@@ -6117,12 +6117,12 @@ class MissingPhotometryHandler:
         self.device = device
 
     @classmethod
-    def init_from_sbifitter(cls, sbifitter, **run_params):
+    def init_from_sbifitter(cls, synference, **run_params):
         """Initialize from a fitted SBI model.
 
         Parameters:
         -----------
-        sbifitter : object
+        synference : object
             Fitted SBI model object
 
         Returns:
@@ -6131,9 +6131,9 @@ class MissingPhotometryHandler:
             Instance of the handler
         """
         return cls(
-            training_photometry=sbifitter.feature_array,
-            training_parameters=sbifitter.fitted_parameter_array,
-            posterior_estimator=sbifitter.posteriors,
+            training_photometry=synference.feature_array,
+            training_parameters=synference.fitted_parameter_array,
+            posterior_estimator=synference.posteriors,
             run_params=run_params,
         )
 

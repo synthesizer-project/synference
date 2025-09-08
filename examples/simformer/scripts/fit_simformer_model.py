@@ -2,12 +2,12 @@ import astropy.units as u
 import numpy as np
 from astropy.table import Table
 
-from sbifitter import Simformer_Fitter
+from synference import Simformer_Fitter
 
 fitter = Simformer_Fitter.load_saved_model(
     model_name="simformer_v2_initial",
-    grid_path="/cosma/apps/dp276/dc-harv3/sbifitter/grids/grid_BPASS_Chab_DenseBasis_SFH_0.01_z_12_logN_5.0_CF00_v2.hdf5",
-    model_file="/cosma/apps/dp276/dc-harv3/sbifitter/models/simformer_v2",
+    grid_path="/cosma/apps/dp276/dc-harv3/synference/grids/grid_BPASS_Chab_DenseBasis_SFH_0.01_z_12_logN_5.0_CF00_v2.hdf5",
+    model_file="/cosma/apps/dp276/dc-harv3/synference/models/simformer_v2",
 )
 
 cat_path = (

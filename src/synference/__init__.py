@@ -12,7 +12,7 @@ from .utils import (
     analyze_feature_contributions, optimize_sfh_xlimit, make_serializable, setup_mpi_named_logger, move_to_device
 )
 # Set up logging
-logger = setup_mpi_named_logger("sbifitter", level=logging.INFO)
+logger = setup_mpi_named_logger("synference", level=logging.INFO)
 
 
 from .grid import (

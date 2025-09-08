@@ -18,7 +18,7 @@ from synthesizer.parametric import SFH, ZDist
 from tqdm import tqdm
 from unyt import K, Myr, unyt_array
 
-from sbifitter import (
+from synference import (
     GalaxyBasis,
     calculate_beta,
     calculate_colour,

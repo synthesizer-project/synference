@@ -20,7 +20,7 @@ from synthesizer.parametric import SFH, ZDist
 from tqdm import tqdm
 from unyt import K, Myr, dimensionless, unyt_array, Gyr
 
-from sbifitter import (
+from synference import (
     CombinedBasis,
     GalaxyBasis,
     calculate_beta,

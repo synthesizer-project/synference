@@ -12,6 +12,7 @@ build/
 dist/
 wheels/
 *.egg-info
+*.style
 
 # Virtual environments
 .venv

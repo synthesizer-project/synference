@@ -34,7 +34,7 @@ jobs:
     
     - name: Test import
       run: |
-        python -c "import sbifitter" 
+        python -c "import synference" 
     
     - name: Test with pytest
       run: |

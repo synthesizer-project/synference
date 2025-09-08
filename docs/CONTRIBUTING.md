@@ -16,7 +16,7 @@ The GitHub workflow will automatically run [Ruff](https://github.com/astral-sh/r
 
 ## Settting up your development environment
 
-To begin developing in SBIFitter first set up a new environment.
+To begin developing in synference first set up a new environment.
 
 ```bash
 python3 -m venv sbi-dev-env
@@ -26,8 +26,8 @@ source sbi-dev-env/bin/activate
 You can then clone the repo and install it in editable mode with the extra development dependencies.
 
 ```bash
-git clone https://github.com/SBIFitter-project/SBIFitter.git
-cd sbifitter
+git clone https://github.com/synference-project/synference.git
+cd synference
 pip install -e .[dev]
 ```
 
@@ -35,11 +35,11 @@ Note: if you are planning to build the docs locally you'll also need to include 
 
 ### Test data
 
-To run existing examples or docs and add new ones, you'll need test data, provided [here](https://sbifitter-project.github.io/SBIFitter/getting_started/downloading_grids.html#downloading-the-test-grid). This can be downloaded through the command line interface. Run the following at the root of the SBIFitter repo.
+To run existing examples or docs and add new ones, you'll need test data, provided [here](https://synference-project.github.io/synference/getting_started/downloading_grids.html#downloading-the-test-grid). This can be downloaded through the command line interface. Run the following at the root of the synference repo.
 
 ```bash
-SBIFitter-download --test-grids --dust-grid -d tests/test_grid
-SBIFitter-download --camels-data -d tests/data
+synference-download --test-grids --dust-grid -d tests/test_grid
+synference-download --camels-data -d tests/data
 ```
 
 These commands will store the test data in the `tests` directory at the root of the repo; all examples expect this data to reside in this location.
@@ -95,7 +95,7 @@ z = x * 2  # this is an inline comment
 
 ## Development documentation 
 
-The [published documentation](https://sbifitter-project.github.io/SBIFitter/) reflects the current distribution available on PyPI. If you would like to see the current development version in your branch or the main branch, you will have to build the documentation locally. To do so, navigate to the ``docs`` directory and run:
+The [published documentation](https://synference-project.github.io/synference/) reflects the current distribution available on PyPI. If you would like to see the current development version in your branch or the main branch, you will have to build the documentation locally. To do so, navigate to the ``docs`` directory and run:
 
 ```bash
 make clean; make html
@@ -104,7 +104,7 @@ This will build a local copy of the documentation representative of the currentl
 
 ## Contributing to the Documentation
 
-The SBIFitter documentation is written in a combination of reStructuredText, Jupyter notebooks and Python scripts.
+The synference documentation is written in a combination of reStructuredText, Jupyter notebooks and Python scripts.
 Adding content should be relatively simple if you follow the instructions below.
 
 ### Adding notebooks
@@ -163,7 +163,7 @@ Subfolders of examples should contain a `README.rst` with a section heading (ple
 
 ## Debugging C development
 
-If you are writing C extensions for SBIFitter you can include debugging checks and optionally activate them using the `WITH_DEBUGGING_CHECKS` preprocessor directive. To use this wrap the debugging code in an ifdef:
+If you are writing C extensions for synference you can include debugging checks and optionally activate them using the `WITH_DEBUGGING_CHECKS` preprocessor directive. To use this wrap the debugging code in an ifdef:
 
 ```
 #ifdef WITH_DEBUGGING_CHECKS
