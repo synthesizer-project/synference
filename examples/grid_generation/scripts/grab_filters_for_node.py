@@ -1,6 +1,6 @@
 from synthesizer.instruments import FilterCollection
 
-from sbifitter import generate_constant_R
+from synference import generate_constant_R
 
 filter_codes = [
     "HST/ACS_WFC.F435W",
@@ -134,5 +134,5 @@ new_wav = generate_constant_R(R=300)
 filterset = FilterCollection(filter_codes, new_lam=new_wav)
 
 filterset.write_filters(
-    "/cosma/apps/dp276/dc-harv3/sbifitter/examples/grid_generation/filters/GENERAL_SURVEY.hdf5"
+    "/cosma/apps/dp276/dc-harv3/synference/examples/grid_generation/filters/GENERAL_SURVEY.hdf5"
 )

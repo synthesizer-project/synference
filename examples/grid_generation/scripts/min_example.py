@@ -9,7 +9,7 @@ from synthesizer.instruments import FilterCollection, Instrument
 from synthesizer.parametric import SFH, ZDist
 from unyt import Gyr, K
 
-from sbifitter import (
+from synference import (
     GalaxyBasis,
     SBI_Fitter,
     calculate_muv,
