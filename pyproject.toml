@@ -1,10 +1,13 @@
 [project]
-name = "sbifitter"
+name = "synference"
 version = "0.1.0"
-description = "Add your description here"
+description = "Simulation-based inference for SED-fitting of galaxy photometry and spectroscopy"
+license = {file = "LICENSE.md"}
 readme = "README.md"
 authors = [
-    { name = "tharvey303", email = "tharvey303@gmail.com" }
+    { name = "T. Harvey", email = "tharvey303@gmail.com" },
+    {name = "S. Newman", email = "sophie.newman@port.ac.uk" },
+    {name = "C. C. Lovell", email = "chris.lovell.astro@gmail.com" }
 ]
 requires-python = ">=3.10"
 
@@ -75,7 +78,7 @@ allow-direct-references = true
 
 
 [tool.hatch.build.targets.wheel]
-packages=["src/sbifitter"]
+packages=["src/synference"]
 
 # Configure the linter and formatter
 [tool.ruff]

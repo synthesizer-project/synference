@@ -10,4 +10,4 @@ API Reference
    :template: custom-module-template.rst
    :recursive:
 
-   sbifitter
+   synference

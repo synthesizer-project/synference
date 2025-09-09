@@ -19,4 +19,4 @@ source venv_ltu_ili/bin/activate
 
 echo $PWD
 
-python sbifitter/examples/sbi/train_model.py $1
+python synference/examples/sbi/train_model.py $1
