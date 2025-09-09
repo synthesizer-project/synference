@@ -18,7 +18,7 @@ from synthesizer.parametric import SFH, ZDist
 from tqdm import tqdm
 from unyt import K, Myr, dimensionless, unyt_array
 
-from sbifitter import (
+from synference import (
     CombinedBasis,
     GalaxyBasis,
     calculate_beta,
@@ -96,7 +96,7 @@ grid_dir = os.environ["SYNTHESIZER_GRID_DIR"]
 # path for this file
 
 dir_path = os.path.dirname(os.path.abspath(__file__))
-out_dir = "/home/tharvey/work/sbifitter/grids"
+out_dir = "/home/tharvey/work/synference/grids"
 
 
 def continuity_agebins(
