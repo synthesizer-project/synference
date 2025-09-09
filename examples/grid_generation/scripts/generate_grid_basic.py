@@ -4,14 +4,15 @@ import sys
 
 import numpy as np
 from astropy.cosmology import Planck18
-from synthesizer.emission_models import TotalEmission
+from synthesizer.emission_models import PacmanEmission
 from synthesizer.emission_models.attenuation import (
     Calzetti2000,
 )  # noqa
+from synthesizer.emission_models.dust.emission import Blackbody
 from synthesizer.grid import Grid
 from synthesizer.instruments import FilterCollection, Instrument
 from synthesizer.parametric import SFH, ZDist
-from unyt import Myr
+from unyt import K, Myr
 
 from synference import (
     GalaxyBasis,
@@ -120,8 +121,10 @@ masses = (4, 12)  # log10 of stellar mass in solar masses
 max_redshift = 20  # gives maximum age of SFH at a given redshift
 cosmo = Planck18  # cosmology to use for age calculations
 fesc = 0.0  # escape fraction of ionizing photons
-fesc_ly_alpha = 0.0  # escape fraction of Ly-alpha photons
-dust_emission = None  # No dust emission model for this grid, but can be added later.
+fesc_ly_alpha = 0.1  # escape fraction of Ly-alpha photons
+dust_emission = Blackbody(
+    temperature=35 * K
+)  # No dust emission model for this grid, but can be added later.
 dust_curve = Calzetti2000()  # Dust attenuation curve to use for the grid.
 # ---------------------------------------------------------------
 # Pop II
@@ -184,13 +187,16 @@ sfh_models, _ = generate_sfh_basis(
 
 
 # Emission parameters
-emission_model = TotalEmission(
+emission_model = PacmanEmission(
     grid=grid,
     fesc=fesc,
     fesc_ly_alpha=fesc_ly_alpha,
     dust_curve=dust_curve,  # ParametricLi08(model='SMC'),
-    dust_emission_model=dust_emission,
+    dust_emission=Blackbody(temperature=35 * K),
 )
+
+emission_model.plot_emission_tree()
+print(type(emission_model))
 
 # List of other varying or fixed parameters. Either a distribution to pull from or a list.
 # Can be any parameter which can be property of emitter or galaxy
@@ -202,6 +208,7 @@ galaxy_params = {
 sfh_name = str(sfh_type).split(".")[-1].split("'")[0]
 
 name = f"BPASS_Chab_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_Calzetti_v2"  # noqa: E501
+name = "test_sbi"
 
 basis = GalaxyBasis(
     model_name=f"sps_{name}",
@@ -238,6 +245,7 @@ basis.create_mock_cat(
     out_dir=out_dir,
     overwrite=overwrite,
     n_proc=n_proc,
+    emission_model_key=emission_model.label,
     verbose=False,
     batch_size=50_000,
     mUV=(calculate_muv, cosmo),  # Calculate mUV for the mock catalogue.
