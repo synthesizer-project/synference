@@ -25,6 +25,7 @@ from .grid import (
 )
 
 
+
 from .noise_models import (
     EmpiricalUncertaintyModel, create_uncertainty_models_from_EPOCHS_cat,
     DepthUncertaintyModel, UncertaintyModel, AsinhEmpiricalUncertaintyModel,
@@ -39,6 +40,7 @@ except ImportError as e:
     print(e)
     print('Dependencies for SBI not installed. Only the grid generation functions will be available.')
 
+#from synference.fixtures import fixtures  # noqa E402
 
 #from .simformer import UncertainityModelTask
 warnings.filterwarnings('ignore')
