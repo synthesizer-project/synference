@@ -1722,6 +1722,17 @@ class GalaxyBasis:
 
         from synthesizer.emission_models import PREMADE_MODELS
 
+        # These models aren't in PREMADE_MODELS for some reason
+
+        PREMADE_MODELS.extend(
+            [
+                "PacmanEmissionNoEscapedWithDust",
+                "PacmanEmissionWithEscapedNoDust",
+                "PacmanEmissionNoEscapedWithDust",
+                "PacmanEmissionWithEscapedWithDust",
+            ]
+        )
+
         if type(self.emission_model).__name__ not in PREMADE_MODELS:
             if verbose:
                 logger.warning(
@@ -4896,8 +4907,24 @@ class GalaxySimulator(object):
                 import synthesizer.emission_models as em
                 import synthesizer.emission_models.attenuation as dm
                 import synthesizer.emission_models.dust.emission as dem
+                from synthesizer.emission_models.stellar.pacman_model import (
+                    PacmanEmissionNoEscapedNoDust,
+                    PacmanEmissionNoEscapedWithDust,
+                    PacmanEmissionWithEscapedNoDust,
+                    PacmanEmissionWithEscapedWithDust,
+                )
+
+                extra = {
+                    "PacmanEmissionNoEscapedWithDust": PacmanEmissionNoEscapedWithDust,
+                    "PacmanEmissionWithEscapedNoDust": PacmanEmissionWithEscapedNoDust,
+                    "PacmanEmissionWithEscapedWithDust": PacmanEmissionWithEscapedWithDust,
+                    "PacmanEmissionNoEscapedNoDust": PacmanEmissionNoEscapedNoDust,
+                }
 
                 emission_model = getattr(em, emission_model_name, None)
+
+                if emission_model is None and emission_model_name in extra:
+                    emission_model = extra[emission_model_name]
 
                 if emission_model is None:
                     raise ValueError(
@@ -4968,7 +4995,9 @@ class GalaxySimulator(object):
                 for key, value, unit in zip(em_keys, em_values, em_units):
                     if unit != "":
                         emission_model_params[key] = unyt_array(value, unit)
-                    elif value.isnumeric() or value.replace(".", "", 1).isdigit():
+                    elif isinstance(value, str) and (
+                        value.isnumeric() or value.replace(".", "", 1).isdigit()
+                    ):
                         emission_model_params[key] = float(value)
                     else:
                         emission_model_params[key] = value
@@ -4985,6 +5014,7 @@ class GalaxySimulator(object):
                     emission_model_params["dust_emission"] = dust_emission_model
                     emission_model_params.pop("dust_emission_model", None)
 
+                print("params:", emission_model_params)
                 emission_model = emission_model(
                     grid=grid,
                     **emission_model_params,
@@ -5392,7 +5422,8 @@ class GalaxySimulator(object):
             if depths is None:
                 return fluxes
 
-            depths = np.array(depths)
+            if isinstance(depths, (list, tuple)):
+                depths = np.array(depths)
 
             m = fluxes.shape
 
@@ -5404,14 +5435,17 @@ class GalaxySimulator(object):
 
             if flux_units == "AB":
                 fluxes = (10 ** ((fluxes - 23.9) / -2.5)) * uJy
+            elif not isinstance(fluxes, (unyt_array)):
+                fluxes = fluxes * Unit(flux_units)
 
             # Convert depths based on units
-            if self.out_flux_unit == "AB" and not hasattr(depths, "unit"):
+            if self.out_flux_unit == "AB" and not hasattr(depths, "units"):
                 # Convert from AB magnitudes to microjanskys
                 depths_converted = (10 ** ((depths - 23.9) / -2.5)) * uJy
                 depths_std = depths_converted.to(uJy).value / self.depth_sigma
             else:
-                depths_std = depths.to(self.out_flux_unit).value / self.depth_sigma
+                depths_std = depths.to(uJy).value / self.depth_sigma
+
             # Pre-allocate output array with correct dimensions
             output_arr = np.zeros(m)
 
@@ -5435,10 +5469,11 @@ class GalaxySimulator(object):
             errors = np.zeros_like(fluxes, dtype=float)
             for i, filter_code in enumerate(self.instrument.filters.filter_codes):
                 noise_model = self.noise_models.get(filter_code)
+                noise_model.return_noise = True
                 flux = fluxes[i]
 
-                scattered_flux, sigma = noise_model.apply_noise_to_flux(
-                    true_flux=flux,
+                scattered_flux, sigma = noise_model.apply_noise(
+                    flux=np.atleast_1d(flux),
                     true_flux_units=flux_units,
                     out_units=self.out_flux_unit,
                 )

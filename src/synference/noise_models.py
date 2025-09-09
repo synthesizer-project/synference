@@ -14,7 +14,7 @@ import numpy as np
 from astropy.table import Table
 from scipy import stats
 from scipy.interpolate import interp1d
-from unyt import Jy, unyt_array
+from unyt import Jy, Unit, unyt_array
 
 from .utils import f_jy_err_to_asinh, f_jy_to_asinh
 
@@ -124,6 +124,10 @@ class DepthUncertaintyModel(UncertaintyModel):
                         "flux must be a unyt_array with the same units."
                     )
                     flux = flux.to_value(true_flux_units)
+
+                if isinstance(true_flux_units, str):
+                    true_flux_units = Unit(true_flux_units)
+
                 true_flux_jy = (flux * true_flux_units).to("Jy")
         else:
             if not isinstance(flux, unyt_array):
@@ -134,9 +138,11 @@ class DepthUncertaintyModel(UncertaintyModel):
         if len(kwargs) > 0:
             print(f"WARNING {kwargs} arguments will have no effect with this model")
 
-        flux_jy = true_flux_jy.to("Jy")
-        if flux_jy.units.dimensions != Jy.dimensions:
+        if true_flux_jy.units.dimensions != Jy.dimensions:
             raise Exception("Input flux must be in Janskys (Jy).")
+
+        flux_jy = true_flux_jy.to("Jy")
+
         noise = np.random.normal(loc=0.0, scale=self.sigma.to_value(Jy), size=flux_jy.shape) * Jy
         noisy_flux = flux_jy + noise
 
@@ -147,8 +153,8 @@ class DepthUncertaintyModel(UncertaintyModel):
                 uncertainty = self.jy_err_to_ab(uncertainty, noisy_flux)
                 noisy_flux = self.jy_to_ab(noisy_flux)
             else:
-                noisy_flux = (noisy_flux * Jy).to_value(out_units)
-                uncertainty = (uncertainty * Jy).to_value(out_units)
+                noisy_flux = noisy_flux.to_value(out_units)
+                uncertainty = uncertainty.to_value(out_units)
 
         uncertainty = np.clip(uncertainty, self.min_flux_error, self.max_flux_error)
 
@@ -461,6 +467,9 @@ class AsinhEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
                 )
                 true_flux_jy = flux.to("Jy")
             else:
+                if isinstance(true_flux_units, str):
+                    true_flux_units = Unit(true_flux_units)
+
                 true_flux_jy = (flux * true_flux_units).to("Jy")
         else:
             true_flux_jy = flux  # Assumes input is already a unyt_array in Jy
