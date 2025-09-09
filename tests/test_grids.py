@@ -6,22 +6,6 @@ import h5py
 import numpy as np
 import pytest
 from astropy.cosmology import Planck18
-from fixtures import (
-    grid_basis_params,  # noqa E401
-    lhc_basis_params,  # noqa E401
-    lhc_grid,  # noqa E401
-    lhc_prior,  # noqa E401
-    mock_emission_model,
-    mock_instrument,  # noqa E401
-    simple_sfh,
-    simple_zdist,
-    test_dir,
-    test_grid,
-    test_parametric_galaxies,  # noqa E401
-    test_parametric_galaxy,  # noqa E401
-    test_sfh,  # noqa E401
-    test_zmet,  # noqa E401
-)
 from scipy.stats import uniform
 from synthesizer.emission_models import TotalEmission
 from synthesizer.emission_models.attenuation import Calzetti2000
@@ -37,6 +21,22 @@ from synference import (  # noqa E402
     calculate_muv,
     draw_from_hypercube,
     generate_sfh_basis,
+)
+from synference.fixtures import (
+    grid_basis_params,  # noqa E401
+    lhc_basis_params,  # noqa E401
+    lhc_grid,  # noqa E401
+    lhc_prior,  # noqa E401
+    mock_emission_model,
+    mock_instrument,  # noqa E401
+    simple_sfh,
+    simple_zdist,
+    test_dir,
+    test_grid,
+    test_parametric_galaxies,  # noqa E401
+    test_parametric_galaxy,  # noqa E401
+    test_sfh,  # noqa E401
+    test_zmet,  # noqa E401
 )
 
 
