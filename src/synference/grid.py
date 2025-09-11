@@ -4668,6 +4668,9 @@ class GalaxySimulator(object):
         self.ignore_params = ignore_params
         self.ignore_scatter = ignore_scatter
 
+        self.unused_params = []
+        self.reported_unused = False
+
         if len(photometry_to_remove) > 0:
             self.update_photo_filters(
                 photometry_to_remove=photometry_to_remove, photometry_to_add=None
@@ -5181,14 +5184,23 @@ class GalaxySimulator(object):
                 if key in self.ignore_params:
                     found = True
                     break
+
             if not found:
-                logger.info(f"Emitter params are {self.emitter_params}")
-                raise ValueError(
-                    f"Parameter {key} not found in emitter params.Cannot create photometry."
-                )
+                if param not in self.unused_params:
+                    self.unused_params.append(key)
+                # logger.info(f"Emitter params are {self.emitter_params}")
+                # raise ValueError(
+                #    f"Parameter {key} not found in emitter params.Cannot create photometry."
+                # )
 
             else:
                 found_params.append(key)
+
+        if not self.reported_unused and len(self.unused_params) > 0:
+            logger.warn(
+                f"The following parameters are not used by the simulator: {self.unused_params}"
+            )
+            self.reported_unused = True
 
         # Check we understand all the parameters
 
