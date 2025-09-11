@@ -13,7 +13,8 @@ from .fixtures import (
     test_zmet,
     lhc_basis_params,
     test_parametric_galaxy,
-    test_parametric_galaxies
+    test_parametric_galaxies,
+    test_sbi_grid
 )
 
 __all__ = [
@@ -31,5 +32,6 @@ __all__ = [
     "test_zmet",
     "lhc_basis_params",
     "test_parametric_galaxy",
-    "test_parametric_galaxies"
+    "test_parametric_galaxies",
+    "test_sbi_grid",
 ]

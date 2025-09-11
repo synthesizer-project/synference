@@ -407,12 +407,6 @@ class TestCombinedBasis:
         )
 
 
-@pytest.fixture
-def test_sbi_grid():
-    """Fixture to create a test SBI grid for testing synference."""
-    return f"{test_dir}/test_grids/sbi_test_grid.hdf5"
-
-
 class TestSBIFitter:
     """Test suite for the SBI_Fitter class."""
 
