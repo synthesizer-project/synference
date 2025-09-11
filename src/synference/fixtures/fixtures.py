@@ -23,9 +23,11 @@ from synference import (  # noqa E402
     generate_sfh_basis,
 )
 
-test_dir = synference.__file__.replace("synference/__init__.py", "tests")
-if '/src/' in test_dir:
-    test_dir = test_dir.replace('/src/', '/')
+# Get test directory correct regardless of where tests are run from
+test_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(synference.__file__))))
+if not test_dir.endswith("synference"):
+    test_dir = test_dir + "/synference"
+test_dir = test_dir + "/tests/"
 grid_dir = test_dir + "/test_grids/"
 
 os.environ["SYNTHESIZER_GRID_DIR"] = grid_dir
