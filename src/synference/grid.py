@@ -4859,6 +4859,11 @@ class GalaxySimulator(object):
                     grid_dir = os.getenv("SYNTHESIZER_GRID_DIR", None)
                     if grid_dir is None:
                         raise ValueError("SYNTHESIZER_GRID_DIR environment variable not set.")
+                    
+            if grid_dir.endswith(".hdf5") or grid_dir.endswith(".h5"):
+                print('Overriding internal grid name to grid passed in directory path.')
+                grid_name = os.path.basename(grid_dir).replace(".hdf5", "").replace(".h5", "")
+                grid_dir = os.path.dirname(grid_dir)
 
             grid = Grid(grid_name, grid_dir)  # new_lam=lam)
 
