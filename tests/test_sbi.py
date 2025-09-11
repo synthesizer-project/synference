@@ -23,13 +23,8 @@ from synference.fixtures import (
     test_parametric_galaxy,  # noqa E402
     test_sfh,  # noqa E402
     test_zmet,  # noqa E402
+    test_sbi_grid,  # noqa E402
 )
-
-
-@pytest.fixture
-def test_sbi_grid():
-    """Fixture to create a test SBI grid for testing synference."""
-    return f"{test_dir}/test_grids/sbi_test_grid.hdf5"
 
 
 class TestSBIFitter:
