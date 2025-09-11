@@ -3531,7 +3531,8 @@ class SBI_Fitter:
             if not train_args.get("skip_optimization", False):
                 train_args["optuna"]["study"]["study_name"] = f"{self.name}_{name_append}"
                 train_args["optuna"]["study"]["storage"] = storage
-                net_configs = [{"model": train_args["optuna"]["search_space"]["model_choice"][0]}]
+                net_configs = [{'model': m} for m in train_args["optuna"]["search_space"]["model_choice"]]
+                
             else:
                 net_configs = [{"model": train_args["fixed_params"]["model_choice"]}]
 
@@ -6117,7 +6118,7 @@ class MissingPhotometryHandler:
         self.device = device
 
     @classmethod
-    def init_from_sbifitter(cls, synference, **run_params):
+    def init_from_synference(cls, synference, **run_params):
         """Initialize from a fitted SBI model.
 
         Parameters:
