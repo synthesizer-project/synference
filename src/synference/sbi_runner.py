@@ -4142,6 +4142,7 @@ class SBI_Fitter:
         prior = self._prior
         if prior is None:
             prior = self.create_priors(verbose=True, override_prior_ranges=override_prior_ranges)
+
         low = prior.base_dist.low.cpu().numpy()
         high = prior.base_dist.high.cpu().numpy()
 
@@ -4189,15 +4190,70 @@ class SBI_Fitter:
                 "Simulator filters do not match feature array raw observation names."
             )
 
+        pass_in_observables = {}
+        for feature in self.feature_names:
+            if feature in self.parameter_names:
+                feature_index = list(self.feature_names).index(feature)
+                pass_in_observables[feature] = observation[feature_index]
+                print(f"Passing in {feature} = {observation[feature_index]} as observable.")
+
         # print('Phot:', phot_obs)
         # print('Phot Err:', phot_err)
 
         # print('SNR:', phot_obs/phot_err)
+        scales = {"log10": lambda x: 10**x, "sqrt": lambda x: x**2}
+        for parameter in self.fitted_parameter_names:
+            for scale, func in scales.items():
+                if parameter.startswith(f"{scale}_"):
+                    logger.info(f"Auto applying inverse {scale} transform for {parameter}.")
+                    self.simulator.param_transforms[parameter] = (
+                        parameter.replace(f"{scale}_", ""),
+                        func,
+                    )
+
+        # Add a convenience check.
+
+        for emitter in self.simulator.emitter_params.values():
+            for param in emitter:
+                if "tau_v" in param:
+                    if (
+                        "tau_v" not in self.fitted_parameter_names
+                        and "tau_v" not in pass_in_observables
+                    ):
+                        logger.info("Adding Av to tau_v transform.")
+                        self.simulator.param_transforms["Av"] = ("tau_v", lambda x: x / 1.086)
+
+        ndim = len(self.fitted_parameter_names)
+
+        # Drop dimensions which are't constrained.
+        test_params = {i: j for i, j in zip(self.fitted_parameter_names, 0.5 * (low + high))}
+        test_params.update(pass_in_observables)
+        self.simulator(test_params)
+
+        unused_params = self.simulator.unused_params
+        idx_to_drop = np.ones(len(self.fitted_parameter_names), dtype=bool)
+        for param in self.fitted_parameter_names:
+            if (
+                param in unused_params
+                and param not in self.parameter_names
+                and param not in self.simulator.param_transforms.keys()
+            ):  # noqa: E501
+                logger.warning(
+                    f"Fitted parameter {param} does not affect the photometry and will be removed from the fit."  # noqa: E501
+                )
+                index = list(self.fitted_parameter_names).index(param)
+                idx_to_drop[index] = False
+                ndim -= 1
+
+        if not np.all(idx_to_drop):
+            low = low[idx_to_drop]
+            high = high[idx_to_drop]
 
         def log_likelihood(theta):
-            """Calculate the log likelihood of the observation given the parameters."""  #
+            """Calculate the log likelihood of the observation given the parameters."""
             if time_loglikelihood:
                 start_time = datetime.now()
+            theta.update(pass_in_observables)
             sim = self.simulator(theta)
             # Assuming Gaussian errors with sigma=1 for simplicity
             if phot_err is not None and len(phot_err) == len(phot_obs):
@@ -4217,10 +4273,6 @@ class SBI_Fitter:
 
             return loglike
 
-        import dynesty
-
-        ndim = len(self.fitted_parameter_names)
-
         """
         import dill
         import hickle
@@ -4231,6 +4283,8 @@ class SBI_Fitter:
         """
 
         if sampler.lower() == "dynesty":
+            import dynesty
+
             logger.info("Using Dynesty sampler.")
             sampler = dynesty.NestedSampler(log_likelihood, dynesty_prior, ndim, **sampler_kwargs)
             sampler.run_nested()
@@ -4251,7 +4305,7 @@ class SBI_Fitter:
                     show_titles=True,
                     title_fmt=".2f",
                     quantiles=[0.16, 0.5, 0.84],
-                    labels=self.fitted_parameter_names,
+                    labels=self.fitted_parameter_names[idx_to_drop],
                 )
 
                 if out_dir is not None:
@@ -4277,7 +4331,7 @@ class SBI_Fitter:
                 )
             logger.info("Using Ultranest sampler.")
             sampler = ultranest.ReactiveNestedSampler(
-                self.fitted_parameter_names,
+                self.fitted_parameter_names[idx_to_drop].tolist(),
                 log_likelihood,
                 transform=dynesty_prior,
                 log_dir=out_dir,
@@ -4303,8 +4357,10 @@ class SBI_Fitter:
 
             prior = nautilus.Prior()
 
-            for low, high, name in zip(low, high, self.fitted_parameter_names):
-                prior.add_parameter(name, dist=(low, high))
+            for lo, hi, name in zip(low, high, self.fitted_parameter_names[idx_to_drop]):
+                prior.add_parameter(name, dist=(lo, hi))
+
+            print(prior)
 
             sampler = nautilus.Sampler(prior, log_likelihood, **sampler_kwargs)
             sampler.run(verbose=True)
@@ -5898,6 +5954,30 @@ class SBI_Fitter:
 
                 with open(model_file, "rb") as f:
                     posteriors = CPU_Unpickler(f).load()
+        except ModuleNotFoundError:
+            from typing import Any, Mapping
+
+            class RenamingUnpickler(pickle.Unpickler):
+                """A custom Unpickler that can rename modules when loading a pickle."""
+
+                def __init__(self, *args, renames: Mapping[str, str], **kwargs):
+                    self.renames = renames
+                    super().__init__(*args, **kwargs)
+
+                def find_class(self, module: str, name: str) -> Any:
+                    renamed_module = module
+                    # Iterate through the rename mapping
+                    for old_prefix, new_prefix in self.renames.items():
+                        # Check for a direct match or a prefix match (e.g., 'a.c' starts with 'a.')
+                        if module == old_prefix or module.startswith(old_prefix + "."):
+                            # Replace the old prefix with the new one
+                            renamed_module = new_prefix + module[len(old_prefix) :]
+                            break  # Stop after the first successful replacement
+                    return super().find_class(renamed_module, name)
+
+            renames = {"sbifitter": "synference"}
+            with open(model_file, "rb") as f:
+                posteriors = RenamingUnpickler(f, renames=renames).load()
 
         stats = model_file.replace("posterior.pkl", "summary.json")
 
