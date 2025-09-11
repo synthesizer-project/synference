@@ -13,14 +13,7 @@ from synthesizer.instruments import FilterCollection, Instrument
 from synthesizer.parametric import SFH, Galaxy, Stars, ZDist
 from unyt import Msun, Myr, unyt_array
 
-test_dir = (
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-    + "/tests"
-)  # noqa E501
-grid_dir = test_dir + "/test_grids/"
-
-os.environ["SYNTHESIZER_GRID_DIR"] = grid_dir
-
+import synference
 from synference import (  # noqa E402
     CombinedBasis,
     GalaxyBasis,
@@ -29,6 +22,11 @@ from synference import (  # noqa E402
     draw_from_hypercube,
     generate_sfh_basis,
 )
+
+test_dir = synference.__file__.replace("__init__.py", "").replace("/src/synference/", "/tests/")  # noqa E501
+grid_dir = test_dir + "/test_grids/"
+
+os.environ["SYNTHESIZER_GRID_DIR"] = grid_dir
 
 
 @pytest.fixture
