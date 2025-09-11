@@ -30,6 +30,13 @@ os.environ["SYNTHESIZER_GRID_DIR"] = grid_dir
 
 
 @pytest.fixture
+def test_sbi_grid():
+    """Fixture to create a test SBI grid for testing synference."""
+    return f"{grid_dir}/sbi_test_grid.hdf5"
+
+
+
+@pytest.fixture
 def test_grid():
     """Fixture to create a test Grid object."""
     if not os.path.exists(f"{test_dir}/test_grids/test_grid.hdf5"):

@@ -37,6 +37,7 @@ from synference.fixtures import (
     test_parametric_galaxy,  # noqa E401
     test_sfh,  # noqa E401
     test_zmet,  # noqa E401
+    test_sbi_grid,  # noqa E401
 )
 
 
