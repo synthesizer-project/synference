@@ -12,13 +12,17 @@ from unyt.dimensions import mass, time
 from synference import GalaxyBasis, SBI_Fitter
 from synference.fixtures import (
     lhc_basis_params,  # noqa E402
+    lhc_grid,  # noqa E402
+    lhc_prior,  # noqa E402
     mock_emission_model,  # noqa E402
-    mock_instrument,  # noqa E402
+    mock_instrument,  # noqa E402  # noqa E402
+    simple_sfh,  # noqa E402
+    simple_zdist,  # noqa E402
     test_dir,
-    test_galaxy,  # noqa E402
     test_grid,  # noqa E402
     test_parametric_galaxy,  # noqa E402
-    test_sbi_grid,  # noqa E402
+    test_sfh,  # noqa E402
+    test_zmet,  # noqa E402
 )
 
 

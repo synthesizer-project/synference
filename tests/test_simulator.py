@@ -7,7 +7,13 @@ from synthesizer.parametric import SFH, ZDist
 from unyt import Myr, nJy, uJy
 
 from synference import DepthUncertaintyModel, GalaxySimulator
-from synference.fixtures import grid_dir
+from synference.fixtures import (  # noqa E402
+    grid_dir,
+    mock_emission_model,
+    mock_instrument,
+    simple_zdist,
+    test_grid,
+)
 
 
 @pytest.fixture
