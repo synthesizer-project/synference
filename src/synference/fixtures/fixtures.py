@@ -29,8 +29,9 @@ if not test_dir.endswith("synference"):
     test_dir = test_dir + "/synference"
 test_dir = test_dir + "/tests/"
 grid_dir = test_dir + "/test_grids/"
+synthesizer_grid_dir = test_dir + "/synthesizer_grids/"
 
-os.environ["SYNTHESIZER_GRID_DIR"] = grid_dir
+os.environ["SYNTHESIZER_GRID_DIR"] = synthesizer_grid_dir
 
 
 @pytest.fixture
@@ -43,18 +44,18 @@ def test_sbi_grid():
 @pytest.fixture
 def test_grid():
     """Fixture to create a test Grid object."""
-    if not os.path.exists(f"{test_dir}/test_grids/test_grid.hdf5"):
+    if not os.path.exists(f"{synthesizer_grid_dir}/test_grid.hdf5"):
         subprocess.run(
             [
                 "synthesizer-download",
                 "--test-grids",
                 "--destination",
-                f"{test_dir}/test_grids/",
+                f"{synthesizer_grid_dir}",
             ],
             check=True,
         )
 
-    return Grid(grid_name="test_grid", grid_dir=f"{test_dir}/test_grids/")
+    return Grid(grid_name="test_grid", grid_dir=synthesizer_grid_dir)
 
 
 @pytest.fixture

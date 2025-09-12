@@ -9,6 +9,7 @@ from unyt import Myr, nJy, uJy
 from synference import DepthUncertaintyModel, GalaxySimulator
 from synference.fixtures import (  # noqa E402
     grid_dir,
+    synthesizer_grid_dir,
     mock_emission_model,  # noqa E402
     mock_instrument,  # noqa E402
     simple_zdist,  # noqa E402
@@ -54,7 +55,7 @@ class TestGalaxySimulator:
     def test_init_from_grid(self):
         """Test initializing GalaxySimulator from a grid file."""
         simulator = GalaxySimulator.from_grid(
-            grid_path=f"{grid_dir}/sbi_test_grid.hdf5", override_synthesizer_grid_dir=f'{grid_dir}/test_grid.hdf5'
+            grid_path=f"{grid_dir}/sbi_test_grid.hdf5", override_synthesizer_grid_dir=f'{synthesizer_grid_dir}/test_grid.hdf5'
         )
         assert isinstance(simulator, GalaxySimulator)
 
