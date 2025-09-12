@@ -7,15 +7,6 @@ from synthesizer.parametric import SFH, ZDist
 from unyt import Myr, nJy, uJy
 
 from synference import DepthUncertaintyModel, GalaxySimulator
-from synference.fixtures import (  # noqa E402
-    grid_dir,
-    synthesizer_grid_dir,
-    mock_emission_model,  # noqa E402
-    mock_instrument,  # noqa E402
-    simple_zdist,  # noqa E402
-    test_grid,  # noqa E402
-    test_sbi_grid,  # noqa E402
-)
 
 
 @pytest.fixture
@@ -52,7 +43,7 @@ class TestGalaxySimulator:
 
         print(simulator)
 
-    def test_init_from_grid(self):
+    def test_init_from_grid(self, synthesizer_grid_dir, grid_dir):
         """Test initializing GalaxySimulator from a grid file."""
         simulator = GalaxySimulator.from_grid(
             grid_path=f"{grid_dir}/sbi_test_grid.hdf5", override_synthesizer_grid_dir=f'{synthesizer_grid_dir}/test_grid.hdf5'
