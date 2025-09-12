@@ -46,11 +46,11 @@ train_args:
           hidden_features:
             type: "int"
             low: 10
-            high: 200
+            high: 100
           num_transforms:
             type: "int"
             low: 3
-            high: 600
+            high: 128
         mdn: 
           hidden_features:
             type: "int"
@@ -59,4 +59,4 @@ train_args:
           num_components:
             type: "int"
             low: 10
-            high: 128
+            high: 600
