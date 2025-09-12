@@ -2,6 +2,7 @@
 
 import os
 import subprocess
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -23,26 +24,29 @@ from synference import (  # noqa E402
     generate_sfh_basis,
 )
 
-# Get test directory correct regardless of where tests are run from
-test_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(synference.__file__))))
-if not test_dir.endswith("synference"):
-    test_dir = test_dir + "/synference"
-test_dir = test_dir + "/tests/"
-grid_dir = test_dir + "/test_grids/"
-synthesizer_grid_dir = test_dir + "/synthesizer_grids/"
-
-os.environ["SYNTHESIZER_GRID_DIR"] = synthesizer_grid_dir
-
+@pytest.fixture
+def test_dir():
+    return Path(__file__).resolve().parent
 
 @pytest.fixture
-def test_sbi_grid():
+def grid_dir(test_dir):
+    return test_dir / "test_grids"
+
+@pytest.fixture
+def synthesizer_grid_dir(test_dir):
+    synthesizer_grid_dir = test_dir / "synthesizer_grids"
+    os.environ["SYNTHESIZER_GRID_DIR"] = str(synthesizer_grid_dir)
+    return synthesizer_grid_dir
+
+@pytest.fixture
+def test_sbi_grid(grid_dir):
     """Fixture to create a test SBI grid for testing synference."""
     return f"{grid_dir}/sbi_test_grid.hdf5"
 
 
 
 @pytest.fixture
-def test_grid():
+def test_grid(synthesizer_grid_dir):
     """Fixture to create a test Grid object."""
     if not os.path.exists(f"{synthesizer_grid_dir}/test_grid.hdf5"):
         subprocess.run(

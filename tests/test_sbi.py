@@ -10,21 +10,7 @@ from unyt import Angstrom, Jy, Myr, nJy, unyt_array
 from unyt.dimensions import mass, time
 
 from synference import GalaxyBasis, SBI_Fitter
-from synference.fixtures import (
-    lhc_basis_params,  # noqa E402
-    lhc_grid,  # noqa E402
-    lhc_prior,  # noqa E402
-    mock_emission_model,  # noqa E402
-    mock_instrument,  # noqa E402  # noqa E402
-    simple_sfh,  # noqa E402
-    simple_zdist,  # noqa E402
-    test_dir,
-    test_grid,  # noqa E402
-    test_parametric_galaxy,  # noqa E402
-    test_sfh,  # noqa E402
-    test_zmet,  # noqa E402
-    test_sbi_grid,  # noqa E402
-)
+
 
 
 class TestSBIFitter:
@@ -147,7 +133,7 @@ class TestSBIFitter:
 class TestFullPipeline:
     """Test suite for full runthrough of grids and synference."""
 
-    def test_full_lhc(self, lhc_basis_params):
+    def test_full_lhc(self, lhc_basis_params, test_dir):
         """Test the full runthrough of LHC grid creation and synference."""
         # Create the GalaxyBasis with LHC parameters
         basis = GalaxyBasis(**lhc_basis_params)
@@ -299,16 +285,3 @@ class TestSuppFunctions:
             "calculate_mass_weighted_age did not return a value with the correct units."
         )
 
-
-if __name__ == "__main__":
-    # Clear out the test_output directory before running tests
-    output_dir = f"{test_dir}/test_output/"
-    if os.path.exists(output_dir):
-        for file in os.listdir(output_dir):
-            file_path = os.path.join(output_dir, file)
-            if os.path.isfile(file_path):
-                os.remove(file_path)
-
-    pytest.main([__file__])
-    # To run the tests, use the command:
-    # pytest -v ltu-ili_testing/tests/basis_tests.py
