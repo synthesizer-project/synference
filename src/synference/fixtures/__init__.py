@@ -14,7 +14,8 @@ from .fixtures import (
     lhc_basis_params,
     test_parametric_galaxy,
     test_parametric_galaxies,
-    test_sbi_grid
+    test_sbi_grid,
+    synthesizer_grid_dir,
 )
 
 __all__ = [
@@ -34,4 +35,5 @@ __all__ = [
     "test_parametric_galaxy",
     "test_parametric_galaxies",
     "test_sbi_grid",
+    "synthesizer_grid_dir",
 ]
