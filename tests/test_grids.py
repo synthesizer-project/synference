@@ -130,7 +130,7 @@ class TestGalaxyBasis:
         assert basis.emission_model == lhc_basis_params["emission_model"]
         assert basis.per_particle is False
 
-    def test_process_priors(self, test_grid):
+    def test_process_priors(self, test_grid, mock_emission_model):
         """Test that process_priors correctly handles prior distributions."""
         basis = GalaxyBasis(
             model_name="test_basis",
