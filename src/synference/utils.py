@@ -1,4 +1,4 @@
-"""Utility functions for SBIFitter."""
+"""Utility functions for synference."""
 
 import atexit
 import io
@@ -53,7 +53,8 @@ def load_grid_from_hdf5(
         The loaded grid.
     """
     if not os.path.exists(hdf5_path):
-        raise FileNotFoundError(f"HDF5 file not found: {hdf5_path}")
+        raise FileNotFoundError(f"HDF5 file not found: {hdf5_path}. "
+                                f"Files in root directory: {os.listdir(os.path.dirname(hdf5_path))}")
 
     with h5py.File(hdf5_path, "r") as f:
         # Load the photometry and parameters from the HDF5 file

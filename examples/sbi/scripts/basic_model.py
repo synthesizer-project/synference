@@ -1,10 +1,10 @@
 """
-Basic model for SBIFitter
+Basic model for synference
 """
 
 import os
 
-from sbifitter import SBI_Fitter
+from synference import SBI_Fitter
 
 # Get the paths to your training catalogue and where to save your trained model
 file_path = os.path.dirname(os.path.realpath(__file__))

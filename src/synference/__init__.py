@@ -12,7 +12,7 @@ from .utils import (
     analyze_feature_contributions, optimize_sfh_xlimit, make_serializable, setup_mpi_named_logger, move_to_device
 )
 # Set up logging
-logger = setup_mpi_named_logger("sbifitter", level=logging.INFO)
+logger = setup_mpi_named_logger("synference", level=logging.INFO)
 
 
 from .grid import (
@@ -23,6 +23,7 @@ from .grid import (
     calculate_flux_weighted_age, calculate_colour, calculate_d4000, calculate_beta, calculate_balmer_decrement,
     calculate_line_flux, calculate_line_ew, calculate_sfh_quantile, calculate_surviving_mass, SUPP_FUNCTIONS
 )
+
 
 
 from .noise_models import (

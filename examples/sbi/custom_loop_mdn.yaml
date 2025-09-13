@@ -1,0 +1,62 @@
+train_args:
+  skip_optimization: False
+  validation_fraction: 0.1
+  optuna:
+    n_trials: 50
+    build_final_model: False
+    objective:
+      metric: 'log_prob'
+    study:
+      study_name: ""
+      storage: ""
+      direction: 'maximize'
+      load_if_exists: True
+    pruner:
+      type: Median
+      n_startup_trials: 10
+      n_warmup_steps: 30
+      interval_steps: 10
+      n_min_trials: 10
+      #max_resource: 1000
+      #reduction_factor: 3
+      #min_resource: 10
+      #bootstrap_count: 10
+    search_space:
+      model_choice: ["mdn", "zuko_nsf"] # Must be a list
+      optimizer_choice: ["AdamW", "Adam"] # Must be a list
+      learning_rate:
+        type: "float"
+        low: 1e-6
+        high: 5e-2
+        log: True
+      training_batch_size:
+        type: "int"
+        low: 32
+        high: 256
+      stop_after_epochs:
+        type: "int"
+        low: 10
+        high: 60
+      clip_max_norm:
+        type: "float"
+        low: 0.1
+        high: 10.0
+      models:
+        zuko_nsf: 
+          hidden_features:
+            type: "int"
+            low: 10
+            high: 100
+          num_transforms:
+            type: "int"
+            low: 3
+            high: 128
+        mdn: 
+          hidden_features:
+            type: "int"
+            low: 10
+            high: 200
+          num_components:
+            type: "int"
+            low: 10
+            high: 600

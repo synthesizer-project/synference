@@ -12,9 +12,15 @@ build/
 dist/
 wheels/
 *.egg-info
-
+*.style
+.coverage
+htmlcov/
 # Virtual environments
 .venv
+*.hdf5
+*.h5
+*.sqlite
+*.db
 
 sbi-logs/
 plots/

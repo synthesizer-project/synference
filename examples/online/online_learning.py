@@ -18,7 +18,7 @@ from synthesizer.instruments import FilterCollection, Instrument
 from synthesizer.parametric import SFH, ZDist
 from unyt import Myr
 
-from sbifitter import GalaxySimulator, SBI_Fitter, calculate_muv
+from synference import GalaxySimulator, SBI_Fitter, calculate_muv
 
 device = "cpu"
 
