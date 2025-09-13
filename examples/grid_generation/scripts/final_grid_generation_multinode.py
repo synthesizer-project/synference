@@ -1,5 +1,5 @@
 # ignore warnings for readability
-"Multinode variant of the grid generation script for SBIFitter."
+"Multinode variant of the grid generation script for synference."
 
 import copy
 import os
@@ -30,7 +30,7 @@ except ImportError:
 
 print(f"Rank {rank} with {size} processes available.")
 
-from sbifitter import (
+from synference import (
     GalaxyBasis,
     calculate_beta,
     calculate_colour,
