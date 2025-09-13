@@ -1,7 +1,6 @@
 """This module contains fixtures and tests for the grid generation classes."""
 
 import os
-import subprocess
 
 import h5py
 import numpy as np
@@ -10,17 +9,12 @@ from astropy.cosmology import Planck18
 from scipy.stats import uniform
 from synthesizer.emission_models import TotalEmission
 from synthesizer.emission_models.attenuation import Calzetti2000
-from synthesizer.grid import Grid
-from synthesizer.instruments import FilterCollection, Instrument
-from synthesizer.parametric import SFH, Galaxy, Stars, ZDist
-from unyt import Angstrom, Jy, Msun, Myr, nJy, unyt_array
+from synthesizer.instruments import FilterCollection
+from synthesizer.parametric import Galaxy
+from unyt import Angstrom, Jy, Myr, nJy, unyt_array
 from unyt.dimensions import mass, time
 
-test_dir = os.path.dirname(os.path.abspath(__file__))
-grid_dir = test_dir + "/test_grids/"
-os.environ["SYNTHESIZER_GRID_DIR"] = grid_dir
-
-from sbifitter import (  # noqa E402
+from synference import (  # noqa E402
     CombinedBasis,
     GalaxyBasis,
     SBI_Fitter,
@@ -28,180 +22,6 @@ from sbifitter import (  # noqa E402
     draw_from_hypercube,
     generate_sfh_basis,
 )
-
-
-# Fixtures for common test objects
-@pytest.fixture
-def test_grid():
-    """Fixture to create a test Grid object."""
-    if not os.path.exists(f"{test_dir}/test_grids/test_grid.hdf5"):
-        subprocess.run(
-            [
-                "synthesizer-download",
-                "--test-grids",
-                "--destination",
-                f"{test_dir}/test_grids/",
-            ],
-            check=True,
-        )
-
-    return Grid(grid_name="test_grid", grid_dir=f"{test_dir}/test_grids/")
-
-
-@pytest.fixture
-def mock_instrument():
-    """Fixture to create a mock Instrument object with JWST filters."""
-    filter_codes = [
-        "JWST/NIRCam.F070W",
-        "JWST/NIRCam.F090W",
-        "JWST/NIRCam.F115W",
-        "JWST/NIRCam.F200W",
-        "JWST/NIRCam.F277W",
-        "JWST/NIRCam.F356W",
-        "JWST/NIRCam.F444W",
-    ]
-    filterset = FilterCollection(filter_codes=filter_codes)
-    instrument = Instrument("JWST", filters=filterset)
-    return instrument
-
-
-@pytest.fixture
-def mock_emission_model(test_grid):
-    """Fixture to create a mock TotalEmission model for testing."""
-    return TotalEmission(
-        grid=test_grid,
-        fesc=0.1,
-        fesc_ly_alpha=0.1,
-        dust_curve=Calzetti2000(),
-        dust_emission_model=None,
-    )
-
-
-@pytest.fixture
-def simple_sfh():
-    """Fixture to create a simple SFH model."""
-    return SFH.LogNormal(tau=0.5, peak_age=100 * Myr, max_age=300 * Myr)
-
-
-@pytest.fixture
-def simple_zdist():
-    """Fixture to create a simple metallicity distribution."""
-    return ZDist.DeltaConstant(log10metallicity=-1.0)
-
-
-@pytest.fixture
-def grid_basis_params(test_grid, mock_emission_model, mock_instrument, simple_sfh, simple_zdist):
-    """Fixture to create parameters for GalaxyBasis with a grid."""
-    return {
-        "model_name": "test_basis",
-        "redshifts": np.array([6.0, 7.0, 8.0]),
-        "grid": test_grid,
-        "emission_model": mock_emission_model,
-        "sfhs": [simple_sfh],
-        "metal_dists": [simple_zdist],
-        "cosmo": Planck18,
-        "galaxy_params": {"tau_v": [0.2, 0.3, 0.4]},
-        "instrument": mock_instrument,
-        "redshift_dependent_sfh": False,
-        "build_grid": True,
-    }
-
-
-@pytest.fixture
-def lhc_grid(lhc_prior, n_params=1e2):
-    """Fixture to create a Latin Hypercube sample grid for testing."""
-    return draw_from_hypercube(param_ranges=lhc_prior, N=int(n_params), rng=42)
-
-
-@pytest.fixture
-def lhc_prior():
-    """Fixture to create a mock prior distribution for testing."""
-    return {
-        "redshift": (0.01, 10),
-        "masses": (5, 11),
-        "tau_v": (0, 2),
-        "peak_age": (0, 0.99),
-        "tau": (0.1, 1.5),
-        "log_zmet": (-3, -1.39),  # max of grid (e.g. 0.04)
-    }
-
-
-@pytest.fixture
-def test_sfh():
-    """Fixture to create a simple SFH model for testing."""
-    return SFH.LogNormal
-
-
-@pytest.fixture
-def test_zmet():
-    """Fixture to create a simple metallicity distribution for testing."""
-    return ZDist.DeltaConstant
-
-
-@pytest.fixture
-def lhc_basis_params(
-    test_grid,
-    mock_emission_model,
-    mock_instrument,
-    lhc_prior,
-    lhc_grid,
-    test_zmet,
-    test_sfh,
-    n_params=1e2,
-):
-    """Fixture to create parameters for GalaxyBasis with LHC sampling."""
-    all_param_dict = lhc_grid
-
-    Z_dists = [test_zmet(log10metallicity=log_z) for log_z in all_param_dict["log_zmet"]]
-    sfh_param_arrays = np.vstack((all_param_dict["tau"], all_param_dict["peak_age"])).T
-
-    sfh_models, _ = generate_sfh_basis(
-        sfh_type=test_sfh,
-        sfh_param_names=["tau", "peak_age_norm"],
-        sfh_param_arrays=sfh_param_arrays,
-        redshifts=np.array(all_param_dict["redshift"]),
-        max_redshift=20,
-        cosmo=Planck18,
-        sfh_param_units=[None, None],
-        iterate_redshifts=False,
-        calculate_min_age=False,
-    )
-
-    return {
-        "model_name": "test_lhc_basis",
-        "redshifts": all_param_dict["redshift"],
-        "grid": test_grid,
-        "emission_model": mock_emission_model,
-        "metal_dists": Z_dists,
-        "cosmo": Planck18,
-        "instrument": mock_instrument,
-        "galaxy_params": {"tau_v": all_param_dict["tau_v"]},
-        "redshift_dependent_sfh": True,
-        "build_grid": False,
-        "sfhs": sfh_models,
-    }
-
-
-@pytest.fixture
-def test_parametric_galaxy(test_grid, simple_sfh, simple_zdist):
-    """Fixture to create a mock Galaxy object for testing."""
-    return Galaxy(
-        stars=Stars(
-            sf_hist=simple_sfh,
-            metal_dist=simple_zdist,
-            metallicities=test_grid.metallicities,
-            log10ages=test_grid.log10ages,
-            initial_mass=unyt_array(1e9, units=Msun),
-            tau_v=0.2,
-        ),
-        redshift=7.0,
-    )
-
-
-@pytest.fixture
-def test_parametric_galaxies(test_parametric_galaxy, Ngalaxies=10):
-    """Fixture to create a list of mock Galaxy objects for testing."""
-    return [test_parametric_galaxy for _ in range(Ngalaxies)]
 
 
 def check_hdf5(hfile, expected_keys, expected_attrs=None, check_size=False):
@@ -223,7 +43,7 @@ def check_hdf5(hfile, expected_keys, expected_attrs=None, check_size=False):
 
 
 @pytest.fixture
-def combined_grid_basis_params(grid_basis_params):
+def combined_grid_basis_params(grid_basis_params, test_dir):
     """Fixture to create parameters for CombinedBasis."""
     basis1 = GalaxyBasis(**grid_basis_params)
     basis2 = GalaxyBasis(**grid_basis_params)
@@ -253,7 +73,7 @@ def combined_grid_basis_params(grid_basis_params):
 
 
 @pytest.fixture
-def combined_lhc_basis_params(lhc_basis_params):
+def combined_lhc_basis_params(lhc_basis_params, test_dir):
     """Fixture to create parameters for CombinedBasis with LHC."""
     basis1 = GalaxyBasis(**lhc_basis_params)
     basis2 = GalaxyBasis(**lhc_basis_params)
@@ -310,7 +130,7 @@ class TestGalaxyBasis:
         assert basis.emission_model == lhc_basis_params["emission_model"]
         assert basis.per_particle is False
 
-    def test_process_priors(self):
+    def test_process_priors(self, test_grid, mock_emission_model, simple_sfh, simple_zdist):
         """Test that process_priors correctly handles prior distributions."""
         basis = GalaxyBasis(
             model_name="test_basis",
@@ -378,7 +198,7 @@ class TestGalaxyBasis:
         assert hasattr(basis, "varying_param_names")
         assert hasattr(basis, "fixed_param_names")
 
-    def test_process_galaxies_grid(self, grid_basis_params):
+    def test_process_galaxies_grid(self, grid_basis_params, test_dir):
         """Test that process_galaxies correctly processes galaxies."""
         basis = GalaxyBasis(**grid_basis_params)
 
@@ -403,7 +223,7 @@ class TestGalaxyBasis:
             expected_keys=expected_keys,
         )
 
-    def test_process_galaxies_lhc(self, lhc_basis_params):
+    def test_process_galaxies_lhc(self, lhc_basis_params, test_dir):
         """Test that process_galaxies correctly processes galaxies for LHC parameters."""
         basis = GalaxyBasis(**lhc_basis_params)
         galaxies = basis._create_matched_galaxies()
@@ -428,7 +248,7 @@ class TestGalaxyBasis:
             expected_keys=expected_keys,
         )
 
-    def test_plot_galaxy(self, grid_basis_params, test_parametric_galaxies):
+    def test_plot_galaxy(self, grid_basis_params, test_parametric_galaxies, test_dir):
         """Test that plot_galaxy correctly plots a Galaxy object."""
         basis = GalaxyBasis(**grid_basis_params)
 
@@ -443,7 +263,7 @@ class TestGalaxyBasis:
         plot_file = f"{test_dir}/test_output/test_basis_0.png"
         assert os.path.exists(plot_file), f"Plot file {plot_file} was not created."
 
-    def test_full_single_cat_creation(self, lhc_basis_params):
+    def test_full_single_cat_creation(self, lhc_basis_params, test_dir):
         """Test that full_single_cat_creation creates a single catalog."""
         basis = GalaxyBasis(**lhc_basis_params)
 
@@ -478,7 +298,7 @@ class TestGalaxyBasis:
 class TestCombinedBasis:
     """Test suite for the CombinedBasis class."""
 
-    def test_init_combined(self, combined_grid_basis_params):
+    def test_init_combined(self, combined_grid_basis_params, test_dir):
         """Test that CombinedBasis initializes correctly with valid parameters."""
         combined = CombinedBasis(**combined_grid_basis_params)
 
@@ -570,38 +390,32 @@ class TestCombinedBasis:
         )
 
 
-@pytest.fixture
-def test_sbi_grid():
-    """Fixture to create a test SBI grid for testing SBIFitter."""
-    return f"{test_dir}/test_grids/sbi_test_grid.hdf5"
-
-
 class TestSBIFitter:
     """Test suite for the SBI_Fitter class."""
 
     def test_init_sbifitter_from_grid(self, test_sbi_grid):
-        """Test that SBIFitter initializes correctly with a valid grid."""
+        """Test that synference initializes correctly with a valid grid."""
         fitter = SBI_Fitter.init_from_hdf5(model_name="test_sbi", hdf5_path=test_sbi_grid)
 
         assert fitter.grid_path == test_sbi_grid, (
-            "SBIFitter did not initialize with the correct grid file."
+            "synference did not initialize with the correct grid file."
         )
 
     def test_sbifitter_feature_array_creation(self, test_sbi_grid):
-        """Test that SBIFitter can create a basic feature array from the grid."""
+        """Test that synference can create a basic feature array from the grid."""
         fitter = SBI_Fitter.init_from_hdf5(model_name="test_sbi", hdf5_path=test_sbi_grid)
 
         fitter.create_feature_array_from_raw_photometry()
 
         assert fitter.has_features, (
-            "SBIFitter did not create a feature array from the raw photometry."
+            "synference did not create a feature array from the raw photometry."
         )
         assert (
             len(fitter.simple_fitted_parameter_names) > 0
-        ), """SBIFitter simple fitted parameter names are empty
+        ), """synference simple fitted parameter names are empty
              after feature array creation."""
         assert np.shape(fitter.feature_array)[0] == len(fitter.fitted_parameter_array), (
-            "SBIFitter feature array shape does not match the expected shape."
+            "synference feature array shape does not match the expected shape."
         )
 
         # Test no normalization
@@ -694,10 +508,10 @@ class TestSBIFitter:
 
 
 class TestFullPipeline:
-    """Test suite for full runthrough of grids and SBIFitter."""
+    """Test suite for full runthrough of grids and synference."""
 
-    def test_full_lhc(self, lhc_basis_params):
-        """Test the full runthrough of LHC grid creation and SBIFitter."""
+    def test_full_lhc(self, lhc_basis_params, test_dir):
+        """Test the full runthrough of LHC grid creation and synference."""
         # Create the GalaxyBasis with LHC parameters
         basis = GalaxyBasis(**lhc_basis_params)
 
@@ -712,7 +526,7 @@ class TestFullPipeline:
             overwrite=True,
         )
 
-        # Initialize SBIFitter from the created grid
+        # Initialize synference from the created grid
         fitter = SBI_Fitter.init_from_hdf5(
             model_name="test_sbi_lhc",
             hdf5_path=f"{test_dir}/test_output/test_full_simple.hdf5",
@@ -722,7 +536,7 @@ class TestFullPipeline:
         fitter.create_feature_array()
 
         assert fitter.has_features, (
-            "SBIFitter did not create a feature array from the raw photometry."
+            "synference did not create a feature array from the raw photometry."
         )
 
         fitter.run_single_sbi()
@@ -733,7 +547,7 @@ class TestSuppFunctions:
 
     def param_functions(self, function):
         """Get a parameter function from the SUPP_FUNCTIONS module."""
-        from sbifitter import SUPP_FUNCTIONS
+        from synference import SUPP_FUNCTIONS
 
         return getattr(SUPP_FUNCTIONS, function)
 
@@ -848,16 +662,3 @@ class TestSuppFunctions:
             "calculate_mass_weighted_age did not return a value with the correct units."
         )
 
-
-if __name__ == "__main__":
-    # Clear out the test_output directory before running tests
-    output_dir = f"{test_dir}/test_output/"
-    if os.path.exists(output_dir):
-        for file in os.listdir(output_dir):
-            file_path = os.path.join(output_dir, file)
-            if os.path.isfile(file_path):
-                os.remove(file_path)
-
-    pytest.main([__file__])
-    # To run the tests, use the command:
-    # pytest -v ltu-ili_testing/tests/basis_tests.py
