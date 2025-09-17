@@ -52,6 +52,7 @@ from .custom_runner import CustomIndependentUniform
 # ili, torch, sklearn, optuna, joblib, pandas, tarp, astropy.table
 from .grid import GalaxySimulator
 from .noise_models import (
+    AsinhEmpiricalUncertaintyModel,
     EmpiricalUncertaintyModel,
     AsinhEmpiricalUncertaintyModel,
     UncertaintyModel,
@@ -62,10 +63,12 @@ from .utils import (
     FilterArithmeticParser,
     TimeoutException,
     analyze_feature_contributions,
+    asinh_to_snr,
     compare_methods_feature_importance,
     create_database_universal,
     create_sqlite_db,
     detect_outliers,
+    detect_outliers_pyod,
     f_jy_err_to_asinh,
     f_jy_to_asinh,
     load_grid_from_hdf5,
@@ -2003,6 +2006,12 @@ class SBI_Fitter:
         else:
             nm = False
 
+        if self.feature_array_flags.get("empirical_noise_models", None) is not None:
+            nm = self.feature_array_flags["empirical_noise_models"]
+            nm = all([isinstance(nm, AsinhEmpiricalUncertaintyModel) for nm in nm.values()])
+        else:
+            nm = False
+
         snrs = []
         for feature_name in snr_feature_names or self.feature_names:
             if feature_name.startswith("unc_"):
@@ -2011,11 +2020,11 @@ class SBI_Fitter:
                 feature_index = self.feature_names.index(feature_name)
                 err_index = self.feature_names.index(f"unc_{feature_name}")
                 # Need to know SNR from asinh magnitudes.
-                f_b = self.feature_array_flags['empirical_noise_models'][feature_name].b.to('Jy')
+                f_b = self.feature_array_flags["empirical_noise_models"][feature_name].b.to("Jy")
                 snr = asinh_to_snr(
                     X_test[:, feature_index],
                     X_test[:, err_index],
-                    f_b=f_b.value,
+                    f_b=f_b,
                 )
 
             elif phot_units == "AB":
@@ -2117,9 +2126,16 @@ class SBI_Fitter:
             # get quantiles of the posterior samples
             quantiles = np.quantile(y_test_samples, [0.16, 0.5, 0.84], axis=1)
 
+            if len(self.fitted_parameter_names) == 1:
+                labels = np.expand_dims(labels, axis=-1)
+
             for j, param in enumerate(parameters):
                 if len(binned_data) > 1 and len(parameters) > 1:
+<<<<<<< HEAD
                     ax = axes[i, j] 
+=======
+                    ax = axes[i, j]
+>>>>>>> origin/rdev
                 elif len(binned_data) == 1 and len(parameters) > 1:
                     ax = axes[j]
                 elif len(binned_data) > 1 and len(parameters) == 1:
@@ -2316,38 +2332,51 @@ class SBI_Fitter:
 
         # Check if the flux units match the training data
         training_flux_units = feature_array_flags["normed_flux_units"]
-        # if str, should match flux units.
-        if isinstance(training_flux_units, str):
-            assert flux_units == training_flux_units, f"""Flux units '{flux_units}' do not match
-                training data units '{training_flux_units}'."""
-        elif isinstance(training_flux_units, unyt_quantity):
-            if flux_units is None:
-                # Check .units attributes of columns are convertible
-                for col in photometry_columns:
-                    if col not in observations.columns:
-                        raise ValueError(f"Column '{col}' not found in observations.")
-                    if (
-                        not unyt_array(
-                            observations[col].values,
-                            units=observations[col].units,
-                        )
-                        .to(training_flux_units)
-                        .check()
-                    ):
-                        raise ValueError(
-                            f"""Column '{col}' units '{observations[col].units}' cannot
-                        be converted to training flux units '{training_flux_units}'."""
-                        )
-            else:
-                # Check if the flux units are convertible to the training flux units
-                if not unyt_array(1.0, units=flux_units).to(training_flux_units).check():
-                    raise ValueError(
-                        f"""Flux units '{flux_units}' cannot be converted to
-                        training flux units '{training_flux_units}'."""
-                    )
 
+        # Check for the exception
+        print(feature_array_flags["empirical_noise_models"])
+        if (
+            "empirical_noise_models" in feature_array_flags
+            and feature_array_flags["empirical_noise_models"] is not None
+        ):
+            if all(
+                isinstance(model, AsinhEmpiricalUncertaintyModel)
+                for model in feature_array_flags["empirical_noise_models"]
+            ):
+                training_flux_units = "asinh"
         else:
-            raise TypeError("Flux units must be a string or unyt_quantity.")
+            # if str, should match flux units.
+            if isinstance(training_flux_units, str):
+                assert flux_units == training_flux_units, f"""Flux units '{flux_units}' do not match
+                    training data units '{training_flux_units}'."""
+            elif isinstance(training_flux_units, unyt_quantity):
+                if flux_units is None:
+                    # Check .units attributes of columns are convertible
+                    for col in photometry_columns:
+                        if col not in observations.columns:
+                            raise ValueError(f"Column '{col}' not found in observations.")
+                        if (
+                            not unyt_array(
+                                observations[col].values,
+                                units=observations[col].units,
+                            )
+                            .to(training_flux_units)
+                            .check()
+                        ):
+                            raise ValueError(
+                                f"""Column '{col}' units '{observations[col].units}' cannot
+                            be converted to training flux units '{training_flux_units}'."""
+                            )
+                else:
+                    # Check if the flux units are convertible to the training flux units
+                    if not unyt_array(1.0, units=flux_units).to(training_flux_units).check():
+                        raise ValueError(
+                            f"""Flux units '{flux_units}' cannot be converted to
+                            training flux units '{training_flux_units}'."""
+                        )
+
+            else:
+                raise TypeError("Flux units must be a string or unyt_quantity.")
 
         # Create empty output feature array
         nrows = observations.shape[0]
@@ -2485,6 +2514,7 @@ class SBI_Fitter:
                         true_flux_units=flux_units,
                         out_units=feature_array_flags["normed_flux_units"],
                     )
+                    # print(np.sum(~np.isfinite(new_flux)), np.sum(~np.isfinite(new_error)))
                     feature_array[index, :] = new_flux
                     feature_array[eindex, :] = new_error
                     # Conversion handled by the noise model.
@@ -2605,6 +2635,16 @@ class SBI_Fitter:
         plot_SEDs: bool = False,
         check_out_of_distribution: bool = True,
         simulator: Optional[GalaxySimulator] = None,
+        outlier_methods: list = [
+            "iforest",
+            "feature_bagging",
+            "ecod",
+            "knn",
+            "lof",
+            "gmm",
+            "mcd",
+            "kde",
+        ],
         **kwargs,
     ):
         """Infer posteriors for observational data.
@@ -2657,6 +2697,9 @@ class SBI_Fitter:
         simulator : Optional[GalaxySimulator]
             simulator: A GalaxySimulator object to use for generating the SED. Optional.
             Will attempt to create one from the grid if not provided, or use the existing one.
+        outlier_methods : list
+            List of outlier detection methods to use from PyOD.
+            See PyOD documentation for available methods.
         **kwargs: Optional params - only used internally for simformer model.
 
         Returns:
@@ -2674,10 +2717,23 @@ class SBI_Fitter:
             override_transformations=override_transformations,
         )
 
-        if check_out_of_distribution:
-            self.test_in_distributon(
-                feature_array, direction="in", method="robust_mahalanobis", confidence=0.99
+        # Check length of feature array matches e.g. self._X_test
+
+        if self._X_test is not None and feature_array.shape[1] != self._X_test.shape[1]:
+            raise ValueError(
+                f"""Feature array samples have {feature_array.shape[1]} features,
+                but the model was trained on {self._X_test.shape[1]} features."""
             )
+
+        if check_out_of_distribution:
+            """self.test_in_distribution(
+                feature_array, direction="in", method="robust_mahalanobis", confidence=0.99
+            )"""
+            outliers = self.test_in_distribution_pyod(
+                feature_array, direction="in", methods=outlier_methods, contamination=0.01
+            )
+
+            obs_mask[outliers] = True
 
         if return_feature_array:
             # If return_feature_array is True, return the feature array and the mask
@@ -2724,14 +2780,24 @@ class SBI_Fitter:
             samples_i = samples_quant[i, :, :]
             samples_q = np.quantile(samples_i, quantiles, axis=1)
             for j, quant in enumerate(samples_q):
+                # need to expand quant with dummy values for masked obs if append_to_input
+                if append_to_input:
+                    full_quant = np.zeros(len(obs_mask)) + np.nan
+                    full_quant[~obs_mask] = quant
+                    quant = full_quant
                 table[f"{param}_{int(quantiles[j] * 100)}"] = quant
                 table[f"{param}_{int(quantiles[j] * 100)}"][obs_mask] = np.nan
+        # Add outlier flag if applicable
+        if check_out_of_distribution:
+            if append_to_input:
+                table["is_outlier"] = False
+                table["is_outlier"][obs_mask] = True
+            else:
+                table["is_outlier"] = obs_mask
 
         if recover_SEDs:
             if not hasattr(self, "simulator"):
-                raise RuntimeError(
-                    "No simulator found. Please create a simulator first or set recover_SEDs to False."  # noqa: E501
-                )
+                self.recreate_simulator_from_grid()
 
             samples_sed = np.transpose(samples_quant, (1, 2, 0))
             for pos, (obs_i, samples_i) in tqdm(
@@ -3158,7 +3224,63 @@ class SBI_Fitter:
         study_path = os.path.join(out_dir, f"{study_name}_optuna_study_{self._timestamp}.pkl")
         dump(study, study_path, compress=3)
 
-    def test_in_distributon(
+    def test_in_distribution_pyod(
+        self,
+        X_test: np.ndarray,
+        methods=["lof", "isolation_forest"],
+        contamination=0.01,
+        direction="in",
+        combination_method="majority",
+    ):
+        """Test if X_test is in distribution of self.feature_array using pyod.
+
+        If direction is "in", then we check if X_test is within the
+        distribution of self.feature_array. If 'out' we check if self.feature_array is
+        within the distribution of X_test.
+
+        Arguments:
+        ----------
+        X_test : np.ndarray
+            The test data to check for in-distribution or out-of-distribution.
+        methods : list
+            List of methods to use for outlier detection.
+            See https://pyod.readthedocs.io/en/latest/pyod.models.html
+        contamination : float
+            Expected proportion of outliers (for applicable methods)
+        direction : str
+            Direction of the test, either 'in' or 'out'.
+        combination_method : str
+            Method to combine the results from different methods.
+            Options are 'majority' (default), 'any', 'all', 'none'.
+        """
+        assert self.has_features, (
+            "Feature array not created. Please create the feature array first."
+        )
+
+        if not isinstance(X_test, np.ndarray):
+            raise TypeError("X_test must be a numpy array.")
+
+        assert direction in ["in", "out"], "Direction must be either 'in' or 'out'."
+
+        if direction == "in":
+            dist1 = self.feature_array
+            dist2 = X_test
+        else:
+            dist1 = X_test
+            dist2 = self.feature_array
+
+        results = detect_outliers_pyod(
+            dist1,
+            dist2,
+            methods=methods,
+            contamination=contamination,
+            combination=combination_method,
+            return_scores=False,
+        )
+
+        return results
+
+    def test_in_distribution(
         self,
         X_test: np.ndarray,
         method="robust_mahalanobis",
@@ -3187,7 +3309,7 @@ class SBI_Fitter:
             - 'isolation_forest': Uses Isolation Forest to detect outliers.
             - 'one_class_svm': Uses One-Class SVM to detect outliers.
             - 'pca': Uses PCA to detect outliers.
-            - hotelling_t2: Uses Hotelling's T-squared test to detect outliers.
+            - 'hotelling_t2': Uses Hotelling's T-squared test to detect outliers.
             - 'kde': Uses Kernel Density Estimation to detect outliers.
 
         Parameters:
@@ -4101,6 +4223,7 @@ class SBI_Fitter:
         sampler_kwargs: dict = dict(
             nlive=500, bound="multi", sample="rwalk", update_interval=0.6, walks=25
         ),
+        remove_params: list = None,
     ) -> None:
         """Fit the observation using the Dynesty sampler.
 
@@ -4115,6 +4238,7 @@ class SBI_Fitter:
             sampler_kwargs: Additional keyword arguments to pass to the sampler.
             out_dir: directory for outputs.
             time_loglikelihood: whether to print execution times for log likelhood calls.
+            remove_params: List of parameters to remove from the fitting.
 
         Returns:
             The result of the fitting.
@@ -4241,7 +4365,6 @@ class SBI_Fitter:
                     )
 
         # Add a convenience check.
-
         for emitter in self.simulator.emitter_params.values():
             for param in emitter:
                 if "tau_v" in param:
@@ -4259,11 +4382,10 @@ class SBI_Fitter:
         test_params.update(pass_in_observables)
         self.simulator(test_params)
 
-        unused_params = self.simulator.unused_params
         idx_to_drop = np.ones(len(self.fitted_parameter_names), dtype=bool)
         for param in self.fitted_parameter_names:
-            if (
-                param in unused_params
+            if param in remove_params or (
+                param in self.simulator.unused_params
                 and param not in self.parameter_names
                 and param not in self.simulator.param_transforms.keys()
             ):  # noqa: E501
@@ -4406,6 +4528,10 @@ class SBI_Fitter:
                 color="purple",
                 plot_datapoints=False,
                 range=np.repeat(0.999, len(prior.keys)),
+                show_titles=True,
+                title_fmt=".2f",
+                quantiles=[0.16, 0.5, 0.84],
+                title_kwargs={"fontsize": 12},
             )
 
             if out_dir is not None:
@@ -4513,6 +4639,11 @@ class SBI_Fitter:
         sample_color="darkorchid",
         param_labels=None,
         plot_closest_draw_to={},
+        plot_sfh=True,
+        plot_histograms=True,
+        fig=None,
+        ax=None,
+        ax_sfh=None,
     ):
         """Recover the SED for a given observation, if a simulator is provided.
 
@@ -4538,6 +4669,7 @@ class SBI_Fitter:
             plot_closest_draw_to: Dictionary of parameters and values
                 to plot closest draws. E.g. if you want to plot the closest draw
                 for a specific redshift, or mass, to see degeneracies in the posteriors.
+            plot_sfh: Whether to plot the SFH in addition to the SED.
 
         """
         if posteriors is None:
@@ -4588,15 +4720,24 @@ class SBI_Fitter:
             simulator.output_type = ["photo_fnu", "fnu", "sfh"]
             simulator.out_flux_unit = "nJy"
             for i in trange(num_samples, desc="Running simulator on samples"):
-                params = {
-                    self.simple_fitted_parameter_names[j]: samples[i, j]
-                    for j in range(len(self.fitted_parameter_names))
-                }
+                if isinstance(samples, dict):
+                    params = {key: samples[key][i] for key in samples.keys()}
+                else:
+                    params = {
+                        self.simple_fitted_parameter_names[j]: samples[i, j]
+                        for j in range(len(self.fitted_parameter_names))
+                    }
                 for parameter in marginalized_parameters.keys():
                     params[parameter] = marginalized_parameters[parameter](params)
 
-                params.update(extra_parameters)
+                pass_in_observables = {}
+                for feature in self.feature_names:
+                    if feature in self.parameter_names:
+                        feature_index = list(self.feature_names).index(feature)
+                        pass_in_observables[feature] = X_test[feature_index]
 
+                params.update(extra_parameters)
+                params.update(pass_in_observables)
                 output = simulator(params)
                 if i == 0:
                     phot_wav = output["photo_wav"]
@@ -4655,16 +4796,23 @@ class SBI_Fitter:
             phot_fnu_quantiles = phot_fnu_quantiles.to(phot_unit)
             fnu_draws = fnu_draws.to(phot_unit)
 
-        plot_sfh = True
         if plot:
-            fig = plt.Figure(figsize=(8, 6), dpi=200, constrained_layout=True)
-            ngrid = len(self.fitted_parameter_names) // 5 + 1
+            if fig is None:
+                fig = plt.Figure(figsize=(8, 6), dpi=200, constrained_layout=True)
+            if plot_histograms:
+                ngrid = len(self.fitted_parameter_names) // 5 + 1
+            else:
+                ngrid = 0
             gridspec = fig.add_gridspec(1 + ngrid, 5, height_ratios=[1] + [0.4] * ngrid)
-            ax = fig.add_subplot(gridspec[0, :])
+            if ax is None:
+                ax = fig.add_subplot(gridspec[0, :])
 
             if plot_sfh:
                 # inset axes for SFH inside ax
-                inset_ax = fig.add_axes([0.78, 0.65, 0.18, 0.18])
+                if ax_sfh is None:
+                    inset_ax = fig.add_axes([0.78, 0.65, 0.18, 0.18])
+                else:
+                    inset_ax = ax_sfh
                 # plot the SFH
                 inset_ax.plot(
                     output["sfh_time"],
@@ -4677,7 +4825,6 @@ class SBI_Fitter:
                     sfh_quantiles[0],
                     sfh_quantiles[2],
                     alpha=0.5,
-                    label="68% CI SFH",
                     color=sample_color,
                 )
                 # Don't let the time go beyond 0
@@ -4701,7 +4848,6 @@ class SBI_Fitter:
                 fnu_quantiles[0],
                 fnu_quantiles[2],
                 alpha=0.5,
-                label="68% CI SED",
                 color=sample_color,
                 zorder=7,
             )
@@ -4739,30 +4885,27 @@ class SBI_Fitter:
                         true_parameters_dict
                     )
 
+                true_parameters_dict.update(extra_parameters)
+                true_parameters_dict.update(pass_in_observables)
+
                 true_sed_output = simulator(true_parameters_dict)
                 true_sed = true_sed_output["fnu"]
+                if phot_unit == "AB":
+                    true_sed = -2.5 * np.log10(true_sed) + 31.4
+                else:
+                    true_sed = true_sed.to(phot_unit)
                 ax.plot(
                     wav,
                     true_sed,
                     label="True SED",
-                    color="red",
+                    color="#191970",
                     lw=1,
                     zorder=11,
                 )
                 if plot_sfh:
                     true_sfh = true_sed_output["sfh"]
-                    inset_ax.plot(time, true_sfh, label="True SFH", color="red")
-
-                    if len(extra_indexes) > 0:
-                        for i, index in enumerate(extra_indexes):
-                            inset_ax.plot(
-                                time,
-                                true_sfh,
-                                label=extra_labels[i],
-                                lw=1,
-                                zorder=10,
-                                color=extra_lines[i][0].get_color(),
-                            )
+                    true_sfh_time = true_sed_output["sfh_time"]
+                    inset_ax.plot(true_sfh_time, true_sfh, label="True SFH", color="#191970")
 
             # Match indexes of the filters to the feature names
             # Now plot the photometry we have been given (X_test).
@@ -4855,6 +4998,8 @@ class SBI_Fitter:
                     zorder=9,
                     markersize=5,
                     linestyle="None",
+                    markeredgecolor="black",
+                    markeredgewidth=0.5,
                 )
 
             # Set min and max of the x axis based on observed photomery
@@ -4879,59 +5024,59 @@ class SBI_Fitter:
 
             if param_labels is None:
                 param_labels = self.simple_fitted_parameter_names
-
-            # Add a row of axis underneath and plot histograms of parameters
-            for i, param in enumerate(param_labels):
-                if i > 4:
-                    jax = (1 + i // 5) % 5
-                    iax = i % 5
-                else:
-                    jax = 1
-                    iax = i
-                ax = fig.add_subplot(gridspec[jax, iax])
-                ax.hist(
-                    samples[:, i],
-                    bins=50,
-                    density=False,
-                    alpha=0.9,
-                    color=sample_color,
-                )
-                ax.set_xlabel(param)
-                ax.set_yticks([])
-                if len(true_parameters) > 0:
-                    ax.axvline(
-                        true_parameters[i],
-                        color="black",
-                        linestyle="--",
-                        label="True",
+            if plot_histograms:
+                # Add a row of axis underneath and plot histograms of parameters
+                for i, param in enumerate(param_labels):
+                    if i > 4:
+                        jax = (1 + i // 5) % 5
+                        iax = i % 5
+                    else:
+                        jax = 1
+                        iax = i
+                    ax = fig.add_subplot(gridspec[jax, iax])
+                    ax.hist(
+                        samples[:, i],
+                        bins=50,
+                        density=False,
+                        alpha=0.9,
+                        color=sample_color,
                     )
-
-                if len(extra_indexes) > 0:
-                    for j, index in enumerate(extra_indexes):
-                        line = extra_lines[j][0]
+                    ax.set_xlabel(param)
+                    ax.set_yticks([])
+                    if len(true_parameters) > 0:
                         ax.axvline(
-                            samples[index, i],
-                            color=line.get_color(),
+                            true_parameters[i],
+                            color="black",
                             linestyle="--",
-                            label=extra_labels[j],
+                            label="True",
                         )
-                percentiles = np.nanpercentile(samples[:, i], [16, 50, 84])
-                upper = percentiles[2] - percentiles[1]
-                lower = percentiles[1] - percentiles[0]
-                ax.text(
-                    0.04,
-                    0.96,
-                    f"${percentiles[1]:.2f}^{{+{upper:.2f}}}_{{-{lower:.2f}}}$",
-                    transform=ax.transAxes,
-                    fontsize=8,
-                    verticalalignment="top",
-                    horizontalalignment="left",
-                    bbox=dict(boxstyle="round", facecolor="white", alpha=0.8),
-                )
+
+                    if len(extra_indexes) > 0:
+                        for j, index in enumerate(extra_indexes):
+                            line = extra_lines[j][0]
+                            ax.axvline(
+                                samples[index, i],
+                                color=line.get_color(),
+                                linestyle="--",
+                                label=extra_labels[j],
+                            )
+                    percentiles = np.nanpercentile(samples[:, i], [16, 50, 84])
+                    upper = percentiles[2] - percentiles[1]
+                    lower = percentiles[1] - percentiles[0]
+                    ax.text(
+                        0.04,
+                        0.96,
+                        f"${percentiles[1]:.2f}^{{+{upper:.2f}}}_{{-{lower:.2f}}}$",
+                        transform=ax.transAxes,
+                        fontsize=8,
+                        verticalalignment="top",
+                        horizontalalignment="left",
+                        bbox=dict(boxstyle="round", facecolor="white", alpha=0.8),
+                    )
 
             if plot_name is None:
                 plot_name = f"{self.name}_SED_{self._timestamp}.png"
-            plt.show(block=False)
+            # plt.show(block=False)
             fig.savefig(os.path.join(plots_dir, plot_name), dpi=200)
 
         else:
@@ -4994,7 +5139,8 @@ class SBI_Fitter:
         if X_test_array.ndim == 1 or (X_test_array.ndim == 2 and X_test_array.shape[0] == 1):
             return sample_with_timeout(sampler, num_samples, X_test_array, timeout_seconds_per_test)
 
-        """ ISSUE! sample_batched seems to be much slower than sampling one by one!
+        # ISSUE! sample_batched seems to be much slower than sampling one by one!
+        """
         if hasattr(posteriors, "sample_batched"):
             X_test_array = torch.squeeze(X_test_array)
             samples = (
@@ -5005,7 +5151,8 @@ class SBI_Fitter:
             )  # noqa E501
             samples = np.transpose(samples, (1, 0, 2))
             return samples
-"""
+        """
+
         # Handle multiple samples case
         shape = len(self.fitted_parameter_names)
         # test_sample = sample_with_timeout(
