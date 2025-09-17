@@ -18,9 +18,9 @@ import torch
 from unyt import Angstrom, Jy, nJy, unyt_array, unyt_quantity
 
 try:
-    import plotext as plt
+    import plotext as plo
 except ImportError:
-    plt = None
+    plo = None
 
 
 def load_grid_from_hdf5(
@@ -557,6 +557,43 @@ def f_jy_err_to_asinh(
     return 2.5 * np.log10(np.e) * f_jy_err / np.sqrt(f_jy**2 + (2 * f_b) ** 2)
 
 
+def asinh_to_snr(f_asinh: unyt_array, f_asinh_err: unyt_array, f_b: unyt_array = 5 * nJy):
+    """Convert asinh magnitude and error to signal-to-noise ratio.
+
+    Parameters:
+    f_asinh: Flux in asinh magnitude scale.
+    f_asinh_err: Flux error in asinh magnitude scale.
+    f_b: Softening parameter (transition point for the asinh scale).
+
+    Returns:
+    Signal-to-noise ratio.
+    """
+    f_b = f_b.to(Jy).value
+
+    # Handle different dimensionalities of f_b like in the other functions
+    if f_b.ndim == 0:
+        f_b = np.full_like(f_asinh, f_b, dtype=f_asinh.dtype)
+    elif f_b.ndim == 1 and f_asinh.ndim == 2:
+        assert f_b.shape[0] == f_asinh.shape[0], "Flux softening must match the number of filters."
+        f_b = np.tile(f_b, (f_asinh.shape[1], 1)).T
+    else:
+        assert f_b.shape == f_asinh.shape, "Flux and flux error must have the same shape."
+
+    # Convert back to flux
+    arcsinh_arg = -f_asinh / (2.5 * np.log10(np.e)) - np.log(f_b / 3631)
+    f_jy = 2 * f_b * np.sinh(arcsinh_arg)
+
+    # Convert asinh magnitude error back to flux error
+    # From f_jy_err_to_asinh: f_asinh_err = 2.5 * log10(e) * f_jy_err / sqrt(f_jy^2 + (2*f_b)^2)
+    # Rearranging: f_jy_err = f_asinh_err * sqrt(f_jy^2 + (2*f_b)^2) / (2.5 * log10(e))
+    f_jy_err = f_asinh_err * np.sqrt(f_jy**2 + (2 * f_b) ** 2) / (2.5 * np.log10(np.e))
+
+    # Calculate SNR
+    snr = f_jy / f_jy_err
+
+    return snr
+
+
 def save_emission_model(model):
     """Save the fixed parameters of the emission model.
 
@@ -724,6 +761,100 @@ def check_scaling(arr: Union[unyt_array, unyt_quantity]):
         return True
 
     return False
+
+
+def detect_outliers_pyod(
+    base_distribution,
+    observations,
+    methods=["ecod"],
+    combination="majority",
+    return_scores=False,
+    **kwargs,
+):
+    """Detect outliers in multivariate data using pyod methods.
+
+    Parameters:
+    -----------
+    base_distribution : array-like, shape (n_samples, n_features)
+        Reference distribution data
+    observations : array-like, shape (n_obs, n_features)
+        Observations to test for outliers
+    methods : str or list of str, default='ecod'
+        Method(s) to use from pyod. Available methods: 'ecod'
+    combination : str, default='majority'
+        How to combine results from multiple methods: 'majority', 'any', 'all', 'none'
+         - 'majority': Outlier if majority of methods flag as outlier
+         - 'any': Outlier if any method flags as outlier
+         - 'all': Outlier only if all methods flag as outlier
+         - 'none': Return individual method results without combination
+    return_scores : bool, default=False
+        Whether to return outlier scores along with the mask
+    **kwargs : dict
+        Additional parameters for specific pyod methods
+    """
+    try:
+        import pyod  # noqa: F401
+    except ImportError:
+        raise ImportError(
+            "pyod is required for outlier detection with pyod methods. "
+            "Please install it via 'pip install pyod'."
+        )  # noqa: E501
+
+    if isinstance(methods, str):
+        methods = [methods]
+
+    # Automate this
+    import importlib
+
+    base_distribution = np.asarray(base_distribution)
+    observations = np.asarray(observations)
+
+    outlier_mask = np.zeros((observations.shape[0], len(methods)), dtype=bool)
+    scores = np.zeros((observations.shape[0], len(methods)))
+
+    for i, method in enumerate(methods):
+        try:
+            model_class = importlib.import_module(f"pyod.models.{method.lower()}")
+            model_name = method.replace("_", "").upper()
+            special_cases = {
+                "iforest": "IForest",
+                "feature_bagging": "FeatureBagging",
+            }
+            if method.lower() in special_cases:
+                model_name = special_cases[method.lower()]
+
+            model_class = getattr(model_class, model_name)
+
+        except ModuleNotFoundError:
+            raise ValueError(f"Method {method} is not recognized.")
+        print(f"Using method: {method}")
+        model = model_class(**kwargs)
+        model.fit(base_distribution)
+
+        predictions = model.predict(observations)
+        score = model.decision_function(observations)
+
+        outlier_mask[:, i] = predictions.astype(bool)
+        scores[:, i] = score
+
+    if combination == "majority":
+        final_outlier_mask = np.sum(outlier_mask, axis=1) >= (len(methods) / 2)
+    elif combination == "any":
+        final_outlier_mask = np.any(outlier_mask, axis=1)
+    elif combination == "all":
+        final_outlier_mask = np.all(outlier_mask, axis=1)
+    elif combination == "none":
+        final_outlier_mask = outlier_mask
+    else:
+        raise ValueError("Combination method must be 'majority' or 'any'.")
+
+    if return_scores:
+        return {
+            "outlier_mask": final_outlier_mask,
+            "scores": scores,
+        }
+
+    return final_outlier_mask
 
 
 def detect_outliers(
@@ -2029,7 +2160,7 @@ _alternate_screen_active = False
 def _enter_alternate_screen():
     """Internal function to switch the terminal to the alternate screen buffer."""
     global _alternate_screen_active
-    if plt is not None and not _alternate_screen_active:
+    if plo is not None and not _alternate_screen_active:
         sys.stdout.write("\x1b[?1049h")
         sys.stdout.flush()
         _alternate_screen_active = True
@@ -2038,7 +2169,7 @@ def _enter_alternate_screen():
 def _exit_alternate_screen():
     """Internal function to switch back from the alternate screen buffer."""
     global _alternate_screen_active
-    if plt is not None and _alternate_screen_active:
+    if plo is not None and _alternate_screen_active:
         sys.stdout.write("\x1b[?1049l")
         sys.stdout.flush()
         _alternate_screen_active = False
@@ -2084,11 +2215,11 @@ def update_plot(
         sys.stdout.flush()
 
     # Get the size of the terminal to make the plot fit.
-    plt.clf()  # Clear the previous plot data
+    plo.clf()  # Clear the previous plot data
 
     # Plot the training and validation loss.
-    plt.plot(train_loss, label="Training Loss", color="blue")
-    plt.plot(val_loss, label="Validation Loss", color="red")
+    plo.plot(train_loss, label="Training Loss", color="blue")
+    plo.plot(val_loss, label="Validation Loss", color="red")
 
     # Set the plot dimensions and labels.
     if trial_number is not None:
@@ -2104,16 +2235,16 @@ def update_plot(
         else:
             title += f" - Time Elapsed: {time_elapsed / 3600:.1f}h"
 
-    plt.title(title)
-    plt.xlabel("Epoch")
-    plt.ylabel("Loss")
-    plt.xfrequency(5)  # Set the frequency of x-axis ticks
-    plt.grid(True, True)
+    plo.title(title)
+    plo.xlabel("Epoch")
+    plo.ylabel("Loss")
+    plo.xfrequency(5)  # Set the frequency of x-axis ticks
+    plo.grid(True, True)
 
     # Add a vertical line at the best validation loss epoch
     if len(val_loss) > 0:
         best_epoch = np.argmin(val_loss)
-        plt.plot(
+        plo.plot(
             [best_epoch, best_epoch],
             [min(min(train_loss), min(val_loss)), max(max(train_loss), max(val_loss))],
             label="Best Val Loss = {:.4f}".format(val_loss[best_epoch]),
@@ -2121,4 +2252,4 @@ def update_plot(
         )
 
     # Display the plot.
-    plt.show()
+    plo.show()

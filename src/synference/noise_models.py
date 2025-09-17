@@ -510,7 +510,10 @@ class AsinhEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Converts flux and error from Jy to asinh magnitudes."""
         if len(kwargs) > 0:
-            print(f"WARNING {kwargs} arguments will have no effect with this model")
+            print(
+                f"WARNING {kwargs} arguments will have no effect with this model. "
+                "Input must be in Jy."
+            )
 
         if not isinstance(flux, unyt_array):
             flux = unyt_array(flux, "Jy")
