@@ -330,7 +330,7 @@ for sfh_name, sfh_params in sfhs.items():
 
     sfh_name = str(sfh_type).split(".")[-1].split("'")[0]
 
-    name = f"BPASS_Chab_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_Calzetti_v3_multinode"  # noqa: E501
+    name = f"FSPS_Chab_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_Calzetti_v3_multinode"  # noqa: E501
     print(f"{out_dir}/grid_{name}.hdf5")
     if os.path.exists(f"{out_dir}/grid_{name}.hdf5") and not overwrite:
         print(f"Grid {name} already exists, skipping.")
@@ -366,7 +366,8 @@ for sfh_name, sfh_params in sfhs.items():
 
     # Create the grid
     grid = Grid(
-        "bpass-2.2.1-bin_chabrier03-0.1,300.0_cloudy-c23.01-sps.hdf5",
+        "fsps-3.2-mist-miles_chabrier03-0.1,300",
+        #"bpass-2.2.1-bin_chabrier03-0.1,300.0_cloudy-c23.01-sps.hdf5",
         grid_dir=grid_dir,
         new_lam=new_wav,
     )

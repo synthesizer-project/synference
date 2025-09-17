@@ -22,7 +22,7 @@ train_args:
       #min_resource: 10
       #bootstrap_count: 10
     search_space:
-      model_choice: ["mdn", "zuko_nsf"] # Must be a list
+      model_choice: ["mdn", "nsf"] # Must be a list
       optimizer_choice: ["AdamW", "Adam"] # Must be a list
       learning_rate:
         type: "float"
@@ -42,7 +42,7 @@ train_args:
         low: 0.1
         high: 10.0
       models:
-        zuko_nsf: 
+        nsf: 
           hidden_features:
             type: "int"
             low: 10
