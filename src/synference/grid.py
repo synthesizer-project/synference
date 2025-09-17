@@ -5149,7 +5149,11 @@ class GalaxySimulator(object):
                 if key in params:
                     params[name] = func(params[key])
                 else:
-                    params[name] = func(params)
+                    try:
+                        params[name] = func(params)
+                    except Exception:
+                        continue
+                        # logger.error(f"Error applying transform {value} to {key}: {e}")
             elif callable(value):
                 params[key] = value(params[key])
 
@@ -5186,7 +5190,7 @@ class GalaxySimulator(object):
                     break
 
             if not found:
-                if param not in self.unused_params:
+                if key not in self.unused_params:
                     self.unused_params.append(key)
                 # logger.info(f"Emitter params are {self.emitter_params}")
                 # raise ValueError(
