@@ -53,6 +53,7 @@ from .custom_runner import CustomIndependentUniform
 from .grid import GalaxySimulator
 from .noise_models import (
     EmpiricalUncertaintyModel,
+    AsinhEmpiricalUncertaintyModel,
     UncertaintyModel,
     load_unc_model_from_hdf5,
     save_unc_model_to_hdf5,
@@ -666,6 +667,8 @@ class SBI_Fitter:
 
         save_path = f"{out_dir}/{self.name}{name_append}_params.pkl"
 
+        param_dict.update(extras)
+
         if has_grid:
             param_dict["feature_array_flags"] = self.feature_array_flags
             param_dict["feature_array"] = self.feature_array
@@ -682,7 +685,6 @@ class SBI_Fitter:
                     save_unc_model_to_hdf5(model, noise_model_path, key, overwrite=True)
                     param_dict["empirical_noise_models"][key] = noise_model_path
 
-        param_dict.update(extras)
 
         if "stats" in param_dict:
             stats_path = f"{out_dir}/{self.name}{name_append}_summary.json"
@@ -1199,7 +1201,7 @@ class SBI_Fitter:
                     "asinh" - Asinh magnitude normalization.
                     any string or unyt_quantity equivalent to a flux density unit.
                     NOTE: Certain noise models can ignore this flux unit,
-                    e.g. if you provide a AsinhUcertaintyModel, the fluxes will be
+                    e.g. if you provide a AsinhEmpiricalUncertaintyModel, the fluxes will be
                     in asinh magnitudes regardless of the normed_flux_units.
             normalization_unit: The unit of the normalization factor, if used.
                 E.g. 'log10 nJy', 'nJy', AB', etc. This can be different to
@@ -1995,12 +1997,28 @@ class SBI_Fitter:
             return X_test, y_test
 
         phot_units = self.feature_array_flags["normed_flux_units"]
+        if self.feature_array_flags.get('empirical_noise_models', None) is not None:
+            nm = self.feature_array_flags['empirical_noise_models']
+            nm = all([isinstance(nm, AsinhEmpiricalUncertaintyModel) for nm in nm.values()])
+        else:
+            nm = False
 
         snrs = []
         for feature_name in snr_feature_names or self.feature_names:
             if feature_name.startswith("unc_"):
                 break
-            if phot_units == "AB":
+            elif nm:
+                feature_index = self.feature_names.index(feature_name)
+                err_index = self.feature_names.index(f"unc_{feature_name}")
+                # Need to know SNR from asinh magnitudes.
+                f_b = self.feature_array_flags['empirical_noise_models'][feature_name].b.to('Jy')
+                snr = asinh_to_snr(
+                    X_test[:, feature_index],
+                    X_test[:, err_index],
+                    f_b=f_b.value,
+                )
+
+            elif phot_units == "AB":
                 feature_name = "unc_" + feature_name
                 error_index = self.feature_names.index(feature_name)
                 snr = 2.5 / (X_test[:, error_index] * np.log(10))
@@ -2093,11 +2111,21 @@ class SBI_Fitter:
                 X_test=data,
             )
 
+            if len(self.fitted_parameter_names) == 1:
+                labels = np.expand_dims(labels, axis=-1)
+
             # get quantiles of the posterior samples
             quantiles = np.quantile(y_test_samples, [0.16, 0.5, 0.84], axis=1)
 
             for j, param in enumerate(parameters):
-                ax = axes[i, j] if len(binned_data) > 1 else axes[j]
+                if len(binned_data) > 1 and len(parameters) > 1:
+                    ax = axes[i, j] 
+                elif len(binned_data) == 1 and len(parameters) > 1:
+                    ax = axes[j]
+                elif len(binned_data) > 1 and len(parameters) == 1:
+                    ax = axes[i]
+                else:
+                    ax = axes
                 # Get the true values for the parameter
                 index = list(self.fitted_parameter_names).index(param)
                 true_values = labels[:, index]
@@ -3483,7 +3511,7 @@ class SBI_Fitter:
             name_append = f"{self._timestamp}"
 
         run = False
-        if os.path.exists(f"{out_dir}/{self.name}{name_append}_params.pkl") and save_model:
+        if os.path.exists(f"{out_dir}/{self.name}_{name_append}_params.pkl") and save_model:
             if load_existing_model:
                 logger.info(
                     f"Loading existing model from {out_dir}/{self.name}_{name_append}_params.pkl"  # noqa: E501
@@ -3958,7 +3986,7 @@ class SBI_Fitter:
         if evaluate_model:
             metrics_path = f"{out_dir}/{self.name}_{name_append}_metrics.json"
 
-            samples_path = f"{out_dir}/online/plots/{name_append}/validation_samples.npy"
+            samples_path = f"{out_dir}/online/plots/{name_append}/posterior_samples.npy"
             samples = samples_path if os.path.isfile(samples_path) else None
             if not os.path.exists(metrics_path):
                 logger.info("Evaluating model...")
@@ -5522,14 +5550,20 @@ class SBI_Fitter:
 
         X = np.squeeze(X)
         y = np.squeeze(y)
-
         X = np.atleast_2d(X)
-        y = np.atleast_2d(y)
+        if len(self.fitted_parameter_names) > 1:
+            y = np.atleast_2d(y)
 
         if ind == "random":
             if seed is not None:
                 np.random.seed(seed)
             ind = np.random.randint(0, len(X))
+
+        draw = y[ind]
+
+        logger.info(y[ind])
+
+        draw = np.atleast_2d(draw)
 
         # use ltu-ili's built-in validation metrics to plot the posterior for this point
         metric = PlotSinglePosterior(
@@ -5549,7 +5583,7 @@ class SBI_Fitter:
         fig = metric(
             posterior=posteriors,
             x_obs=x_obs,
-            theta_fid=y[ind],
+            theta_fid=draw,
             plot_kws=plot_kwargs,
             signature=f"{self.name}_{ind}_",
             **kwargs,
@@ -5800,6 +5834,10 @@ class SBI_Fitter:
                 "X must be a 2D array. Can't assess coverage "
                 "for a single sample. Please provide a 2D array."
             )
+        
+        if len(self.fitted_parameter_names) == 1:
+            y = np.expand_dims(y, axis=-1)
+        logger.info(f"shapes: X:{X.shape}, y:{y.shape}")
 
         metric = PosteriorCoverage(
             num_samples=num_samples,
@@ -5812,10 +5850,10 @@ class SBI_Fitter:
         )
 
         # samples dir is
-        samples_path = f"{plots_dir}/single_samples.npy"
+        #samples_path = f"{plots_dir}/single_samples.npy"
         # move file to validation_samples.npy
-        if os.path.exists(samples_path):
-            os.rename(samples_path, f"{plots_dir}/validation_samples.npy")
+        #if os.path.exists(samples_path):
+        #    os.rename(samples_path, f"{plots_dir}/validation_samples.npy")
 
         if posteriors is None:
             posteriors = self.posteriors
@@ -5993,6 +6031,8 @@ class SBI_Fitter:
             stats = None
             logger.info(f"Warning: No summary file found for {model_file}.")
 
+        logger.info(f"Loaded model from {model_file}.")
+        logger.info(f"Device: {self.device}")
         posteriors = move_to_device(posteriors, self.device)
 
         if set_self:
