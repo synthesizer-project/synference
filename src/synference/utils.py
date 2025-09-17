@@ -2001,12 +2001,12 @@ def move_to_device(obj: Any, device: str | torch.device, visited: Set[int] | Non
     if hasattr(obj, "_device"):
         try:
             setattr(obj, "_device", device)
-        except AttributeError:
+        except (AttributeError, TypeError):
             pass  # Attribute is not writable
     if hasattr(obj, "device"):
         try:
             setattr(obj, "device", device)
-        except AttributeError:
+        except (AttributeError, TypeError):
             pass  # Attribute is not writable
 
     # --- 3. Recurse into attributes of a custom object ---
@@ -2015,7 +2015,7 @@ def move_to_device(obj: Any, device: str | torch.device, visited: Set[int] | Non
             new_value = move_to_device(value, device, visited)
             try:
                 setattr(obj, attr, new_value)
-            except AttributeError:
+            except (AttributeError, TypeError):
                 # This attribute is not writable (e.g., a property without a setter).
                 # We can safely ignore it.
                 pass

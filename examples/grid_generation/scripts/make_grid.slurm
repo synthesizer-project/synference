@@ -30,7 +30,7 @@ DONE_DIR="/cosma/apps/dp276/dc-harv3/temp/${SLURM_JOB_ID}_done_files"
 mkdir -p "$DONE_DIR"
 echo "### STEP 1: Starting parallel work on all nodes. ###"
 echo "Node ${SLURM_NODEID}: Running grid generation script."
-mpirun python synference/examples/grid_generation/final_grid_generation_multinode.py $SLURM_CPUS_PER_TASK 0
+mpirun python synference/examples/grid_generation/scripts/final_grid_generation_multinode.py $SLURM_CPUS_PER_TASK 0
 if [ $? -ne 0 ]; then
   echo "ERROR: One or more tasks in the parallel step failed. Aborting job." >&2
   # Clean up the temporary directory before exiting
@@ -50,7 +50,7 @@ srun --nodes=1 --ntasks=1 --exact bash -c '
     sleep 2
   done
   echo "Primary (Node 0): All nodes are done. Running final aggregation script."
-  python synference/examples/grid_generation/final_grid_generation_multinode.py $SLURM_CPUS_PER_TASK 1
+  python synference/examples/grid_generation/scripts/final_grid_generation_multinode.py $SLURM_CPUS_PER_TASK 1
 '
 
 #rm -rf "$DONE_DIR"
