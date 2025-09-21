@@ -1,9 +1,9 @@
 #!/bin/bash -l
-#SBATCH --job-name=sbi_grid_generation
-#SBATCH --nodes=4
+#SBATCH --job-name=bpass_grid_generation
+#SBATCH --nodes=6
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=28
-#SBATCH -t 12:00:00
+#SBATCH -t 36:00:00
 #SBATCH -p cosma7
 #SBATCH -A dp276
 #SBATCH --mail-type=END,FAIL

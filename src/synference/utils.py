@@ -2041,6 +2041,113 @@ def make_serializable(obj: Any, allowed_types=None) -> Any:
     except Exception:
         return f"<unserializable object of type {type(obj).__name__}>"
 
+def combine_rank_files(size, filepath, num_galaxies, starts, ends):
+    """Combine the rank files into a single file.
+
+    Args:
+        output_file (str): The name of the output file.
+    """
+
+    def _recursive_copy(src, dest, slice):
+        """Recursively copy the contents of an HDF5 group.
+
+        Args:
+            src (h5py.Group): The source group.
+            dest (h5py.Group): The destination group.
+            slice: The slice (along the first axis) the data belongs to.
+        """
+        # Copy over the attributes
+        for attr in src.attrs:
+            dest.attrs[attr] = src.attrs[attr]
+
+        # Loop over the items in the source group
+        for k, v in src.items():
+            if k in ["Instruments", "EmissionModel"]:
+                continue
+
+            # If we found a group we need to recurse and create the group
+            # in the destination file if it doesn't exist. We also need to
+            # copy the attributes.
+            if isinstance(v, h5py.Group):
+                # Create the group if it doesn't exist
+                if k not in dest:
+                    dest.create_group(k)
+
+                # Recurse
+                _recursive_copy(v, dest[k], slice)
+
+            elif slice is None:
+                # Just copy the dataset directly
+                dset = dest.create_dataset(
+                    k,
+                    data=v[...],
+                    dtype=v.dtype,
+                )
+
+                # Copy the attributes
+                for attr in v.attrs:
+                    dset.attrs[attr] = v.attrs[attr]
+
+            else:
+                # If the dataset doesn't exist we need to create it
+                if k not in dest:
+                    dset = dest.create_dataset(
+                        k,
+                        shape=(num_galaxies, *v.shape[1:]),
+                        dtype=v.dtype,
+                    )
+                else:
+                    dset = dest[k]
+
+                # Copy the data into the slice
+                dset[slice, ...] = v[...]
+
+                # Copy the attributes
+                for attr in v.attrs:
+                    dset.attrs[attr] = v.attrs[attr]
+
+    # Define the new file path
+    ext = filepath.split(".")[-1]
+    path_no_ext = ".".join(filepath.split(".")[:-1])
+    new_path = "_".join(path_no_ext.split("_")[:-1]) + f".{ext}"
+    temp_path = "_".join(path_no_ext.split("_")[:-1]) + "_<rank>.hdf5"
+
+    # Open the output file
+    with h5py.File(new_path, "w") as hdf:
+        # Loop over each rank file
+        for rank in range(size):
+            # Open the rank file
+            with h5py.File(
+                temp_path.replace("<rank>", str(rank)),
+                "r",
+            ) as rank_hdf:
+                # We only the metadata groups once
+                if rank == 0:
+                    # Copy the instruments over (no slice needed)
+                    hdf.create_group("Instruments")
+                    _recursive_copy(
+                        rank_hdf["Instruments"],
+                        hdf["Instruments"],
+                        slice=None,
+                    )
+
+                    # Copy the emission model over (no slice needed)
+                    hdf.create_group("EmissionModel")
+                    _recursive_copy(
+                        rank_hdf["EmissionModel"],
+                        hdf["EmissionModel"],
+                        slice=None,
+                    )
+
+                # Copy the contents of the rank file to the output file
+                _recursive_copy(
+                    rank_hdf,
+                    hdf,
+                    slice=slice(starts[rank], ends[rank]),
+                )
+
+            # Delete the rank file
+            os.remove(temp_path.replace("<rank>", str(rank)))
 
 def setup_mpi_named_logger(
     name: str, level: int = logging.INFO, stream: TextIO = sys.stdout
@@ -2077,13 +2184,15 @@ def setup_mpi_named_logger(
     if RANK == 0:
         # Configure the logger for the main process (rank 0)
         logger.setLevel(level)
-        handler = logging.StreamHandler(stream)
-        formatter = logging.Formatter("%(asctime)s | %(name)s | %(levelname)-8s | %(message)s")
-        handler.setFormatter(formatter)
-        logger.addHandler(handler)
+
     else:
-        # Add a NullHandler to silence the logger on all other processes
-        logger.addHandler(logging.NullHandler())
+        # Only raise warnings and errors for other ranks
+        logger.setLevel(logging.WARNING)
+
+    handler = logging.StreamHandler(stream)
+    formatter = logging.Formatter("%(asctime)s | %(name)s | %(levelname)-8s | %(message)s")
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
 
     return logger
 

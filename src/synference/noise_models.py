@@ -295,12 +295,12 @@ class EmpiricalUncertaintyModel(UncertaintyModel, ABC):
 
         fill_median = (
             "extrapolate"
-            if self.extrapolate
+            if getattr(self, "extrapolate", False)
             else (self.median_error_in_bin[0], self.median_error_in_bin[-1])
         )
         fill_std = (
             "extrapolate"
-            if self.extrapolate
+            if getattr(self, "extrapolate", False)
             else (self.std_error_in_bin[0], self.std_error_in_bin[-1])
         )
 
