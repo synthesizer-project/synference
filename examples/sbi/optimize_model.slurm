@@ -1,15 +1,16 @@
 #!/bin/bash -l
 #SBATCH --job-name=sbi_optimization
-#SBATCH --nodes=4
+#SBATCH --nodes=8
 #SBATCH --ntasks-per-node=28
 #SBATCH --cpus-per-task=1
-#SBATCH -t 50:00:00
+#SBATCH -t 72:00:00
 #SBATCH -p cosma7
 #SBATCH -A dp276
 #SBATCH --mail-type=NONE
 #SBATCH --mail-user=thomas.harvey-3@manchester.ac.uk
 #SBATCH --output=/cosma/apps/dp276/dc-harv3/slurm_logs/log%A_%a.out
 #SBATCH --error=/cosma/apps/dp276/dc-harv3/slurm_logs/log%A_%a.err
+#SBATCH --no-requeue
 
 # Set the directory
 cd /cosma/apps/dp276/dc-harv3/
@@ -34,7 +35,9 @@ export LD_LIBRARY_PATH="/cosma/apps/dp276/dc-harv3/mysql/lib:$LD_LIBRARY_PATH"
 # Force the library to be loaded at startup to fix the TLS error
 export LD_PRELOAD="/cosma/apps/dp276/dc-harv3/mysql/lib/libmysqlclient.so.24"
 
-srun python synference/examples/sbi/train_model.py --data_err_file="/cosma7/data/dp276/dc-harv3/work/catalogs/JADES-DR3-GS_MASTER_Sel-F277W+F356W+F444W_v13.fits" --scatter_fluxes=1 --include_errors_in_feature_array=True --photometry_to_remove=F070W,F140M,F162M,F182M,F210M,F250M,F300M,F360M,F430M,F460M,F480M,F475W,Z,Y,J,H,Ks,g,r,i,z,Y,u,g,r,i,z,vis,Y,J,H,F560W,F770W,F1000W,F1130W,F1280W,F1500W,F1800W,F2100W,F2550W,I1,I2,I3,I4 --grid_path=/cosma/apps/dp276/dc-harv3/synference/grids/grid_BPASS_Chab_DenseBasis_SFH_0.01_z_14_logN_5.0_Calzetti_v3_multinode.hdf5 --model_name=DenseBasis_v3_optuna --name_append=new_nsf --train_test_fraction=0.90 --parameter_transformations="Av=log10,sfr_10=log10_floor,mass_weighted_age=log10" --device=cpu --parameters_to_add="mass_weighted_age,sfr_10,log_surviving_mass,beta" --sql_db_path="mysql+pymysql://root:highz@login7c:31666/"  --custom_config_yaml=/cosma/apps/dp276/dc-harv3/synference/examples/sbi/custom_loop.yaml --noise_model_clas=asinh
+srun python synference/examples/sbi/scripts/train_model.py --data_err_file="/cosma7/data/dp276/dc-harv3/work/catalogs/JADES-DR3-GS_MASTER_Sel-F277W+F356W+F444W_v13.fits" --scatter_fluxes=1 --include_errors_in_feature_array=True --photometry_to_remove=F070W,F140M,F162M,F182M,F210M,F250M,F300M,F360M,F430M,F460M,F480M,F475W,Z,Y,J,H,Ks,g,r,i,z,Y,u,g,r,i,z,vis,Y,J,H,F560W,F770W,F1000W,F1130W,F1280W,F1500W,F1800W,F2100W,F2550W,I1,I2,I3,I4 --grid_path=/cosma/apps/dp276/dc-harv3/synference/grids/grid_BPASS_Chab_DenseBasis_SFH_0.01_z_14_logN_5.0_Calzetti_v3_multinode.hdf5 --model_name=DenseBasis_v3_optuna_large --name_append=mdn_nsf --train_test_fraction=0.90 --parameter_transformations="Av=log10,sfr_10=log10_floor,mass_weighted_age=log10" --device=cpu --parameters_to_add="mass_weighted_age,sfr_10,log_surviving_mass,beta" --sql_db_path="mysql+pymysql://root:highz@login7a:31666/"  --custom_config_yaml=/cosma/apps/dp276/dc-harv3/synference/examples/sbi/custom_loop_mdn.yaml --noise_model_clas=asinh
+
+#python synference/examples/sbi/train_model.py --data_err_file="/cosma7/data/dp276/dc-harv3/work/catalogs/JADES-DR3-GS_MASTER_Sel-F277W+F356W+F444W_v13.fits" --scatter_fluxes=1 --include_errors_in_feature_array=True --photometry_to_remove=F070W,F140M,F162M,F182M,F210M,F250M,F300M,F360M,F430M,F460M,F480M,F475W,Z,Y,J,H,Ks,g,r,i,z,Y,u,g,r,i,z,vis,Y,J,H,F560W,F770W,F1000W,F1130W,F1280W,F1500W,F1800W,F2100W,F2550W,I1,I2,I3,I4 --grid_path=/cosma/apps/dp276/dc-harv3/synference/grids/grid_BPASS_Chab_DenseBasis_SFH_0.01_z_14_logN_5.0_Calzetti_v3_multinode.hdf5 --model_name=DenseBasis_v3_optuna --name_append=new_nsf --train_test_fraction=0.90 --parameter_transformations="Av=log10,sfr_10=log10_floor,mass_weighted_age=log10" --device=cpu --parameters_to_add="mass_weighted_age,sfr_10,log_surviving_mass,beta" --sql_db_path="mysql+pymysql://root:highz@login7c:31666/"  --custom_config_yaml=/cosma/apps/dp276/dc-harv3/synference/examples/sbi/custom_loop.yaml --noise_model_clas=asinh
 #"cockroachdb://root@login7c:26257/defaultdb?sslmode=disable&application_name=optuna_multinode" 
 #"mysql+pymysql://root:highz@login7c:31666/"
 

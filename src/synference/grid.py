@@ -1265,8 +1265,18 @@ def _process_galaxy_batch(galaxy_indices_and_data):
         # Process parameters (reuse logic from original)
         save_params = copy.deepcopy(params)
         save_params["redshift"] = galaxy_data["redshift"]
-        save_params.update(galaxy_data["sfh"].parameters)
-        save_params.update(galaxy_data["metal_dist"].parameters)
+        try:
+            save_params.update(galaxy_data["sfh"].parameters)
+        except AttributeError:
+            # This occurs if SFH is just a burst e.g. a single value
+            save_params["sfh"] = galaxy_data["sfh"]
+            pass
+            
+        try:    
+            save_params.update(galaxy_data["metal_dist"].parameters)
+        except AttributeError:
+            save_params["metal_dist"] = galaxy_data["metal_dist"]
+            pass
 
         # Apply alternative parametrizations
         if len(alt_parametrizations) > 0:
@@ -1684,11 +1694,12 @@ class GalaxyBasis:
                 )
             accept = False
 
-        if type(self.sfhs[0]).__name__ not in SFH.parametrisations:
+        if type(self.sfhs[0]).__name__ not in SFH.parametrisations and not isinstance(
+            self.sfhs[0], (unyt_quantity, float, int)
+        ):
             if verbose:
-                logger.warning(SFH.parametrisations)
                 logger.warning(
-                    f"SFH class {type(self.sfhs[0]).__name__} is not in SFH.parametrisations. "  # noqa: E501
+                    f"SFH class {type(self.sfhs[0]).__name__} is not in SFH.parametrisations. ({SFH.parametrisations})"  # noqa: E501
                     "Cannot store model."
                 )
             accept = False
@@ -2279,7 +2290,8 @@ class GalaxyBasis:
         if not batch_galaxies:
             batch_size = len(galaxies)
 
-        n_batches = int(np.ceil(len(galaxies) / batch_size))
+        n_gal = len(galaxies)
+        n_batches = int(np.ceil(n_gal / batch_size))
 
         if n_batches > 1:
             logger.info(f"Splitting galaxies into {n_batches} batches of size {batch_size}.")
@@ -2380,6 +2392,21 @@ class GalaxyBasis:
                         logger.info("Combining HDF5 files across nodes.")
                         pipeline.combine_files()  # virtual needs work
 
+            else:
+                elapsed = 0
+                if multi_node:
+                    if not os.path.exists(final_fullpath) and rank == 0:
+                        from synference.utils import combine_rank_files
+                        galaxies_per_node = n_gal // n_batches
+                
+                        size = n_batches
+                        starts = [int(i * galaxies_per_node) for i in range(size)]
+                        ends = [int(start + galaxies_per_node) for start in starts]
+                        ends[-1] = n_gal  # Ensure last end is n_gal
+
+                        logger.info("Combining rank files on rank 0.")
+                        combine_rank_files(size, final_fullpath, ngal, starts, ends)
+
             if save:
                 wav = self.grid.lam.to(Angstrom).value
 
@@ -2397,6 +2424,7 @@ class GalaxyBasis:
                     try:
                         os.rename(init_fullpath, final_fullpath)
                     except FileNotFoundError:
+                        final_fullpath = init_fullpath
                         pass
 
                     with h5py.File(final_fullpath, "r+") as f:
@@ -2418,6 +2446,9 @@ class GalaxyBasis:
                         f["Wavelengths"].attrs["Units"] = "Angstrom"
 
                     logger.info(f"Written pipeline to disk at {final_fullpath}.")
+
+            else:
+                logger.warning("Not saving pipeline to disk.")
 
             if not skip:
                 del pipeline  # Clean up the pipeline object to free memory
@@ -2724,11 +2755,12 @@ $\\log_{{10}}(M_\\star/M_\\odot)$: {np.log10(mass):.1f}"""
 
         if (
             os.path.exists(full_out_path)
-            or os.path.exists(f"{out_dir}/{out_name}_{total_batches}.hdf5")
+            #or os.path.exists(f"{out_dir}/{out_name}_{total_batches}.hdf5")
             and not overwrite[0]
         ):
             logger.info(f"File {full_out_path} already exists. Skipping loading.")
             return
+        
         if os.path.exists(full_out_path) and overwrite[0]:
             logger.info(f"Overwriting {full_out_path}.")
 
@@ -3034,7 +3066,7 @@ class CombinedBasis:
 
             if (
                 os.path.exists(full_out_path)
-                or os.path.exists(f"{self.out_dir}/{base.model_name}_{total_batches}.hdf5")
+                #or os.path.exists(f"{self.out_dir}/{base.model_name}_{total_batches}.hdf5")
             ) and not overwrite[i]:
                 logger.warning(f"File {full_out_path} already exists. Skipping.")
                 continue
@@ -4859,6 +4891,11 @@ class GalaxySimulator(object):
                     grid_dir = os.getenv("SYNTHESIZER_GRID_DIR", None)
                     if grid_dir is None:
                         raise ValueError("SYNTHESIZER_GRID_DIR environment variable not set.")
+                    
+            if grid_dir.endswith(".hdf5") or grid_dir.endswith(".h5"):
+                print('Overriding internal grid name to grid passed in directory path.')
+                grid_name = os.path.basename(grid_dir).replace(".hdf5", "").replace(".h5", "")
+                grid_dir = os.path.dirname(grid_dir)
 
             grid = Grid(grid_name, grid_dir)  # new_lam=lam)
 
