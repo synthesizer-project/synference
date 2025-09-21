@@ -2,6 +2,7 @@
 
 import os
 import subprocess
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -23,27 +24,42 @@ from synference import (  # noqa E402
     generate_sfh_basis,
 )
 
-test_dir = synference.__file__.replace("__init__.py", "").replace("/src/synference/", "/tests/")  # noqa E501
-grid_dir = test_dir + "/test_grids/"
+@pytest.fixture
+def test_dir():
+    return Path(__file__).resolve().parent
 
-os.environ["SYNTHESIZER_GRID_DIR"] = grid_dir
+@pytest.fixture
+def grid_dir(test_dir):
+    return test_dir / "test_grids"
+
+@pytest.fixture
+def synthesizer_grid_dir(test_dir):
+    synthesizer_grid_dir = test_dir / "synthesizer_grids"
+    os.environ["SYNTHESIZER_GRID_DIR"] = str(synthesizer_grid_dir)
+    return synthesizer_grid_dir
+
+@pytest.fixture
+def test_sbi_grid(grid_dir):
+    """Fixture to create a test SBI grid for testing synference."""
+    return f"{grid_dir}/sbi_test_grid.hdf5"
+
 
 
 @pytest.fixture
-def test_grid():
+def test_grid(synthesizer_grid_dir):
     """Fixture to create a test Grid object."""
-    if not os.path.exists(f"{test_dir}/test_grids/test_grid.hdf5"):
+    if not os.path.exists(f"{synthesizer_grid_dir}/test_grid.hdf5"):
         subprocess.run(
             [
                 "synthesizer-download",
                 "--test-grids",
                 "--destination",
-                f"{test_dir}/test_grids/",
+                f"{synthesizer_grid_dir}",
             ],
             check=True,
         )
 
-    return Grid(grid_name="test_grid", grid_dir=f"{test_dir}/test_grids/")
+    return Grid(grid_name="test_grid", grid_dir=synthesizer_grid_dir)
 
 
 @pytest.fixture
