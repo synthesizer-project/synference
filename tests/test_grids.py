@@ -22,22 +22,6 @@ from synference import (  # noqa E402
     draw_from_hypercube,
     generate_sfh_basis,
 )
-from synference.fixtures import (
-    grid_basis_params,  # noqa E401
-    lhc_basis_params,  # noqa E401
-    lhc_grid,  # noqa E401
-    lhc_prior,  # noqa E401
-    mock_emission_model,
-    mock_instrument,  # noqa E401
-    simple_sfh,
-    simple_zdist,
-    test_dir,
-    test_grid,
-    test_parametric_galaxies,  # noqa E401
-    test_parametric_galaxy,  # noqa E401
-    test_sfh,  # noqa E401
-    test_zmet,  # noqa E401
-)
 
 
 def check_hdf5(hfile, expected_keys, expected_attrs=None, check_size=False):
@@ -59,7 +43,7 @@ def check_hdf5(hfile, expected_keys, expected_attrs=None, check_size=False):
 
 
 @pytest.fixture
-def combined_grid_basis_params(grid_basis_params):
+def combined_grid_basis_params(grid_basis_params, test_dir):
     """Fixture to create parameters for CombinedBasis."""
     basis1 = GalaxyBasis(**grid_basis_params)
     basis2 = GalaxyBasis(**grid_basis_params)
@@ -89,7 +73,7 @@ def combined_grid_basis_params(grid_basis_params):
 
 
 @pytest.fixture
-def combined_lhc_basis_params(lhc_basis_params):
+def combined_lhc_basis_params(lhc_basis_params, test_dir):
     """Fixture to create parameters for CombinedBasis with LHC."""
     basis1 = GalaxyBasis(**lhc_basis_params)
     basis2 = GalaxyBasis(**lhc_basis_params)
@@ -146,7 +130,7 @@ class TestGalaxyBasis:
         assert basis.emission_model == lhc_basis_params["emission_model"]
         assert basis.per_particle is False
 
-    def test_process_priors(self):
+    def test_process_priors(self, test_grid, mock_emission_model, simple_sfh, simple_zdist):
         """Test that process_priors correctly handles prior distributions."""
         basis = GalaxyBasis(
             model_name="test_basis",
@@ -214,7 +198,7 @@ class TestGalaxyBasis:
         assert hasattr(basis, "varying_param_names")
         assert hasattr(basis, "fixed_param_names")
 
-    def test_process_galaxies_grid(self, grid_basis_params):
+    def test_process_galaxies_grid(self, grid_basis_params, test_dir):
         """Test that process_galaxies correctly processes galaxies."""
         basis = GalaxyBasis(**grid_basis_params)
 
@@ -239,7 +223,7 @@ class TestGalaxyBasis:
             expected_keys=expected_keys,
         )
 
-    def test_process_galaxies_lhc(self, lhc_basis_params):
+    def test_process_galaxies_lhc(self, lhc_basis_params, test_dir):
         """Test that process_galaxies correctly processes galaxies for LHC parameters."""
         basis = GalaxyBasis(**lhc_basis_params)
         galaxies = basis._create_matched_galaxies()
@@ -264,7 +248,7 @@ class TestGalaxyBasis:
             expected_keys=expected_keys,
         )
 
-    def test_plot_galaxy(self, grid_basis_params, test_parametric_galaxies):
+    def test_plot_galaxy(self, grid_basis_params, test_parametric_galaxies, test_dir):
         """Test that plot_galaxy correctly plots a Galaxy object."""
         basis = GalaxyBasis(**grid_basis_params)
 
@@ -279,7 +263,7 @@ class TestGalaxyBasis:
         plot_file = f"{test_dir}/test_output/test_basis_0.png"
         assert os.path.exists(plot_file), f"Plot file {plot_file} was not created."
 
-    def test_full_single_cat_creation(self, lhc_basis_params):
+    def test_full_single_cat_creation(self, lhc_basis_params, test_dir):
         """Test that full_single_cat_creation creates a single catalog."""
         basis = GalaxyBasis(**lhc_basis_params)
 
@@ -314,7 +298,7 @@ class TestGalaxyBasis:
 class TestCombinedBasis:
     """Test suite for the CombinedBasis class."""
 
-    def test_init_combined(self, combined_grid_basis_params):
+    def test_init_combined(self, combined_grid_basis_params, test_dir):
         """Test that CombinedBasis initializes correctly with valid parameters."""
         combined = CombinedBasis(**combined_grid_basis_params)
 
@@ -404,12 +388,6 @@ class TestCombinedBasis:
             expected_attrs=expected_attrs,
             check_size=True,
         )
-
-
-@pytest.fixture
-def test_sbi_grid():
-    """Fixture to create a test SBI grid for testing synference."""
-    return f"{test_dir}/test_grids/sbi_test_grid.hdf5"
 
 
 class TestSBIFitter:
@@ -532,7 +510,7 @@ class TestSBIFitter:
 class TestFullPipeline:
     """Test suite for full runthrough of grids and synference."""
 
-    def test_full_lhc(self, lhc_basis_params):
+    def test_full_lhc(self, lhc_basis_params, test_dir):
         """Test the full runthrough of LHC grid creation and synference."""
         # Create the GalaxyBasis with LHC parameters
         basis = GalaxyBasis(**lhc_basis_params)
@@ -684,16 +662,3 @@ class TestSuppFunctions:
             "calculate_mass_weighted_age did not return a value with the correct units."
         )
 
-
-if __name__ == "__main__":
-    # Clear out the test_output directory before running tests
-    output_dir = f"{test_dir}/test_output/"
-    if os.path.exists(output_dir):
-        for file in os.listdir(output_dir):
-            file_path = os.path.join(output_dir, file)
-            if os.path.isfile(file_path):
-                os.remove(file_path)
-
-    pytest.main([__file__])
-    # To run the tests, use the command:
-    # pytest -v ltu-ili_testing/tests/basis_tests.py

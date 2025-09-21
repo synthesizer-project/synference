@@ -68,6 +68,7 @@ class Args:
     plot: bool = True
     additional_model_args: tuple = ()
     parameters_to_add: tuple = ()
+    parameters_to_remove: tuple = ()
     data_err_file: str = """/home/tharvey/Downloads/JADES-Deep-GS_MASTER_Sel-f277W+f356W+f444W_v9_loc_depth_masked_10pc_EAZY_matched_selection_ext_src_UV.fits"""  # noqa
     data_err_hdu: str = "OBJECTS"  # The HDU name in the FITS file
     background: bool = False
@@ -253,6 +254,7 @@ def main_task(args: Args) -> None:
         drop_dropouts=args.drop_dropouts,
         drop_dropout_fraction=args.drop_dropout_fraction,
         parameters_to_add=args.parameters_to_add[0].split(",") if args.parameters_to_add else [],
+        parameters_to_remove=args.parameters_to_remove[0].split(",") if args.parameters_to_remove else [],
         parameter_transformations=parameter_transformations,
         max_rows=args.max_rows,
     )

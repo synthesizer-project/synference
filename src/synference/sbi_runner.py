@@ -44,6 +44,13 @@ from scipy import stats
 from sklearn.preprocessing import StandardScaler
 from tqdm import tqdm, trange
 from unyt import Jy, nJy, um, unyt_array, unyt_quantity
+from sbi.inference.posteriors.direct_posterior import DirectPosterior
+try:  # sbi > 0.22.0
+    from sbi.inference.posteriors import EnsemblePosterior
+except ImportError:  # sbi < 0.22.0
+    from sbi.utils.posterior_ensemble import (
+        NeuralPosteriorEnsemble as EnsemblePosterior,
+    )
 
 from . import logger
 from .custom_runner import CustomIndependentUniform
@@ -54,6 +61,7 @@ from .grid import GalaxySimulator
 from .noise_models import (
     AsinhEmpiricalUncertaintyModel,
     EmpiricalUncertaintyModel,
+    AsinhEmpiricalUncertaintyModel,
     UncertaintyModel,
     load_unc_model_from_hdf5,
     save_unc_model_to_hdf5,
@@ -669,6 +677,8 @@ class SBI_Fitter:
 
         save_path = f"{out_dir}/{self.name}{name_append}_params.pkl"
 
+        param_dict.update(extras)
+
         if has_grid:
             param_dict["feature_array_flags"] = self.feature_array_flags
             param_dict["feature_array"] = self.feature_array
@@ -685,7 +695,6 @@ class SBI_Fitter:
                     save_unc_model_to_hdf5(model, noise_model_path, key, overwrite=True)
                     param_dict["empirical_noise_models"][key] = noise_model_path
 
-        param_dict.update(extras)
 
         if "stats" in param_dict:
             stats_path = f"{out_dir}/{self.name}{name_append}_summary.json"
@@ -1202,7 +1211,7 @@ class SBI_Fitter:
                     "asinh" - Asinh magnitude normalization.
                     any string or unyt_quantity equivalent to a flux density unit.
                     NOTE: Certain noise models can ignore this flux unit,
-                    e.g. if you provide a AsinhUcertaintyModel, the fluxes will be
+                    e.g. if you provide a AsinhEmpiricalUncertaintyModel, the fluxes will be
                     in asinh magnitudes regardless of the normed_flux_units.
             normalization_unit: The unit of the normalization factor, if used.
                 E.g. 'log10 nJy', 'nJy', AB', etc. This can be different to
@@ -2004,6 +2013,11 @@ class SBI_Fitter:
             return X_test, y_test
 
         phot_units = self.feature_array_flags["normed_flux_units"]
+        if self.feature_array_flags.get('empirical_noise_models', None) is not None:
+            nm = self.feature_array_flags['empirical_noise_models']
+            nm = all([isinstance(nm, AsinhEmpiricalUncertaintyModel) for nm in nm.values()])
+        else:
+            nm = False
 
         if self.feature_array_flags.get("empirical_noise_models", None) is not None:
             nm = self.feature_array_flags["empirical_noise_models"]
@@ -2119,6 +2133,9 @@ class SBI_Fitter:
                 X_test=data,
             )
 
+            if len(self.fitted_parameter_names) == 1:
+                labels = np.expand_dims(labels, axis=-1)
+
             # get quantiles of the posterior samples
             quantiles = np.quantile(y_test_samples, [0.16, 0.5, 0.84], axis=1)
 
@@ -2127,7 +2144,7 @@ class SBI_Fitter:
 
             for j, param in enumerate(parameters):
                 if len(binned_data) > 1 and len(parameters) > 1:
-                    ax = axes[i, j]
+                    ax = axes[i, j] 
                 elif len(binned_data) == 1 and len(parameters) > 1:
                     ax = axes[j]
                 elif len(binned_data) > 1 and len(parameters) == 1:
@@ -3499,6 +3516,238 @@ class SBI_Fitter:
             if old_handler is not None:
                 signal.signal(signal.SIGALRM, old_handler)
 
+    def run_single_simformer(
+        self,
+        train_test_fraction: float = 0.8,
+        random_seed: int = None,
+        train_indices: np.ndarray = None,
+        test_indices: np.ndarray = None,
+        save_model: bool = True,
+        verbose: bool = True,
+        out_dir: str = f"{code_path}/models/",
+        plot: bool = True,
+        name_append: str = "timestamp",
+        save_method: str = "joblib",
+        set_self: bool = True,
+        override_prior_ranges: dict = {},
+        load_existing_model: bool = True,
+        use_existing_indices: bool = True,
+        evaluate_model: bool = True,
+        max_num_epochs: int = 1000,
+        sde_type: str = 've',
+        simformer_type = 'score',
+        model_kwargs: dict = {},
+    ) -> tuple:
+        """Trains a single Simformer model using the SBI implementation.
+
+        May need to be on this branch:
+        https://github.com/sbi-dev/sbi/pull/1621/
+
+        Parameters:
+            train_test_fraction: Fraction of the dataset to be used for training.
+            random_seed: Random seed for reproducibility.
+            train_indices: Indices of the training set.
+            test_indices: Indices of the test set. If None, no test set is used.
+            save_model: Whether to save the trained model.
+            verbose: Whether to print verbose output.
+            out_dir: Directory to save the model.
+            plot: Whether to plot the results.
+            name_append: String to append to the model name.
+            set_self: Whether to set the self attribute.
+            override_prior_ranges: Dictionary to override prior ranges.
+            load_existing_model: Whether to load an existing model.
+            use_existing_indices: Whether to use existing indices.
+            evaluate_model: Whether to evaluate the model.
+            max_num_epochs: Maximum number of epochs to train the model.
+            sde_type: Type of SDE to use ('ve','vp' or 'subvp').
+            simformer_type: Type of Simformer to use ('score' or 'flow').
+            model_kwargs: Additional keyword arguments to pass to the Simformer builder.
+                Available kwargs and defaults are:
+                For both 'score' and 'flow':
+                - hidden_features: int = 100,
+                - num_heads: int = 4,
+                - num_layers: int = 4,
+                - mlp_ratio: int = 2,
+                - time_embedding_dim: int = 32,
+                - embedding_net: nn.Module = nn.Identity(),
+                - dim_val: int = 64,
+                - dim_id: int = 32,
+                - dim_cond: int = 16,
+                - ada_time: bool = False,
+                - **kwargs: Any,
+        """
+        from sbi.inference import Simformer, FlowMatchingSimformer
+
+        assert self.has_features, (
+            "Feature array not created. Please create the feature array first."
+        )
+
+        if self.fitted_parameter_array is None:
+            raise ValueError("Parameter grid not created. Please create the parameter grid first.")
+        
+        if name_append == "timestamp":
+            name_append = self._timestamp
+
+        if os.path.exists(f"{out_dir}/{self.name}_{name_append}_params.pkl") and save_model:
+            if load_existing_model:
+                logger.info(
+                    f"Loading existing model from {out_dir}/{self.name}_{name_append}_params.pkl"  # noqa: E501
+                )
+                posteriors, stats, params = self.load_model_from_pkl(
+                    f"{out_dir}/{self.name}_{name_append}_posterior.pkl",
+                    set_self=set_self,
+                )
+                # return posterior, stats
+                run = True
+
+                if params is not None:
+                    save_model = False  # Don't save the model again if we loaded it.
+            else:
+                logger.info(
+                    "Model with same name already exists. \
+                    Please change the name of this model or delete the existing one."
+                )
+                return None
+
+        if use_existing_indices and (self._train_indices is not None) and (
+            self._test_indices is not None
+        ):
+            train_indices = self._train_indices
+            test_indices = self._test_indices
+            logger.info("Using existing train and test indices.")
+
+        if (train_indices is None) or (test_indices is None):
+            train_indices, test_indices = self.split_dataset(
+                train_fraction=train_test_fraction,
+                random_seed=random_seed,
+                verbose=verbose,
+            )
+        
+        if set_self:
+            self._train_indices = train_indices
+            self._test_indices = test_indices
+
+        X_train = self.feature_array[train_indices]
+        y_train = self.fitted_parameter_array[train_indices]
+        X_test = self.feature_array[test_indices]
+        y_test = self.fitted_parameter_array[test_indices]
+
+        # Construct simformer unflattened features
+
+        inputs = torch.cat([X_train, y_train[:, None, :]], dim=1)
+
+        simformer = Simformer if simformer_type == 'score' else FlowMatchingSimformer
+
+        # model_kwargs - passed to model_builder. 
+        inference = simformer(device=self.device,
+                            sde_type=sde_type,
+                            logging_level="INFO",
+                            show_progress_bars=verbose,
+                            **model_kwargs,
+                            )
+
+        inference.append_simulations(inputs)
+        start_time = time.time()
+        score_estimator = inference.train(max_num_epochs=max_num_epochs)
+        end_time = time.time()
+        # use torch to save score_estimator
+        torch.save(inference, f"{out_dir}/{self.name}_{name_append}_simformer.pkl")
+
+        inference.set_condition_indexes(
+            new_posterior_latent_idx=list(range(len(self.fitted_parameter_names))),
+            new_posterior_observed_idx=list(range(len(self.fitted_parameter_names), inputs.shape[1])),
+        )
+        posterior = inference.build_posterior()
+        
+        posterior = DirectPosterior(posterior_estimator=posterior, prior=self.prior)
+        posterior = EnsemblePosterior(
+            posteriors=[posterior],
+            weights=torch.tensor([1.0], device=self.device),
+            theta_transform=posterior.theta_transform,
+        )
+        # Save the posterior in a comatible format.
+        torch.save(posterior, f"{out_dir}/{self.name}_{name_append}_posterior.pkl")
+
+        if set_self:
+            self.simformer = inference
+            self.posteriors = posterior
+
+        if save_model:
+            param_dict = {
+                "train_indices": train_indices,
+                "test_indices": test_indices,
+                "sde_type": sde_type,
+                "simformer_type": simformer_type,
+                "model_kwargs": model_kwargs,
+                "max_num_epochs": max_num_epochs,
+                "random_seed": random_seed,
+                "name_append": name_append,
+                "training_time": end_time - start_time,
+                
+            }
+            self.save_state(
+                out_dir=out_dir,
+                name_append=name_append,
+                save_method=save_method,
+                has_grid=True,
+                **param_dict,
+            )
+
+        if plot:
+            if verbose:
+                logger.info("Plotting training diagnostics...")
+            self.plot_diagnostics(
+                X_train=X_train,
+                y_train=y_train,
+                X_test=X_test,
+                y_test=y_test,
+                plots_dir=f"{out_dir}/plots/{name_append}/",
+                stats=None,
+                sample_method='direct',
+                posteriors=posterior,
+            )
+        # Evaluate the model
+        if evaluate_model:
+
+            metrics_path = f"{out_dir}/{self.name}_{name_append}_metrics.json"
+            if verbose:
+                logger.info("Evaluating the model...")
+            stats = self.evaluate_model(
+                posteriors=posterior,
+                X_test=X_test,
+                y_test=y_test,
+            )
+
+            try:
+                with open(metrics_path, "w") as f:
+                    json.dump(stats, f, indent=4)
+            except Exception as e:
+                logger.error(f"Error saving metrics to {metrics_path}: {e}")
+
+            if set_self:
+                self.stats = stats
+
+        return inference
+
+        # Build conditional just lets you set whichever parameters are missing. 
+        # Build_posterior and build_likelihood are just wrappers around build_conditional.
+
+        # conditional = inference.build_conditional(condition_mask=[False, True])
+        # conditional_samples = conditional.sample((10000,), x=x_o)
+
+        # Must set indexes here to indicate which are observed and which are latent.
+
+        # Set condition indexes properly from len(self.fitted_param_names) and len(self.feature_names)
+
+
+        # inference.set_condition_indexes(new_posterior_latent_idx=[0], new_posterior_observed_idx=[1])
+
+        # 
+        # posterior_samples = posterior.sample((10000,), x=x_o)
+
+        # likelihood = inference.build_likelihood()
+        # likelihood_samples = likelihood.sample((10000,), x=theta_o)
+
     def run_single_sbi(
         self,
         train_test_fraction: float = 0.8,
@@ -3625,7 +3874,7 @@ class SBI_Fitter:
             name_append = f"{self._timestamp}"
 
         run = False
-        if os.path.exists(f"{out_dir}/{self.name}{name_append}_params.pkl") and save_model:
+        if os.path.exists(f"{out_dir}/{self.name}_{name_append}_params.pkl") and save_model:
             if load_existing_model:
                 logger.info(
                     f"Loading existing model from {out_dir}/{self.name}_{name_append}_params.pkl"  # noqa: E501
@@ -3673,7 +3922,8 @@ class SBI_Fitter:
             if not train_args.get("skip_optimization", False):
                 train_args["optuna"]["study"]["study_name"] = f"{self.name}_{name_append}"
                 train_args["optuna"]["study"]["storage"] = storage
-                net_configs = [{"model": train_args["optuna"]["search_space"]["model_choice"][0]}]
+                net_configs = [{'model': m} for m in train_args["optuna"]["search_space"]["model_choice"]]
+                
             else:
                 net_configs = [{"model": train_args["fixed_params"]["model_choice"]}]
 
@@ -4099,7 +4349,7 @@ class SBI_Fitter:
         if evaluate_model:
             metrics_path = f"{out_dir}/{self.name}_{name_append}_metrics.json"
 
-            samples_path = f"{out_dir}/online/plots/{name_append}/validation_samples.npy"
+            samples_path = f"{out_dir}/plots/{name_append}/posterior_samples.npy"
             samples = samples_path if os.path.isfile(samples_path) else None
             if not os.path.exists(metrics_path):
                 logger.info("Evaluating model...")
@@ -4111,8 +4361,6 @@ class SBI_Fitter:
                     num_samples=num_posterior_draws_per_sample,
                 )
 
-                # dump metrics to json file
-                metrics_path = f"{out_dir}/{self.name}_{name_append}_metrics.json"
                 try:
                     with open(metrics_path, "w") as f:
                         json.dump(metrics, f, indent=4)
@@ -5131,19 +5379,18 @@ class SBI_Fitter:
             return sample_with_timeout(sampler, num_samples, X_test_array, timeout_seconds_per_test)
 
         # ISSUE! sample_batched seems to be much slower than sampling one by one!
-        """
+        
         if hasattr(posteriors, "sample_batched"):
             X_test_array = torch.squeeze(X_test_array)
             samples = (
-                posteriors.sample_batched((num_samples,), x=X_test_array, show_progress_bars=True)
+                posteriors.sample_batched((1,), x=X_test_array, show_progress_bars=True)
                 .detach()
                 .cpu()
                 .numpy()
             )  # noqa E501
             samples = np.transpose(samples, (1, 0, 2))
             return samples
-        """
-
+        
         # Handle multiple samples case
         shape = len(self.fitted_parameter_names)
         # test_sample = sample_with_timeout(
@@ -5156,12 +5403,13 @@ class SBI_Fitter:
         # samples[0] = test_sample  # First sample is already drawn
         for i in trange(0, len(X_test_array), desc="Sampling from posterior"):
             try:
-                samples[i] = sample_with_timeout(
+                samples[i] = sampler.sample(nsteps=num_samples, x=X_test_array[i], progress=False)
+                '''samples[i] = sample_with_timeout(
                     sampler,
                     num_samples,
                     X_test_array[i],
                     timeout_seconds_per_test,
-                )
+                )'''
             except TimeoutException:
                 logger.error(
                     f"""Timeout exceeded for sample {i}.
@@ -5688,14 +5936,20 @@ class SBI_Fitter:
 
         X = np.squeeze(X)
         y = np.squeeze(y)
-
         X = np.atleast_2d(X)
-        y = np.atleast_2d(y)
+        if len(self.fitted_parameter_names) > 1:
+            y = np.atleast_2d(y)
 
         if ind == "random":
             if seed is not None:
                 np.random.seed(seed)
             ind = np.random.randint(0, len(X))
+
+        draw = y[ind]
+
+        logger.info(y[ind])
+
+        draw = np.atleast_2d(draw)
 
         # use ltu-ili's built-in validation metrics to plot the posterior for this point
         metric = PlotSinglePosterior(
@@ -5715,7 +5969,7 @@ class SBI_Fitter:
         fig = metric(
             posterior=posteriors,
             x_obs=x_obs,
-            theta_fid=y[ind],
+            theta_fid=draw,
             plot_kws=plot_kwargs,
             signature=f"{self.name}_{ind}_",
             **kwargs,
@@ -5966,6 +6220,10 @@ class SBI_Fitter:
                 "X must be a 2D array. Can't assess coverage "
                 "for a single sample. Please provide a 2D array."
             )
+        
+        if len(self.fitted_parameter_names) == 1:
+            y = np.expand_dims(y, axis=-1)
+        logger.info(f"shapes: X:{X.shape}, y:{y.shape}")
 
         metric = PosteriorCoverage(
             num_samples=num_samples,
@@ -5978,10 +6236,10 @@ class SBI_Fitter:
         )
 
         # samples dir is
-        samples_path = f"{plots_dir}/single_samples.npy"
+        #samples_path = f"{plots_dir}/single_samples.npy"
         # move file to validation_samples.npy
-        if os.path.exists(samples_path):
-            os.rename(samples_path, f"{plots_dir}/validation_samples.npy")
+        #if os.path.exists(samples_path):
+        #    os.rename(samples_path, f"{plots_dir}/validation_samples.npy")
 
         if posteriors is None:
             posteriors = self.posteriors
@@ -6159,6 +6417,8 @@ class SBI_Fitter:
             stats = None
             logger.info(f"Warning: No summary file found for {model_file}.")
 
+        logger.info(f"Loaded model from {model_file}.")
+        logger.info(f"Device: {self.device}")
         posteriors = move_to_device(posteriors, self.device)
 
         if set_self:
@@ -6364,7 +6624,7 @@ class MissingPhotometryHandler:
         self.device = device
 
     @classmethod
-    def init_from_sbifitter(cls, synference, **run_params):
+    def init_from_synference(cls, synference, **run_params):
         """Initialize from a fitted SBI model.
 
         Parameters:
