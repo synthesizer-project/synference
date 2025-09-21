@@ -1340,7 +1340,13 @@ class SBI_Fitter:
                 raise ValueError("No photometry filters left after removing the specified ones.")
 
         if normed_flux_units == "asinh":
-            assert asinh_softening_parameters is not None, (
+            err_is_asinh = isinstance(empirical_noise_models, dict) and all(
+                [
+                    isinstance(model, AsinhEmpiricalUncertaintyModel)
+                    for model in empirical_noise_models.values()
+                ]
+            )
+            assert asinh_softening_parameters is not None or err_is_asinh, (
                 "asinh_softening_parameters must be provided for asinh normalization."
             )
             if isinstance(asinh_softening_parameters, (list, np.ndarray)) and not isinstance(
@@ -6795,6 +6801,7 @@ class Simformer_Fitter(SBI_Fitter):
         train_config_dict_overrides: dict = None,
         sde_config_dict_overrides: dict = None,
         attention_mask_type: str = "full",
+        evaluate_model: bool = True,
     ):
         """Train a Simformer model using the provided configurations.
 
@@ -6844,6 +6851,17 @@ class Simformer_Fitter(SBI_Fitter):
         train_config_dict : dict, optional
             Dictionary to override the training configuration.
             Default is a pre-defined configuration for training.
+        attention_mask_type : str, optional
+            Type of attention mask to use. Default is "full".
+            Options are 'full', 'causal', and 'none'.
+        evaluate_model : bool, optional
+            If True, evaluates the trained model on the validation set
+            and prints metrics. Default is True.
+
+        Todo:
+        - Add support for constraint functions during sampling to allow intervals.
+        - e.g. from scoresbibm.methods.guidance import generalized_guidance, get_constraint_fn
+
         """
         from omegaconf import OmegaConf
         from scoresbibm.methods.score_transformer import train_transformer_model
@@ -6910,7 +6928,7 @@ class Simformer_Fitter(SBI_Fitter):
             trained_score_model, meta = self.load_model_from_pkl(
                 model_dir=f"{code_path}/models/{self.name}/",
                 model_name=f"{self.name}{name_append}_posterior",
-                set_self=False,
+                set_self=True,
             )
             run = True
         else:
@@ -7026,20 +7044,25 @@ class Simformer_Fitter(SBI_Fitter):
         test_x = validation_data["x"]
         theta_val = validation_data["theta"]
 
-        if verbose:
-            logger.info(f"Evaluating model at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        if set_self:
+            self._X_test = np.array(test_x)
+            self._y_test = np.array(theta_val)
 
-        self.plot_diagnostics(
-            task=task,
-            X_test=test_x,
-            y_test=theta_val,
-            posteriors=trained_score_model,
-            num_samples=1000,
-            num_evaluations=25,
-            rng_seed=random_seed,
-            plots_dir=f"{code_path}/models/{self.name}/plots/{name_append}/",
-            metric_path=f"{code_path}/models/{self.name}/{self.name}_{name_append}_metrics.json",
-        )
+        if evaluate_model:
+            if verbose:
+                logger.info(f"Evaluating model at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+            self.plot_diagnostics(
+                task=task,
+                X_test=test_x,
+                y_test=theta_val,
+                posteriors=trained_score_model,
+                num_samples=1000,
+                num_evaluations=25,
+                rng_seed=random_seed,
+                plots_dir=f"{code_path}/models/{self.name}/plots/{name_append}/",
+                metric_path=f"{code_path}/models/{self.name}/{self.name}_{name_append}_metrics.json",
+            )
 
     def load_model_from_pkl(
         self, model_dir: str, model_name: str = "simformer", set_self: bool = True
@@ -7469,6 +7492,81 @@ class Simformer_Fitter(SBI_Fitter):
         """Plot the posterior distribution."""
         pass
 
+    def log_prob(self, X_test, condition_mask="full", posteriors=None, theta=None):
+        """Compute the log probability of the data given the model.
+
+        Parameters
+        ----------
+        X_test : np.ndarray
+            Observed data of shape (n_observations, n_features) or (n_features,)
+        condition_mask : np.ndarray or str
+            Mask indicating which parts of the data are observed.
+            If 'full', assumes all features are observed.
+        posteriors : object, optional
+            Posteriors to use for computing the log probability. If None,
+            will use the posteriors stored in the object.
+        theta : np.ndarray, optional
+            Parameter samples of shape (n_samples, n_params). If None,
+            will sample from posterior.
+
+        Returns:
+        -------
+        np.ndarray
+            Log probabilities of shape (n_observations, n_samples) where each
+            element [i,j] is the log probability of observation i under
+            posterior sample j.
+        """
+        if posteriors is None:
+            posteriors = self.posteriors
+
+        num_theta = len(self.fitted_parameter_names)
+        num_x = len(self.feature_names)
+
+        if condition_mask == "full":
+            condition_mask = jnp.array([0] * num_theta + [1] * num_x, dtype=jnp.bool_)
+        else:
+            condition_mask = jnp.array(condition_mask, dtype=jnp.bool_)
+
+        X_test = np.atleast_2d(X_test)
+        n_observations = X_test.shape[0]
+
+        # Get posterior samples if not provided
+        if theta is None:
+            theta = self.sample_posterior(
+                X_test=X_test,
+                posteriors=posteriors,
+                condition_mask=condition_mask,
+            )
+
+        # Ensure theta is 2D: (n_samples, n_params)
+        theta = np.atleast_2d(theta)
+        n_samples = theta.shape[0]
+
+        # Initialize result array
+        log_probs = np.zeros((n_observations, n_samples))
+
+        # Compute log probability for each observation and each posterior sample
+        for i, x_obs in enumerate(X_test):
+            x_o = jnp.array(x_obs, dtype=jnp.float32)
+
+            for j in range(n_samples):
+                theta_sample = jnp.array(theta[j], dtype=jnp.float32)
+
+                log_prob = posteriors.log_prob(
+                    theta=theta_sample, x_o=x_o, condition_mask=condition_mask
+                )
+                log_probs[i, j] = float(log_prob)
+
+        # Return appropriate shape based on input
+        if n_observations == 1 and n_samples == 1:
+            return log_probs[0, 0]  # Single scalar
+        elif n_observations == 1:
+            return log_probs[0, :]  # 1D array of samples for single observation
+        elif n_samples == 1:
+            return log_probs[:, 0]  # 1D array of observations for single sample
+        else:
+            return log_probs  # 2D array
+
     def sample_posterior(
         self,
         X_test,
@@ -7503,11 +7601,12 @@ class Simformer_Fitter(SBI_Fitter):
         """
         if posteriors is None:
             posteriors = self.posteriors
-
         master_rng_key = jax.random.PRNGKey(rng_seed)
 
         num_theta = len(self.fitted_parameter_names)
         num_x = len(self.feature_names)
+
+        X_test = np.atleast_2d(X_test)
 
         assert X_test.shape[1] == num_x or attention_mask == "full", (
             "Must provide all features or a manual attention mask. "
@@ -7518,10 +7617,8 @@ class Simformer_Fitter(SBI_Fitter):
         else:
             mask = attention_mask.astype(np.bool_)
 
-        X_test = np.atleast_2d(X_test)
-
         all_samples = []
-        """
+
         for x in tqdm(X_test, desc="Sampling from posterior"):
             x = jnp.array([x], dtype=jnp.float32)
             samples = posteriors.sample_batched(
@@ -7533,8 +7630,7 @@ class Simformer_Fitter(SBI_Fitter):
 
             samples = np.array(samples[0], dtype=np.float32)
             all_samples.append(samples)
-        """
-
+        """ Batched sampling is slow.
         nbatches = int(np.ceil(X_test.shape[0] / batch_size))
         for batch_idx in trange(nbatches, desc="Sampling from posterior"):
             start_idx = batch_idx * batch_size
@@ -7551,6 +7647,7 @@ class Simformer_Fitter(SBI_Fitter):
 
             # Convert to numpy and append to the list
             all_samples.extend(np.array(samples_batch, dtype=np.float32))
+        """
 
         all_samples = np.array(all_samples, dtype=np.float32)
 
