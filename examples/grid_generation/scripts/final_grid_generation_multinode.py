@@ -139,7 +139,7 @@ grid_dir = os.environ["SYNTHESIZER_GRID_DIR"]
 # path for this file
 
 dir_path = os.path.dirname(os.path.abspath(__file__))
-out_dir = os.path.join(os.path.dirname(os.path.dirname(dir_path)), "grids/")
+out_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(dir_path))), "grids/")
 
 try:
     n_proc = int(sys.argv[1])
@@ -152,7 +152,8 @@ from mpi4py import MPI
 
 av_to_tau_v = 1.086  # conversion factor from Av to tau_v for the dust attenuation curve
 overwrite = False  # whether to overwrite existing grids
-Nmodels = 100_000  # number of models to generate
+Nmodels = 1_000_000  # number of models to generate
+grid_name = "BPASS"  # name for the grid
 
 redshift = (0.01, 14)
 masses = (4, 12)
@@ -178,6 +179,11 @@ if int(sys.argv[2]) == 1:
 
 
 batch_size = np.sum(mask) + 1
+
+grid_dict = {
+    "FSPS": "fsps-3.2-mist-miles_chabrier03-0.1,300_cloudy-c23.01-sps",
+    "BPASS": "bpass-2.2.1-bin_chabrier03-0.1,300.0_cloudy-c23.01-sps",
+}
 
 
 def continuity_agebins(
@@ -310,8 +316,19 @@ sfhs = {
         ],
         "ssfr": (-12, -7),  # log10(sSFR) in yr^-1'
         "params_to_ignore": ["max_age"],
-    },
+    }
 }
+'''"continuity": { # SWITCH SYNTHESIZER BRANCH AND UNCOMMENT CONTINUITY REFERENCES BELOW
+        "sfh_type": SFH.Continuity,
+        "agebins": continuity_agebins,
+        "df": 2,
+        "scale": 1.0,  # scale for students-t prior
+        "params_to_ignore": ["max_age", "agebins"],
+        "nbins": 6,  # number of bins to use for the Continuity SFH
+        "sfh_param_names": [],
+},
+'''
+
 
 
 # Generate the grid. Could also seperate hyper-parameters for each model.
@@ -330,7 +347,7 @@ for sfh_name, sfh_params in sfhs.items():
 
     sfh_name = str(sfh_type).split(".")[-1].split("'")[0]
 
-    name = f"FSPS_Chab_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_Calzetti_v3_multinode"  # noqa: E501
+    name = f"{grid_name}_Chab_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_Calzetti_v4_multinode"  # noqa: E501
     print(f"{out_dir}/grid_{name}.hdf5")
     if os.path.exists(f"{out_dir}/grid_{name}.hdf5") and not overwrite:
         print(f"Grid {name} already exists, skipping.")
@@ -346,7 +363,7 @@ for sfh_name, sfh_params in sfhs.items():
                 0,
                 1,
             )  # dummy parameters for the SFH
-    """elif sfh_type == SFH.Continuity:
+    elif sfh_type == SFH.Continuity:
         # Add dummy parameters for the Continuity SFH
         for i in tqdm(range(sfh_params["nbins"])):
             j = 100 * (i + 1) / (sfh_params["nbins"] + 1)
@@ -366,7 +383,7 @@ for sfh_name, sfh_params in sfhs.items():
 
     # Create the grid
     grid = Grid(
-        "fsps-3.2-mist-miles_chabrier03-0.1,300",
+        grid_dict[grid_name],
         #"bpass-2.2.1-bin_chabrier03-0.1,300.0_cloudy-c23.01-sps.hdf5",
         grid_dir=grid_dir,
         new_lam=new_wav,
@@ -388,6 +405,20 @@ for sfh_name, sfh_params in sfhs.items():
         logsfrs = []
 
         skip = os.path.exists(f"{out_dir}/sps_{name}.hdf5") and not overwrite
+
+        # Alternatively check for all of _0 to _N given total number of models/nodes and max_models_per_node
+        # and skip if all exist.
+
+        '''n_required = Nmodels // batch_size
+
+        if all(
+            os.path.exists(f"{out_dir}/sps_{name}_{i}.hdf5") and not overwrite
+            for i in range(n_required)
+        ):
+            skip = True
+
+        if skip:
+            print(f"SPS models for {name} already exist, skipping SFH generation.")'''
 
         for i in tqdm(range(Nmodels), desc="Generating SFH models", disable=rank != 0):
             if not skip or i == 0:
@@ -417,20 +448,20 @@ for sfh_name, sfh_params in sfhs.items():
         # Add logSFR to all_param_dict
         all_param_dict["log_sfr"] = np.array(logsfrs)
         # UNCOMMENT IN GENERAL! Just because main doesn't have this brnch.
-        """elif sfh_type == SFH.Continuity:
-            # Draw from prior.
-            sfh_models = []
-            for i in tqdm(range(Nmodels)):
-                z_i = all_param_dict["redshift"][i]
-                agebins = sfh_params["agebins"](z_i, cosmo=cosmo, Nbins=6)
-                sfh_models.append(
-                    sfh_params["sfh_type"].init_from_prior(
-                        agebins,
-                        df=sfh_params["df"],
-                        scale=sfh_params["scale"],
-                        limits=(-30, 30),
-                    )
-        )"""
+    elif sfh_type == SFH.Continuity:
+        # Draw from prior.
+        sfh_models = []
+        for i in tqdm(range(Nmodels)):
+            z_i = all_param_dict["redshift"][i]
+            agebins = sfh_params["agebins"](z_i, cosmo=cosmo, Nbins=6)
+            sfh_models.append(
+                sfh_params["sfh_type"].init_from_prior(
+                    agebins,
+                    df=sfh_params["df"],
+                    scale=sfh_params["scale"],
+                    limits=(-30, 30),
+                )
+        )
 
     else:
         if "beta" in sfh_param_names:
@@ -559,6 +590,14 @@ for sfh_name, sfh_params in sfhs.items():
     multinode = True if sys.argv[2] == "0" else False  # Check if running in multinode mode
     compile_grid = True if sys.argv[2] == "1" else False  # Check if running in multinode mode
 
+    param_transforms_to_save = {
+            "tau_v": lambda x: x["Av"] / av_to_tau_v,  # Save Av instead of tau_v
+        }
+    
+    if sfh_type == SFH.DenseBasis:
+        param_transforms_to_save['db_tuple'] = make_db_tuple
+           
+
     basis.create_mock_cat(
         emission_model_key=emission_key,
         out_name=f"grid_{name}",
@@ -581,10 +620,7 @@ for sfh_name, sfh_params in sfhs.items():
         n_proc=n_proc,
         verbose=False,
         batch_size=batch_size,
-        parameter_transforms_to_save={
-            "db_tuple": make_db_tuple,  # Save the Dense Basis SFH tuple
-            "tau_v": lambda x: x["Av"] / av_to_tau_v,  # Save Av instead of tau_v
-        },
+        parameter_transforms_to_save=param_transforms_to_save,
         compile_grid=compile_grid,
         multi_node=multinode,
     )
