@@ -292,15 +292,14 @@ class EmpiricalUncertaintyModel(UncertaintyModel, ABC):
     def _create_interpolators(self):
         if self.bin_centers is None or len(self.bin_centers) < 2:
             raise AttributeError("Binned data not found. Cannot create interpolators.")
-
         fill_median = (
             "extrapolate"
-            if self.extrapolate
+            if getattr(self, "extrapolate", False)
             else (self.median_error_in_bin[0], self.median_error_in_bin[-1])
         )
         fill_std = (
             "extrapolate"
-            if self.extrapolate
+            if getattr(self, "extrapolate", False)
             else (self.std_error_in_bin[0], self.std_error_in_bin[-1])
         )
 
@@ -541,6 +540,7 @@ class AsinhEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
         attrs["min_flux_error"] = self.min_flux_error
         attrs["max_flux_error"] = self.max_flux_error
         attrs["interpolation_flux_unit"] = self.interpolation_flux_unit
+        attrs["extrapolate"] = self.extrapolate
 
     @classmethod
     def _from_hdf5_group(cls, hdf5_group: h5py.Group) -> "AsinhEmpiricalUncertaintyModel":
@@ -559,6 +559,13 @@ class AsinhEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
         instance.min_flux_error = attrs["min_flux_error"]
         instance.max_flux_error = attrs["max_flux_error"]
         instance.interpolation_flux_unit = attrs["interpolation_flux_unit"]
+        instance.extrapolate = attrs.get("extrapolate", False)
+
+        instance._log_bins = attrs.get("log_bins", True)
+        instance._num_bins = attrs.get("num_bins", 20)
+        instance._min_samples_per_bin = attrs.get("min_samples_per_bin", 10)
+
+        instance._create_interpolators()
 
         return instance
 
