@@ -152,9 +152,9 @@ from mpi4py import MPI
 
 av_to_tau_v = 1.086  # conversion factor from Av to tau_v for the dust attenuation curve
 overwrite = False  # whether to overwrite existing grids
-Nmodels = 100_000  # number of models to generate
+Nmodels = 25_000  # number of models to generate
 grid_name = "BPASS"  # name for the grid
-
+cat_type = "spectra" # spectra or photometry
 redshift = (0.01, 14)
 masses = (4, 12)
 max_redshift = 20  # gives maximum age of SFH at a given redshift
@@ -348,6 +348,10 @@ for sfh_name, sfh_params in sfhs.items():
     sfh_name = str(sfh_type).split(".")[-1].split("'")[0]
 
     name = f"{grid_name}_Chab_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_Calzetti_v4_multinode"  # noqa: E501
+
+    if cat_type == "spectra":
+        name = f"spectra_{name}"
+        
     print(f"{out_dir}/grid_{name}.hdf5")
     if os.path.exists(f"{out_dir}/grid_{name}.hdf5") and not overwrite:
         print(f"Grid {name} already exists, skipping.")
@@ -624,6 +628,7 @@ for sfh_name, sfh_params in sfhs.items():
         parameter_transforms_to_save=param_transforms_to_save,
         compile_grid=compile_grid,
         multi_node=multinode,
+        cat_type=cat_type
     )
 
 

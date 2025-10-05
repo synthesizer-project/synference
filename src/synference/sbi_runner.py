@@ -1032,6 +1032,10 @@ class SBI_Fitter:
         parameters_to_remove: list = None,
         parameters_to_add: list = None,
         parameter_transformations: Dict[str, Callable] = None,
+        resample_wavelengths: unyt_array = None,
+        inst_resolution_wavelengths: unyt_array = None,
+        inst_resolution_r: unyt_array = None,
+        theory_r: float = np.inf,
     ):
         """Create a feature array from the raw spectra grid.
 
@@ -1045,7 +1049,8 @@ class SBI_Fitter:
             crop_wavelength_range: tuple or list, optional
                 A tuple or list of two values specifying the
                 wavelength range to crop the spectra to. Should
-                be given in microns (um).
+                be given in microns (um). This will crop in the observed
+                frame if 'redshift' is a feature.
             normed_flux_units: str, optional
                 The units of the flux to normalize to. E.g. 'AB', 'nJy', etc.
                 If it starts with 'log10 ', it will be treated as a logarithmic
@@ -1059,6 +1064,20 @@ class SBI_Fitter:
                 parameters in the parameter array. The keys should be the parameter names,
                 and the values should be functions that take a numpy array and return
                 a transformed array.
+            resample_wavelengths: unyt_array, optional
+                If provided, the spectra will be resampled to these wavelengths
+                after transforming to the observed frame. Should be in microns (um).
+                Required if 'redshift' is a feature.
+            inst_resolution_wavelengths: unyt_array, optional
+                The wavelength array for the instrument resolution curve. Should be in microns (um).
+                Required if 'redshift' is a feature.
+            inst_resolution_r: unyt_array, optional
+                The resolution (R = lambda / delta_lambda) of the instrument
+                as a function of wavelength. Should be the same length as
+                instrument_resolution_wave. Required if 'redshift' is a feature.
+            theory_r: float, optional
+                The resolution of the theoretical spectra. Used for convolution
+                when transforming to the observed frame. Default is np.inf (no convolution).
         """
         if self.observation_type != "spectra":
             raise ValueError("This method is only for spectra models.")
@@ -1076,24 +1095,63 @@ class SBI_Fitter:
             parameters_to_add = []
 
         # wavelength range (in um) will be self.raw_observation_names
+        from .utils import transform_spectrum
 
         wavs = np.array(self.raw_observation_names, dtype=float) * um
 
-        if crop_wavelength_range is not None:
+        has_redshift = "redshift" in self.parameter_names
+
+        grid = self.raw_observation_grid
+
+        if has_redshift:
+            logger.info("Redshift detected. Transforming spectra to observed frame.")
+            # Assert that all necessary inputs for transformation are provided
+            assert resample_wavelengths is not None, \
+                "resample_wavelengths must be provided when transforming to observed frame."
+            assert inst_resolution_wavelengths is not None, \
+                "inst_resolution_wavelengths must be provided for convolution."
+            assert inst_resolution_r is not None, \
+                "inst_resolution_r must be provided for convolution."
+
+            observed_frame_grid = np.zeros(
+                (len(resample_wavelengths), grid.shape[1]), dtype=np.float32
+            )
+
+            # Use the robust transformation function inside the loop
+            for i in trange(grid.shape[1], desc="Transforming spectra"):
+                z = self.parameter_array[i, list(self.fitted_parameter_names).index("redshift")]
+
+                _, transformed_flux = transform_spectrum(
+                    theory_wave=wavs.to("um").value,
+                    theory_flux=grid[:, i],
+                    z=z,
+                    observed_wave=resample_wavelengths.to("um").value,
+                    resolution_curve_wave=inst_resolution_wavelengths.to("um").value,
+                    resolution_curve_r=inst_resolution_r,
+                    theory_r=theory_r,
+                )
+                observed_frame_grid[:, i] = transformed_flux
+
+            wavs = resample_wavelengths
+            grid = observed_frame_grid
+            mask = np.ones_like(resample_wavelengths, dtype=bool)
+        elif crop_wavelength_range is not None:
             mask = (
                 (wavs >= crop_wavelength_range[0] * um) & (wavs <= crop_wavelength_range[1] * um)
-            ).value
+            )
         else:
             mask = np.ones(len(wavs), dtype=bool)
-
+        
+        if isinstance(mask, unyt_array):
+            mask = mask.value
         output_array_size = len(wavs) + len(extra_features) - np.sum(~mask)
 
         self.feature_array = np.zeros(
-            (output_array_size, self.raw_observation_grid.shape[1]),
+            (output_array_size, grid.shape[1]),
         )
 
         temp_array = unyt_array(
-            copy.deepcopy(self.raw_observation_grid), units=self.raw_observation_units
+            copy.deepcopy(grid), units=self.raw_observation_units
         )
         if normed_flux_units.startswith("log10 "):
             temp_array = np.log10(temp_array.to(normed_flux_units[6:]).value)
@@ -6395,7 +6453,7 @@ class SBI_Fitter:
             # with open(model_file, "rb") as f:
             try:
                 posteriors = torch.load(f, map_location=torch.device(self.device))
-            except (RuntimeError, pickle.UnpicklingError):
+            except (ValueError, RuntimeError, pickle.UnpicklingError):
                 from .utils import CPU_Unpickler
 
                 with open(model_file, "rb") as f:
