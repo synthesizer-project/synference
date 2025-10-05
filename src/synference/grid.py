@@ -2329,7 +2329,7 @@ class GalaxyBasis:
             if not skip:
                 if multi_node:
                     logger.info("Running pipeline in multi-node mode with MPI.")
-                    logger.debug(f"SIZE: {size}, RANK: {rank}")
+                    # logger.debug(f"SIZE: {size}, RANK: {rank}")
                 else:
                     logger.info("Running in single-node mode.")
 
@@ -2424,7 +2424,6 @@ class GalaxyBasis:
                     try:
                         os.rename(init_fullpath, final_fullpath)
                     except FileNotFoundError:
-                        final_fullpath = init_fullpath
                         pass
 
                     with h5py.File(final_fullpath, "r+") as f:
@@ -3014,6 +3013,34 @@ class CombinedBasis:
             assert len(self.bases) == 1
             self.combination_weights = [1.0] * len(redshifts)
 
+    def _check_final_hdf5(self, full_out_path: str) -> bool:
+        """Checks if custom attributes are in the final HDF5 file."""
+        if not os.path.exists(full_out_path):
+            return False
+
+        with h5py.File(full_out_path, "r") as f:
+            required_attrs = [
+                "varying_param_names",
+                "fixed_param_names",
+                "fixed_param_values",
+                "fixed_param_units",
+                "model_name",
+                "grid_name",
+                "grid_dir",
+                "date_created",
+                "pipeline_time",
+            ]
+            for attr in required_attrs:
+                if attr not in f.attrs:
+                    logger.warning(f"Attribute {attr} not found in {full_out_path}.")
+                    return False
+            required_datasets = ["Wavelengths"]
+            for dataset in required_datasets:
+                if dataset not in f:
+                    logger.warning(f"Dataset {dataset} not found in {full_out_path}.")
+                    return False
+        return True
+
     def process_bases(
         self,
         n_proc: int = 6,
@@ -3065,7 +3092,7 @@ class CombinedBasis:
             total_batches = int(np.ceil(ngalaxies / batch_size))
 
             if (
-                os.path.exists(full_out_path)
+                os.path.exists(full_out_path) and self._check_final_hdf5(full_out_path)
                 #or os.path.exists(f"{self.out_dir}/{base.model_name}_{total_batches}.hdf5")
             ) and not overwrite[i]:
                 logger.warning(f"File {full_out_path} already exists. Skipping.")
