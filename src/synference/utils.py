@@ -8,7 +8,7 @@ import os
 import pickle
 import re
 import sys
-from typing import Any, Dict, List, Optional, Set, TextIO, Union
+from typing import Any, Dict, List, Optional, Set, TextIO, Union, Callable, Tuple
 
 import h5py
 import matplotlib.pyplot as plt
@@ -16,6 +16,9 @@ import numpy as np
 import scipy.stats as stats
 import torch
 from unyt import Angstrom, Jy, nJy, unyt_array, unyt_quantity
+from scipy.ndimage import gaussian_filter1d
+import spectres
+import numba
 
 try:
     import plotext as plo
@@ -110,6 +113,133 @@ def calculate_min_max_wav_grid(filterset, max_redshift, min_redshift=0):
     return min_wav, max_wav
 
 
+@numba.jit(nopython=True)
+def convolve_variable_width_gaussian(flux: np.ndarray, sigma_pixels: np.ndarray, trunc: float = 4.0) -> np.ndarray:
+    """
+    Convolves a 1D array with a Gaussian kernel of variable width using Numba for performance.
+
+    Args:
+        flux (np.ndarray): The input 1D flux array.
+        sigma_pixels (np.ndarray): An array of the same size as flux, where each
+                                   value is the Gaussian sigma (in pixels) for the
+                                   kernel at that position.
+        trunc (float): The number of sigmas at which to truncate the kernel.
+
+    Returns:
+        np.ndarray: The convolved flux array.
+    """
+    l_max = len(flux)
+    convolved_flux = np.zeros_like(flux)
+
+    for i in range(l_max):
+        sigma = sigma_pixels[i]
+        # If sigma is negligible, no convolution is needed at this pixel
+        if sigma <= 0.01:
+            convolved_flux[i] = flux[i]
+            continue
+
+        # Determine kernel size for this pixel based on truncation
+        kernel_half_width = int(np.ceil(sigma * trunc))
+        kernel_size = 2 * kernel_half_width + 1
+        
+        # Create the kernel for this specific pixel
+        x = np.arange(kernel_size) - kernel_half_width
+        kernel = np.exp(-0.5 * (x / sigma)**2)
+        kernel /= np.sum(kernel) # Normalize
+
+        # Determine the slice of the input spectrum to apply the kernel to
+        start = i - kernel_half_width
+        
+        # Perform the dot product for the convolution at this pixel
+        flux_sum = 0.0
+        for j in range(kernel_size):
+            flux_idx = start + j
+            
+            # Use 'nearest' padding for edges
+            if flux_idx < 0:
+                flux_idx = 0
+            if flux_idx >= l_max:
+                flux_idx = l_max - 1
+            
+            flux_sum += flux[flux_idx] * kernel[j]
+        
+        convolved_flux[i] = flux_sum
+
+    return convolved_flux
+
+def transform_spectrum(
+    theory_wave: np.ndarray,
+    theory_flux: np.ndarray,
+    z: float,
+    observed_wave: np.ndarray,
+    resolution_curve_wave: np.ndarray,
+    resolution_curve_r: np.ndarray,
+    theory_r: Union[float, np.ndarray] = np.inf,
+    trunc_constant: float = 4.0
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Transforms a high-resolution theoretical spectrum to a given redshift
+    and matches it to an observed spectral resolution and wavelength grid.
+
+    Args:
+        theory_wave (np.ndarray): Wavelength array of the high-res theoretical spectrum.
+        theory_flux (np.ndarray): Flux array of the high-res theoretical spectrum.
+        z (float): The redshift to apply to the theoretical spectrum.
+        observed_wave (np.ndarray): The target wavelength grid of the observation.
+        resolution_curve_wave (np.ndarray): Wavelength points for the resolution curve.
+        resolution_curve_r (np.ndarray): The spectral resolution R at each point.
+        theory_r (Union[float, np.ndarray]): Intrinsic resolution R of the theoretical model.
+
+    Returns:
+        Tuple[np.ndarray, np.ndarray]: A tuple containing the final wavelength array and the
+                                     transformed, resampled flux array.
+    """
+    # Step 1: Redshift the theoretical spectrum
+    theory_wave_z = theory_wave * (1 + z)
+    theory_flux_z = theory_flux / (1 + z)
+
+    # Step 2: Prepare for Convolution
+    # Instrumental Resolution
+    interp_r_instrument = np.interp(theory_wave_z, resolution_curve_wave, resolution_curve_r)
+    fwhm_instrument = theory_wave_z / interp_r_instrument
+    sigma_instrument_wave = fwhm_instrument / (2 * np.sqrt(2 * np.log(2)))
+
+    # Theoretical Model's Intrinsic Resolution
+    if isinstance(theory_r, (int, float)):
+        interp_r_theory = np.full_like(theory_wave_z, theory_r)
+    else:
+        interp_r_theory = np.interp(theory_wave_z, theory_wave * (1 + z), theory_r)
+    fwhm_theory = theory_wave_z / interp_r_theory
+    sigma_theory_wave = fwhm_theory / (2 * np.sqrt(2 * np.log(2)))
+
+    # Kernel Calculation (in Quadrature)
+    sigma_kernel_wave_sq = sigma_instrument_wave**2 - sigma_theory_wave**2
+    sigma_kernel_wave_sq[sigma_kernel_wave_sq < 0] = 0
+    sigma_kernel_wave = np.sqrt(sigma_kernel_wave_sq)
+
+    pixel_scale = np.median(np.diff(theory_wave_z))
+    # Avoid division by zero if pixel_scale is 0
+    sigma_kernel_pixels = np.divide(
+        sigma_kernel_wave, pixel_scale,
+        out=np.zeros_like(sigma_kernel_wave),
+        where=pixel_scale != 0
+    )
+
+    # Step 3: Convolve with variable-width Gaussian kernel
+    convolved_flux = convolve_variable_width_gaussian(theory_flux_z, sigma_kernel_pixels, trunc=trunc_constant)
+
+    # Step 4: Resample onto the observed wavelength grid
+    final_flux = spectres.spectres(
+        new_wavs=observed_wave,
+        spec_wavs=theory_wave_z,
+        spec_fluxes=convolved_flux,
+        fill=0.0,
+        verbose=False
+    )
+
+    return observed_wave, final_flux
+
+
 def generate_constant_R(
     R=300,
     start=1 * Angstrom,
@@ -133,13 +263,16 @@ def generate_constant_R(
     """
     if auto_start_stop and filterset is not None:
         start, end = calculate_min_max_wav_grid(filterset, **kwargs)
+    assert start < end, "Start wavelength must be less than end wavelength."
+    assert R > 0, "R must be greater than 0."
+    end = end.to(start.units)
 
-    x = [start.to(Angstrom).value]
+    x = [start.value]
 
-    while x[-1] < end.to(Angstrom).value:
+    while x[-1] < end.value:
         x.append(x[-1] * (1.0 + 0.5 / R))
 
-    return np.array(x) * Angstrom
+    return unyt_array(x, units=start.units)
 
 
 def list_parameters(distribution):
