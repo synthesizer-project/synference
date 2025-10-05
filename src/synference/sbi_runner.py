@@ -5325,6 +5325,7 @@ class SBI_Fitter:
         posteriors: object = None,
         num_samples: int = 1000,
         timeout_seconds_per_test=30,
+        log_times=False,
         **kwargs,
     ) -> np.ndarray:
         """Sample from the posterior distribution.
@@ -5370,10 +5371,11 @@ class SBI_Fitter:
         X_test_array = torch.as_tensor(X_test_array, device=self.device)
         # Handle single sample case
         if X_test_array.ndim == 1 or (X_test_array.ndim == 2 and X_test_array.shape[0] == 1):
+            print('Single sample inference.')
             return sample_with_timeout(sampler, num_samples, X_test_array, timeout_seconds_per_test)
 
         # ISSUE! sample_batched seems to be much slower than sampling one by one!
-        
+        """
         if hasattr(posteriors, "sample_batched"):
             X_test_array = torch.squeeze(X_test_array)
             samples = (
@@ -5384,7 +5386,8 @@ class SBI_Fitter:
             )  # noqa E501
             samples = np.transpose(samples, (1, 0, 2))
             return samples
-        
+        """
+
         # Handle multiple samples case
         shape = len(self.fitted_parameter_names)
         # test_sample = sample_with_timeout(
@@ -5392,18 +5395,22 @@ class SBI_Fitter:
         # )
         # shape = test_sample.shape
 
+        if log_times:
+            times = []
         # Draw samples from the posterior
         samples = np.zeros((len(X_test_array), num_samples, shape))
         # samples[0] = test_sample  # First sample is already drawn
         for i in trange(0, len(X_test_array), desc="Sampling from posterior"):
+            start_time = time.time()
             try:
+                #print(X_test_array[i])
                 samples[i] = sampler.sample(nsteps=num_samples, x=X_test_array[i], progress=False)
-                '''samples[i] = sample_with_timeout(
+                """samples[i] = sample_with_timeout(
                     sampler,
                     num_samples,
                     X_test_array[i],
                     timeout_seconds_per_test,
-                )'''
+                )"""
             except TimeoutException:
                 logger.error(
                     f"""Timeout exceeded for sample {i}.
@@ -5413,6 +5420,17 @@ class SBI_Fitter:
             except KeyboardInterrupt:
                 logger.warning("Sampling interrupted by user. Returning samples collected so far.")
                 break
+            except Exception as e:
+                logger.error(f"Error occurred while sampling for sample {i}: {e}")
+                samples[i] = np.nan
+            
+            if log_times:
+                elapsed = time.time() - start_time
+                times.append(elapsed)
+
+        if log_times and len(times) > 0:
+            logger.info(f"Median time per sample: {np.median(times):.5f} seconds."
+                         f"16th-84th percentile: {np.percentile(times, 16):.5f}-{np.percentile(times, 84):.5f} seconds.")
 
         return samples
 
@@ -5506,6 +5524,15 @@ class SBI_Fitter:
         assert samples.ndim == 3, (
             "Samples must have shape (num_objects, num_samples, num_parameters)."
         )
+
+        if samples.shape[0] != len(X_test):
+            if samples.ndim == 3 and samples.shape[1] == len(X_test):
+                # Transpose samples if the shape is (num_samples, num_objects, num_parameters)
+                samples = np.transpose(samples, (1, 0, 2))
+                logger.warning(
+                    "Transposing samples to match shape (num_objects, num_samples, num_parameters)."
+                )
+
         assert samples.shape[0] == len(X_test), (
             f"Samples must match the number of test samples, {samples.shape[0]} != {len(X_test)}."
             f"Samples shape: {samples.shape}"
@@ -5943,7 +5970,7 @@ class SBI_Fitter:
 
         logger.info(y[ind])
 
-        draw = np.atleast_2d(draw)
+        #draw = np.atleast_2d(draw) # doesn't work for mutli dimension y
 
         # use ltu-ili's built-in validation metrics to plot the posterior for this point
         metric = PlotSinglePosterior(

@@ -152,7 +152,7 @@ from mpi4py import MPI
 
 av_to_tau_v = 1.086  # conversion factor from Av to tau_v for the dust attenuation curve
 overwrite = False  # whether to overwrite existing grids
-Nmodels = 1_000_000  # number of models to generate
+Nmodels = 100_000  # number of models to generate
 grid_name = "BPASS"  # name for the grid
 
 redshift = (0.01, 14)
@@ -304,10 +304,8 @@ def continuity_agebins(
     "tau": (0.01, 10),  # Uniform between 0.01 and 10 Gyr
     "max_age_norm": (0.01, 0.99),  # normalized to maximum age of the universe at that redshift.
 },
-"""
 
-sfhs = {
-    "dense_basis": {
+"dense_basis": {
         "Nparam_SFH": 3,
         "tx_alpha": 1,
         "sfh_type": SFH.DenseBasis,
@@ -317,8 +315,11 @@ sfhs = {
         "ssfr": (-12, -7),  # log10(sSFR) in yr^-1'
         "params_to_ignore": ["max_age"],
     }
-}
-'''"continuity": { # SWITCH SYNTHESIZER BRANCH AND UNCOMMENT CONTINUITY REFERENCES BELOW
+
+"""
+
+sfhs = {
+"continuity": { # SWITCH SYNTHESIZER BRANCH AND UNCOMMENT CONTINUITY REFERENCES BELOW
         "sfh_type": SFH.Continuity,
         "agebins": continuity_agebins,
         "df": 2,
@@ -326,8 +327,7 @@ sfhs = {
         "params_to_ignore": ["max_age", "agebins"],
         "nbins": 6,  # number of bins to use for the Continuity SFH
         "sfh_param_names": [],
-},
-'''
+}}
 
 
 
@@ -553,11 +553,12 @@ for sfh_name, sfh_params in sfhs.items():
             + [f"sfh_quantile_{100 * (j + 1) / (Nparam_SFH + 1):.0f}" for j in range(Nparam_SFH)],
             db_sf_convert,
         )  # noqa: E501
-    """elif sfh_type == SFH.Continuity:
+    elif sfh_type == SFH.Continuity:
         alt_parametrizations["logsfr_ratios"] = (
             [f"logsfr_ratio_{j}" for j in range(sfh_params["nbins"] - 1)],
             lambda p, p_dict: p_dict["logsfr_ratios"][int(p.split("_")[-1])],  # noqa: E501
-        )"""
+        )
+
     print(f"Creating basis for {name} with {sfh_type} SFH.")
     basis = GalaxyBasis(
         model_name=f"sps_{name}",

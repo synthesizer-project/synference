@@ -2323,6 +2323,9 @@ def update_plot(
         sys.stdout.write("\x1b[2J\x1b[H")
         sys.stdout.flush()
 
+    if plo is None:
+        return
+    
     # Get the size of the terminal to make the plot fit.
     plo.clf()  # Clear the previous plot data
 

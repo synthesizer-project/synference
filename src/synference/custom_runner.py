@@ -676,10 +676,15 @@ class SBICustomRunner(SBIRunner):
                     f"Epoch {epoch}: TL: {train_loss_average:.3f}, "
                     f"VL: {current_val_loss:.3f}, "
                     f"Best VL: {best_val_loss:.3f}, "
-                    f"ESI: {epochs_since_improvement}/{stop_after_epochs}"
+                    f"ESI: {epochs_since_improvement}/{stop_after_epochs}, "
+                    f"Avg. Time/epoch: {time_elapsed / epoch:.1f}s, "
+                    f"Min ETA: {((stop_after_epochs - epochs_since_improvement) * time_elapsed / epoch):.1f}s",
                 )
                 if 'SLURM_JOB_ID' not in os.environ:
-                    update_plot(train_log, val_log, epoch=epoch, time_elapsed=time_elapsed)
+                    try:
+                        update_plot(train_log, val_log, epoch=epoch, time_elapsed=time_elapsed)
+                    except Exception as e:
+                        logger.error(f"Error updating plot: {e}")
 
                 # torch save important info if epoch % 10 == 0:
                 if epoch % 10 == 0 and save_dir is not None:
@@ -1143,6 +1148,8 @@ class CustomUniform(Distribution):
         # Custom support validation with aggregated summary
         is_in_support = self._original_support.check(value)
         support_fraction = np.sum(is_in_support.cpu().numpy()) / is_in_support.numel()
+        if not hasattr(self, 'report_threshold'):
+            self.report_threshold = 0.1
         if support_fraction < self.report_threshold:
             error_messages = []
             param_dim = -1  # Assumes parameters are in the last dimension
