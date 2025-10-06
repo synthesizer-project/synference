@@ -196,8 +196,8 @@ def transform_spectrum(
     """
     # Step 1: Redshift the theoretical spectrum
     theory_wave_z = theory_wave * (1 + z)
-    theory_flux_z = theory_flux / (1 + z)
-
+    theory_flux_z = theory_flux #/ (1 + z)
+    #theory_flux_z = theory_flux
     # Step 2: Prepare for Convolution
     # Instrumental Resolution
     interp_r_instrument = np.interp(theory_wave_z, resolution_curve_wave, resolution_curve_r)

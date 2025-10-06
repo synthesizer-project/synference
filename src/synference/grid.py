@@ -5135,9 +5135,13 @@ class GalaxySimulator(object):
                     code = f"\n{code}\n"
                     # Remove excess indentation
                     code = inspect.cleandoc(code)
-                    func = exec(code, globals(), locals())
-                    func_name = code.split("def ")[-1].split("(")[0]
-                    func = locals()[func_name]
+                    try:
+                        func = exec(code, globals(), locals())
+                        func_name = code.split("def ")[-1].split("(")[0]
+                        func = locals()[func_name]
+                    except Exception as e:
+                        logger.error(f"Error evaluating transform function for {key}: {e}")
+                        continue
                     param_transforms[key] = func
                     if "new_parameter_name" in transform_group[key].attrs:
                         new_key = transform_group[key].attrs["new_parameter_name"]

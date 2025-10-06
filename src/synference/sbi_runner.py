@@ -1036,6 +1036,8 @@ class SBI_Fitter:
         inst_resolution_wavelengths: unyt_array = None,
         inst_resolution_r: unyt_array = None,
         theory_r: float = np.inf,
+        min_flux_value: float = -np.inf,
+        max_flux_value: float = np.inf,
     ):
         """Create a feature array from the raw spectra grid.
 
@@ -1078,6 +1080,10 @@ class SBI_Fitter:
             theory_r: float, optional
                 The resolution of the theoretical spectra. Used for convolution
                 when transforming to the observed frame. Default is np.inf (no convolution).
+            min_flux_value: float, optional
+                Minimum flux value to clip the feature array to in units of normed_flux_units.
+            max_flux_value: float, optional
+                Maximum flux value to clip the feature array to in units of normed_flux_units.
         """
         if self.observation_type != "spectra":
             raise ValueError("This method is only for spectra models.")
@@ -1165,6 +1171,13 @@ class SBI_Fitter:
 
         self.feature_array[: len(wavs), :] = temp_array
         del temp_array
+
+        # Apply min/max flux value cuts
+        np.clip(
+            self.feature_array,
+            a_min=min_flux_value,
+            a_max=max_flux_value,
+            out=self.feature_array,)
 
         # Add extra features from the parameter array
         feature_units = []
@@ -4229,6 +4242,7 @@ class SBI_Fitter:
                         embedding_net=embedding_net,
                         device=self.device,
                     )
+
                     nets.append(net)
                 ensemble_model_types.append(model_type)
                 ensemble_model_args.append(model_args)
@@ -4259,6 +4273,8 @@ class SBI_Fitter:
             else:
                 from .custom_runner import SBICustomRunner
 
+                print(embedding_net)
+
                 trainer = SBICustomRunner(
                     engine=engine,
                     prior=prior,
@@ -4267,6 +4283,7 @@ class SBI_Fitter:
                     name=f"{self.name}_{name_append}_",
                     device=self.device,
                     net_configs=net_configs,
+                    embedding_net=embedding_net,
                 )
                 if learning_type == "online":
                     validation_loader = loader
@@ -4487,12 +4504,12 @@ class SBI_Fitter:
         if verbose:
             # print summary of network
             logger.info(
-                f"""Creating {model_type} network with {engine} engine
-                and {backend} backend."""
+                f"""Creating {model_type} network with {engine} engine"""
+                f"""and {backend} backend."""
             )
             for key, value in model_args.items():
                 logger.info(f"     {key}: {value}")
-
+        print(embedding_net)
         return net(
             engine=engine,
             model=model_type,
@@ -4868,14 +4885,14 @@ class SBI_Fitter:
             flags = self.feature_array_flags
 
             flag_params = {
-                "normalize_method": flags["normalize_method"],
+                "normalize_method": flags.get("normalize_method", None),
                 # Make default behaviour not rescattering photometry.
                 "include_phot_errors": False,  # flags["include_errors_in_feature_array"],
-                "depths": flags["depths"],
+                "depths": flags.get("depths", None),
                 "depth_sigma": 5,
                 "noise_models": flags.get("empirical_noise_models", None),
-                "photometry_to_remove": flags["photometry_to_remove"],
-                "out_flux_unit": flags["normed_flux_units"],
+                "photometry_to_remove": flags.get("photometry_to_remove", None),
+                "out_flux_unit": flags.get("normed_flux_units", None),
             }
 
             default_kwargs.update(flag_params)
@@ -6498,6 +6515,7 @@ class SBI_Fitter:
 
         logger.info(f"Loaded model from {model_file}.")
         logger.info(f"Device: {self.device}")
+        print(posteriors)
         posteriors = move_to_device(posteriors, self.device)
 
         if set_self:
