@@ -7,6 +7,7 @@ import os
 import pickle
 import queue
 import signal
+import logging
 import threading
 import time
 from contextlib import redirect_stdout
@@ -412,10 +413,16 @@ class SBI_Fitter:
                 raise ValueError(f"Model file {model_file} does not exist.")
 
         if grid_path is None or model_name is None:
-            posterior, stats, params = cls.load_model_from_pkl(
-                cls, model_file, set_self=False, load_arrays=False
-            )
-
+            level: int = logger.getEffectiveLevel()
+            try:
+                logger.setLevel(logging.CRITICAL)
+                # The original call to load the model
+                posterior, stats, params = cls.load_model_from_pkl(
+                    cls, model_file, set_self=False, load_arrays=False
+                )
+            finally:
+                # This block is guaranteed to run, restoring the original level
+                logger.setLevel(level)
             if model_name is None:
                 model_name = params.get("name", "default_name")
 
@@ -4504,7 +4511,7 @@ class SBI_Fitter:
         if verbose:
             # print summary of network
             logger.info(
-                f"""Creating {model_type} network with {engine} engine"""
+                f"""Creating {model_type} network with {engine} engine """
                 f"""and {backend} backend."""
             )
             for key, value in model_args.items():
@@ -4607,7 +4614,7 @@ class SBI_Fitter:
         low = prior.base_dist.low.cpu().numpy()
         high = prior.base_dist.high.cpu().numpy()
 
-        def dynesty_prior(u):
+        def sampling_prior(u):
             """Transform from the unit cube to the prior."""
             return low + (high - low) * u
 
@@ -4745,7 +4752,7 @@ class SBI_Fitter:
             import dynesty
 
             logger.info("Using Dynesty sampler.")
-            sampler = dynesty.NestedSampler(log_likelihood, dynesty_prior, ndim, **sampler_kwargs)
+            sampler = dynesty.NestedSampler(log_likelihood, sampling_prior, ndim, **sampler_kwargs)
             sampler.run_nested()
 
             result = sampler.results
@@ -4792,7 +4799,7 @@ class SBI_Fitter:
             sampler = ultranest.ReactiveNestedSampler(
                 self.fitted_parameter_names[idx_to_drop].tolist(),
                 log_likelihood,
-                transform=dynesty_prior,
+                transform=sampling_prior,
                 log_dir=out_dir,
                 resume=True,
             )
@@ -4846,6 +4853,9 @@ class SBI_Fitter:
                 fig.savefig(f"{out_dir}/nautilus_corner.png", dpi=300)
 
             return sampler
+        elif sampler.lower() == 'blackjax':
+            raise NotImplementedError("Blackjax sampler not yet implemented.")
+            
         else:
             raise ValueError("Sampler must be either 'dynesty', 'ultranest' or 'nautilus'.")
 
@@ -6515,7 +6525,7 @@ class SBI_Fitter:
 
         logger.info(f"Loaded model from {model_file}.")
         logger.info(f"Device: {self.device}")
-        print(posteriors)
+
         posteriors = move_to_device(posteriors, self.device)
 
         if set_self:

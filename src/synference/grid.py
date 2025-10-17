@@ -486,6 +486,73 @@ def calculate_surviving_mass(galaxy, grid: Grid):
 
     return mass
 
+def calculate_xi_ion(galaxy, emission_model):
+    """Calculate the ionizing photon production efficiency (xi_ion) of a galaxy.
+
+    Args:
+        galaxy: An instance of a synthesizer.parametric.Galaxy object.
+        emission_model: An instance of a synthesizer.emission_models.EmissionModel.
+
+    Returns:
+        The ionizing photon production efficiency (xi_ion) as a unyt_quantity in Hz/erg.
+
+    """
+
+    raise NotImplementedError("Function not yet implemented.")
+
+def calculate_Ndot_ion(galaxy, emission_model):
+    """Calculate the ionizing photon production rate (Ndot_ion) of a galaxy.
+
+    Args:
+        galaxy: An instance of a synthesizer.parametric.Galaxy object.
+        emission_model: An instance of a synthesizer.emission_models.EmissionModel.
+
+    Returns:
+        The ionizing photon production rate (Ndot_ion) as a unyt_quantity in s^-1.
+
+    """
+
+    raise NotImplementedError("Function not yet implemented.")
+
+def calculate_agn_fraction(galaxy, total_em_key='total', agn_em_key='agn_attenuated',
+                         min_wav_rest=1*um, max_wav_rest=3*um):
+    """Compute the fraction of the total luminosity in a given wavelength range that is due to the AGN.
+
+    Parameters
+    ----------
+    galaxy : Galaxy
+        The Galaxy object containing the spectra.
+    total_em_key : str
+        The key for the total emission model in the galaxy.
+    agn_em_key : str
+        The key for the AGN emission model in the galaxy.
+    min_wav_rest : float
+        The minimum rest-frame wavelength (in unyt units) for the integration.
+    max_wav_rest : float
+        The maximum rest-frame wavelength (in unyt units) for the integration.
+    
+    Returns
+    -------
+    float
+        The fraction of the total luminosity in the specified wavelength range that is due to the AGN.
+    """
+    if len(galaxy.spectra) == 0:
+        raise ValueError("Galaxy has no spectra. Please run `get_spectra` first.")
+    galaxy.get_spectra_combined()
+    if total_em_key not in galaxy.spectra:
+        raise ValueError(f"Total emission model '{total_em_key}' not found in galaxy spectra.")
+    print(galaxy.spectra.keys() )
+    if agn_em_key not in galaxy.black_holes.spectra:
+        raise ValueError(f"AGN emission model '{agn_em_key}' not found in galaxy spectra.")
+
+    wav = galaxy.spectra[total_em_key].lam
+
+    total_lum = galaxy.spectra[total_em_key].luminosity # erg/s
+    agn_lum = galaxy.black_holes.spectra[agn_em_key].luminosity # erg/s
+
+    mask = (wav >= min_wav_rest) & (wav <= max_wav_rest)
+    agn_fraction = np.trapezoid(agn_lum[mask], x=wav[mask]) / np.trapezoid(total_lum[mask], x=wav[mask])
+    return agn_fraction
 
 class SUPP_FUNCTIONS:
     """A class to hold supplementary functions for galaxy analysis."""
@@ -504,6 +571,9 @@ class SUPP_FUNCTIONS:
     calculate_line_ew = calculate_line_ew
     calculate_sfh_quantile = calculate_sfh_quantile
     calculate_surviving_mass = calculate_surviving_mass
+    calculate_xi_ion = calculate_xi_ion
+    calculate_Ndot_ion = calculate_Ndot_ion
+    calculate_agn_fraction = calculate_agn_fraction
 
 
 # ------------------------------------------
