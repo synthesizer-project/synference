@@ -10,6 +10,7 @@ from astropy.table import Table
 from simple_parsing import ArgumentParser
 
 from synference import (
+    AsinhEmpiricalUncertaintyModel,
     SBI_Fitter,
     Simformer_Fitter,
     create_uncertainty_models_from_EPOCHS_cat,
@@ -124,7 +125,7 @@ def main_task(args: Args) -> None:
             for band in bands
         ]
 
-        root_out_dir = os.path.dirname(os.path.dirname(file_dir))
+        root_out_dir = os.path.dirname(os.path.dirname(os.path.dirname(file_dir)))
         out_dir = f"{root_out_dir}/models/{args.model_name}/plots/"
         if not os.path.exists(out_dir):
             os.makedirs(out_dir, exist_ok=True)
@@ -240,6 +241,16 @@ def main_task(args: Args) -> None:
 
     print(f"Unused filters: {unused_filters}", file=sys.stdout)
 
+    # flux_units is "AB" unless scatter_fluxes and include_errors_in_feature_array
+    # and all noise models are AsinhUncertaintyModels
+    flux_units = "AB"
+    if args.scatter_fluxes > 0 and args.include_errors_in_feature_array:
+        if all(
+            isinstance(model, AsinhEmpiricalUncertaintyModel)
+            for model in empirical_noise_models.values()
+        ):
+            flux_units = "asinh"
+
     print(empirical_noise_models)
     empirical_model_fitter.create_feature_array_from_raw_photometry(
         extra_features=list(args.model_features),
@@ -254,9 +265,12 @@ def main_task(args: Args) -> None:
         drop_dropouts=args.drop_dropouts,
         drop_dropout_fraction=args.drop_dropout_fraction,
         parameters_to_add=args.parameters_to_add[0].split(",") if args.parameters_to_add else [],
-        parameters_to_remove=args.parameters_to_remove[0].split(",") if args.parameters_to_remove else [],
+        parameters_to_remove=args.parameters_to_remove[0].split(",")
+        if args.parameters_to_remove
+        else [],
         parameter_transformations=parameter_transformations,
         max_rows=args.max_rows,
+        normed_flux_units=flux_units,
     )
 
     # col_i = empirical_model_fitter.feature_array[:, 0]

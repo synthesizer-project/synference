@@ -661,4 +661,3 @@ class TestSuppFunctions:
         assert age.units == Myr, (
             "calculate_mass_weighted_age did not return a value with the correct units."
         )
-

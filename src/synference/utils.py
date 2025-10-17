@@ -53,8 +53,10 @@ def load_grid_from_hdf5(
         The loaded grid.
     """
     if not os.path.exists(hdf5_path):
-        raise FileNotFoundError(f"HDF5 file not found: {hdf5_path}. "
-                                f"Files in root directory: {os.listdir(os.path.dirname(hdf5_path))}")
+        raise FileNotFoundError(
+            f"HDF5 file not found: {hdf5_path}. "
+            f"Files in root directory: {os.listdir(os.path.dirname(hdf5_path))}"
+        )
 
     with h5py.File(hdf5_path, "r") as f:
         # Load the photometry and parameters from the HDF5 file
@@ -592,6 +594,70 @@ def asinh_to_snr(f_asinh: unyt_array, f_asinh_err: unyt_array, f_b: unyt_array =
     snr = f_jy / f_jy_err
 
     return snr
+
+
+def asinh_to_f_jy(f_asinh: np.ndarray, f_b: unyt_array = 5 * nJy) -> unyt_array:
+    """Convert asinh magnitude to flux in Jy.
+
+    Parameters:
+        f_asinh: Flux in asinh magnitude scale.
+        f_b: Softening parameter (transition point for the asinh scale).
+
+    Returns:
+        Flux in Jy.
+    """
+    f_b = f_b.to(Jy).value
+
+    # Handle different dimensionalities of f_b like in the other functions
+    if f_b.ndim == 0:
+        f_b = np.full_like(f_asinh, f_b, dtype=f_asinh.dtype)
+    elif f_b.ndim == 1 and f_asinh.ndim == 2:
+        assert f_b.shape[0] == f_asinh.shape[0], "Flux softening must match the number of filters."
+        f_b = np.tile(f_b, (f_asinh.shape[1], 1)).T
+    else:
+        assert f_b.shape == f_asinh.shape, "Flux and flux error must have the same shape."
+
+    # Convert back to flux
+    arcsinh_arg = -f_asinh / (2.5 * np.log10(np.e)) - np.log(f_b / 3631)
+    f_jy = 2 * f_b * np.sinh(arcsinh_arg)
+
+    return unyt_array(f_jy, units=Jy)
+
+
+def asinh_err_to_f_jy(
+    f_asinh: np.ndarray, f_asinh_err: np.ndarray, f_b: unyt_array = 5 * nJy
+) -> unyt_array:
+    """Convert asinh magnitude error to flux error in Jy.
+
+    Parameters:
+        f_asinh: Flux in asinh magnitude scale.
+        f_asinh_err: Flux error in asinh magnitude scale.
+        f_b: Softening parameter (transition point for the asinh scale).
+
+    Returns:
+        Flux error in Jy.
+    """
+    f_b = f_b.to(Jy).value
+
+    # Handle different dimensionalities of f_b like in the other functions
+    if f_b.ndim == 0:
+        f_b = np.full_like(f_asinh, f_b, dtype=f_asinh.dtype)
+    elif f_b.ndim == 1 and f_asinh.ndim == 2:
+        assert f_b.shape[0] == f_asinh.shape[0], "Flux softening must match the number of filters."
+        f_b = np.tile(f_b, (f_asinh.shape[1], 1)).T
+    else:
+        assert f_b.shape == f_asinh.shape, "Flux and flux error must have the same shape."
+
+    # Convert asinh magnitude back to flux
+    arcsinh_arg = -f_asinh / (2.5 * np.log10(np.e)) - np.log(f_b / 3631)
+    f_jy = 2 * f_b * np.sinh(arcsinh_arg)
+
+    # Convert asinh magnitude error back to flux error
+    # From f_jy_err_to_asinh: f_asinh_err = 2.5 * log10(e) * f_jy_err / sqrt(f_jy^2 + (2*f_b)^2)
+    # Rearranging: f_jy_err = f_asinh_err * sqrt(f_jy^2 + (2*f_b)^2) / (2.5 * log10(e))
+    f_jy_err = f_asinh_err * np.sqrt(f_jy**2 + (2 * f_b) ** 2) / (2.5 * np.log10(np.e))
+
+    return unyt_array(f_jy_err, units=Jy)
 
 
 def save_emission_model(model):
@@ -1795,60 +1861,6 @@ def optimize_sfh_xlimit(ax, mass_threshold=0.001, buffer_fraction=0.2):
     return new_xlimit
 
 
-# Example usage
-if __name__ == "__main__":
-    # Generate sample data with known feature importance
-    np.random.seed(42)
-
-    # Create base distribution
-    n_samples = 500
-    n_features = 5
-
-    # Feature 1 and 2 are highly correlated and important
-    # Feature 3 has higher variance
-    # Features 4 and 5 are less important
-
-    base_data = np.random.randn(n_samples, n_features)
-    base_data[:, 1] = base_data[:, 0] + 0.5 * np.random.randn(n_samples)  # Correlated
-    base_data[:, 2] = 2 * np.random.randn(n_samples)  # Higher variance
-
-    # Create observations with outliers driven by specific features
-    n_obs = 100
-    observations = np.random.randn(n_obs, n_features)
-    observations[:, 1] = observations[:, 0] + 0.5 * np.random.randn(n_obs)
-    observations[:, 2] = 2 * np.random.randn(n_obs)
-
-    # Add outliers driven primarily by feature 1
-    outlier_indices = [10, 25, 40, 60, 80]
-    observations[outlier_indices, 0] += 4  # Strong outlier in feature 1
-    observations[outlier_indices, 1] += 2  # Some effect in correlated feature
-
-    # Add outliers driven by feature 3
-    observations[[15, 35, 55], 2] += 6
-
-    feature_names = [
-        "Primary_Driver",
-        "Correlated_Feature",
-        "High_Variance",
-        "Low_Impact_1",
-        "Low_Impact_2",
-    ]
-
-    # Analyze feature contributions
-    print("SINGLE METHOD ANALYSIS")
-    print("=" * 50)
-    results = analyze_feature_contributions(
-        base_data, observations, method="robust_mahalanobis", feature_names=feature_names
-    )
-
-    print("\n" + "=" * 80)
-
-    # Compare methods
-    comparison_results = compare_methods_feature_importance(
-        base_data, observations, feature_names=feature_names
-    )
-
-
 def make_serializable(obj: Any, allowed_types=None) -> Any:
     """Recursively convert a nested dictionary/object to be JSON serializable.
 
@@ -2041,11 +2053,20 @@ def make_serializable(obj: Any, allowed_types=None) -> Any:
     except Exception:
         return f"<unserializable object of type {type(obj).__name__}>"
 
+
 def combine_rank_files(size, filepath, num_galaxies, starts, ends):
     """Combine the rank files into a single file.
 
     Args:
         output_file (str): The name of the output file.
+        size (int): The number of MPI ranks.
+        filepath (str): The template filepath for the rank files.
+        num_galaxies (int): The total number of galaxies.
+        starts (list): The start indices for each rank.
+        ends (list): The end indices for each rank.
+
+    Returns:
+        None
     """
 
     def _recursive_copy(src, dest, slice):
@@ -2148,6 +2169,7 @@ def combine_rank_files(size, filepath, num_galaxies, starts, ends):
 
             # Delete the rank file
             os.remove(temp_path.replace("<rank>", str(rank)))
+
 
 def setup_mpi_named_logger(
     name: str, level: int = logging.INFO, stream: TextIO = sys.stdout
