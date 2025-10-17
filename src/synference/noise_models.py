@@ -136,7 +136,7 @@ class DepthUncertaintyModel(UncertaintyModel):
                 true_flux_jy = flux.to("Jy")
 
         if len(kwargs) > 0:
-            print(f"WARNING {kwargs} arguments will have no effect with this model")
+            print(f"WARNING {kwargs} arguments will have no effect with this model.")
 
         if true_flux_jy.units.dimensions != Jy.dimensions:
             raise Exception("Input flux must be in Janskys (Jy).")
@@ -521,6 +521,15 @@ class AsinhEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
 
         mag = f_jy_to_asinh(flux, self.b)
         mag_err = f_jy_err_to_asinh(flux, error, self.b)
+
+        # Raise error if any mag_errs become nan when flux or mag is not NAN
+        if np.any(np.isnan(mag_err) & ~np.isnan(flux)) or np.any(
+            np.isnan(mag_err) & ~np.isnan(mag)
+        ):
+            idx = np.where(np.isnan(mag_err) & ~np.isnan(flux))[0]
+            raise ValueError(
+                f"Conversion resulted in NaN magnitude errors for non-NaN fluxes at indices {idx}."
+            )
         # Clip errors to the specified limits
         mag_err = np.clip(mag_err, self.min_flux_error, self.max_flux_error)
 
