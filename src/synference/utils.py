@@ -17,8 +17,13 @@ import scipy.stats as stats
 import torch
 from unyt import Angstrom, Jy, nJy, unyt_array, unyt_quantity
 from scipy.ndimage import gaussian_filter1d
-import spectres
-import numba
+
+try:
+    import numba
+    import spectres
+except (ImportError, RuntimeError):
+    spectres = None
+
 
 try:
     import plotext as plo
