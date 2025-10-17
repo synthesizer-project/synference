@@ -265,7 +265,7 @@ sfhs = {
         "sfh_type": SFH.LogNormal,
         "sfh_param_names": ["tau", "peak_age_norm"],
         "tau": (0.05, 2.5),  # in Gyr
-        "tau_units": [None, None],
+        "sfh_units": [None, None],
         "peak_age_norm": (
             0.001,
             0.99,
