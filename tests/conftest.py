@@ -14,7 +14,6 @@ from synthesizer.instruments import FilterCollection, Instrument
 from synthesizer.parametric import SFH, Galaxy, Stars, ZDist
 from unyt import Msun, Myr, unyt_array
 
-import synference
 from synference import (  # noqa E402
     CombinedBasis,
     GalaxyBasis,
@@ -24,25 +23,31 @@ from synference import (  # noqa E402
     generate_sfh_basis,
 )
 
+
 @pytest.fixture
 def test_dir():
+    """Fixture to get the test directory path."""
     return Path(__file__).resolve().parent
+
 
 @pytest.fixture
 def grid_dir(test_dir):
+    """Fixture to get the grid directory path."""
     return test_dir / "test_grids"
+
 
 @pytest.fixture
 def synthesizer_grid_dir(test_dir):
+    """Fixture to get the synthesizer grid directory path and set environment variable."""
     synthesizer_grid_dir = test_dir / "synthesizer_grids"
     os.environ["SYNTHESIZER_GRID_DIR"] = str(synthesizer_grid_dir)
     return synthesizer_grid_dir
+
 
 @pytest.fixture
 def test_sbi_grid(grid_dir):
     """Fixture to create a test SBI grid for testing synference."""
     return f"{grid_dir}/sbi_test_grid.hdf5"
-
 
 
 @pytest.fixture

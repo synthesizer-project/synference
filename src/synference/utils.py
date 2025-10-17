@@ -8,7 +8,7 @@ import os
 import pickle
 import re
 import sys
-from typing import Any, Dict, List, Optional, Set, TextIO, Union, Callable, Tuple
+from typing import Any, Dict, List, Optional, Set, TextIO, Tuple, Union
 
 import h5py
 import matplotlib.pyplot as plt
@@ -16,7 +16,6 @@ import numpy as np
 import scipy.stats as stats
 import torch
 from unyt import Angstrom, Jy, nJy, unyt_array, unyt_quantity
-from scipy.ndimage import gaussian_filter1d
 
 try:
     import numba
@@ -61,8 +60,10 @@ def load_grid_from_hdf5(
         The loaded grid.
     """
     if not os.path.exists(hdf5_path):
-        raise FileNotFoundError(f"HDF5 file not found: {hdf5_path}. "
-                                f"Files in root directory: {os.listdir(os.path.dirname(hdf5_path))}")
+        raise FileNotFoundError(
+            f"HDF5 file not found: {hdf5_path}. "
+            f"Files in root directory: {os.listdir(os.path.dirname(hdf5_path))}"
+        )
 
     with h5py.File(hdf5_path, "r") as f:
         # Load the photometry and parameters from the HDF5 file
@@ -119,9 +120,10 @@ def calculate_min_max_wav_grid(filterset, max_redshift, min_redshift=0):
 
 
 @numba.jit(nopython=True)
-def convolve_variable_width_gaussian(flux: np.ndarray, sigma_pixels: np.ndarray, trunc: float = 4.0) -> np.ndarray:
-    """
-    Convolves a 1D array with a Gaussian kernel of variable width using Numba for performance.
+def convolve_variable_width_gaussian(
+    flux: np.ndarray, sigma_pixels: np.ndarray, trunc: float = 4.0
+) -> np.ndarray:
+    """Convolves a 1D array with a Gaussian kernel of variable width using Numba for performance.
 
     Args:
         flux (np.ndarray): The input 1D flux array.
@@ -146,31 +148,32 @@ def convolve_variable_width_gaussian(flux: np.ndarray, sigma_pixels: np.ndarray,
         # Determine kernel size for this pixel based on truncation
         kernel_half_width = int(np.ceil(sigma * trunc))
         kernel_size = 2 * kernel_half_width + 1
-        
+
         # Create the kernel for this specific pixel
         x = np.arange(kernel_size) - kernel_half_width
-        kernel = np.exp(-0.5 * (x / sigma)**2)
-        kernel /= np.sum(kernel) # Normalize
+        kernel = np.exp(-0.5 * (x / sigma) ** 2)
+        kernel /= np.sum(kernel)  # Normalize
 
         # Determine the slice of the input spectrum to apply the kernel to
         start = i - kernel_half_width
-        
+
         # Perform the dot product for the convolution at this pixel
         flux_sum = 0.0
         for j in range(kernel_size):
             flux_idx = start + j
-            
+
             # Use 'nearest' padding for edges
             if flux_idx < 0:
                 flux_idx = 0
             if flux_idx >= l_max:
                 flux_idx = l_max - 1
-            
+
             flux_sum += flux[flux_idx] * kernel[j]
-        
+
         convolved_flux[i] = flux_sum
 
     return convolved_flux
+
 
 def transform_spectrum(
     theory_wave: np.ndarray,
@@ -180,11 +183,9 @@ def transform_spectrum(
     resolution_curve_wave: np.ndarray,
     resolution_curve_r: np.ndarray,
     theory_r: Union[float, np.ndarray] = np.inf,
-    trunc_constant: float = 4.0
+    trunc_constant: float = 4.0,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Transforms a high-resolution theoretical spectrum to a given redshift
-    and matches it to an observed spectral resolution and wavelength grid.
+    """Transforms a high-resolution theoretical spectrum to a given redshift and match resolution.
 
     Args:
         theory_wave (np.ndarray): Wavelength array of the high-res theoretical spectrum.
@@ -194,6 +195,7 @@ def transform_spectrum(
         resolution_curve_wave (np.ndarray): Wavelength points for the resolution curve.
         resolution_curve_r (np.ndarray): The spectral resolution R at each point.
         theory_r (Union[float, np.ndarray]): Intrinsic resolution R of the theoretical model.
+        trunc_constant (float): Truncation constant for the Gaussian kernel.
 
     Returns:
         Tuple[np.ndarray, np.ndarray]: A tuple containing the final wavelength array and the
@@ -201,8 +203,8 @@ def transform_spectrum(
     """
     # Step 1: Redshift the theoretical spectrum
     theory_wave_z = theory_wave * (1 + z)
-    theory_flux_z = theory_flux #/ (1 + z)
-    #theory_flux_z = theory_flux
+    theory_flux_z = theory_flux  # / (1 + z)
+    # theory_flux_z = theory_flux
     # Step 2: Prepare for Convolution
     # Instrumental Resolution
     interp_r_instrument = np.interp(theory_wave_z, resolution_curve_wave, resolution_curve_r)
@@ -225,13 +227,13 @@ def transform_spectrum(
     pixel_scale = np.median(np.diff(theory_wave_z))
     # Avoid division by zero if pixel_scale is 0
     sigma_kernel_pixels = np.divide(
-        sigma_kernel_wave, pixel_scale,
-        out=np.zeros_like(sigma_kernel_wave),
-        where=pixel_scale != 0
+        sigma_kernel_wave, pixel_scale, out=np.zeros_like(sigma_kernel_wave), where=pixel_scale != 0
     )
 
     # Step 3: Convolve with variable-width Gaussian kernel
-    convolved_flux = convolve_variable_width_gaussian(theory_flux_z, sigma_kernel_pixels, trunc=trunc_constant)
+    convolved_flux = convolve_variable_width_gaussian(
+        theory_flux_z, sigma_kernel_pixels, trunc=trunc_constant
+    )
 
     # Step 4: Resample onto the observed wavelength grid
     final_flux = spectres.spectres(
@@ -239,7 +241,7 @@ def transform_spectrum(
         spec_wavs=theory_wave_z,
         spec_fluxes=convolved_flux,
         fill=0.0,
-        verbose=False
+        verbose=False,
     )
 
     return observed_wave, final_flux
@@ -730,6 +732,70 @@ def asinh_to_snr(f_asinh: unyt_array, f_asinh_err: unyt_array, f_b: unyt_array =
     snr = f_jy / f_jy_err
 
     return snr
+
+
+def asinh_to_f_jy(f_asinh: np.ndarray, f_b: unyt_array = 5 * nJy) -> unyt_array:
+    """Convert asinh magnitude to flux in Jy.
+
+    Parameters:
+        f_asinh: Flux in asinh magnitude scale.
+        f_b: Softening parameter (transition point for the asinh scale).
+
+    Returns:
+        Flux in Jy.
+    """
+    f_b = f_b.to(Jy).value
+
+    # Handle different dimensionalities of f_b like in the other functions
+    if f_b.ndim == 0:
+        f_b = np.full_like(f_asinh, f_b, dtype=f_asinh.dtype)
+    elif f_b.ndim == 1 and f_asinh.ndim == 2:
+        assert f_b.shape[0] == f_asinh.shape[0], "Flux softening must match the number of filters."
+        f_b = np.tile(f_b, (f_asinh.shape[1], 1)).T
+    else:
+        assert f_b.shape == f_asinh.shape, "Flux and flux error must have the same shape."
+
+    # Convert back to flux
+    arcsinh_arg = -f_asinh / (2.5 * np.log10(np.e)) - np.log(f_b / 3631)
+    f_jy = 2 * f_b * np.sinh(arcsinh_arg)
+
+    return unyt_array(f_jy, units=Jy)
+
+
+def asinh_err_to_f_jy(
+    f_asinh: np.ndarray, f_asinh_err: np.ndarray, f_b: unyt_array = 5 * nJy
+) -> unyt_array:
+    """Convert asinh magnitude error to flux error in Jy.
+
+    Parameters:
+        f_asinh: Flux in asinh magnitude scale.
+        f_asinh_err: Flux error in asinh magnitude scale.
+        f_b: Softening parameter (transition point for the asinh scale).
+
+    Returns:
+        Flux error in Jy.
+    """
+    f_b = f_b.to(Jy).value
+
+    # Handle different dimensionalities of f_b like in the other functions
+    if f_b.ndim == 0:
+        f_b = np.full_like(f_asinh, f_b, dtype=f_asinh.dtype)
+    elif f_b.ndim == 1 and f_asinh.ndim == 2:
+        assert f_b.shape[0] == f_asinh.shape[0], "Flux softening must match the number of filters."
+        f_b = np.tile(f_b, (f_asinh.shape[1], 1)).T
+    else:
+        assert f_b.shape == f_asinh.shape, "Flux and flux error must have the same shape."
+
+    # Convert asinh magnitude back to flux
+    arcsinh_arg = -f_asinh / (2.5 * np.log10(np.e)) - np.log(f_b / 3631)
+    f_jy = 2 * f_b * np.sinh(arcsinh_arg)
+
+    # Convert asinh magnitude error back to flux error
+    # From f_jy_err_to_asinh: f_asinh_err = 2.5 * log10(e) * f_jy_err / sqrt(f_jy^2 + (2*f_b)^2)
+    # Rearranging: f_jy_err = f_asinh_err * sqrt(f_jy^2 + (2*f_b)^2) / (2.5 * log10(e))
+    f_jy_err = f_asinh_err * np.sqrt(f_jy**2 + (2 * f_b) ** 2) / (2.5 * np.log10(np.e))
+
+    return unyt_array(f_jy_err, units=Jy)
 
 
 def save_emission_model(model):
@@ -1933,60 +1999,6 @@ def optimize_sfh_xlimit(ax, mass_threshold=0.001, buffer_fraction=0.2):
     return new_xlimit
 
 
-# Example usage
-if __name__ == "__main__":
-    # Generate sample data with known feature importance
-    np.random.seed(42)
-
-    # Create base distribution
-    n_samples = 500
-    n_features = 5
-
-    # Feature 1 and 2 are highly correlated and important
-    # Feature 3 has higher variance
-    # Features 4 and 5 are less important
-
-    base_data = np.random.randn(n_samples, n_features)
-    base_data[:, 1] = base_data[:, 0] + 0.5 * np.random.randn(n_samples)  # Correlated
-    base_data[:, 2] = 2 * np.random.randn(n_samples)  # Higher variance
-
-    # Create observations with outliers driven by specific features
-    n_obs = 100
-    observations = np.random.randn(n_obs, n_features)
-    observations[:, 1] = observations[:, 0] + 0.5 * np.random.randn(n_obs)
-    observations[:, 2] = 2 * np.random.randn(n_obs)
-
-    # Add outliers driven primarily by feature 1
-    outlier_indices = [10, 25, 40, 60, 80]
-    observations[outlier_indices, 0] += 4  # Strong outlier in feature 1
-    observations[outlier_indices, 1] += 2  # Some effect in correlated feature
-
-    # Add outliers driven by feature 3
-    observations[[15, 35, 55], 2] += 6
-
-    feature_names = [
-        "Primary_Driver",
-        "Correlated_Feature",
-        "High_Variance",
-        "Low_Impact_1",
-        "Low_Impact_2",
-    ]
-
-    # Analyze feature contributions
-    print("SINGLE METHOD ANALYSIS")
-    print("=" * 50)
-    results = analyze_feature_contributions(
-        base_data, observations, method="robust_mahalanobis", feature_names=feature_names
-    )
-
-    print("\n" + "=" * 80)
-
-    # Compare methods
-    comparison_results = compare_methods_feature_importance(
-        base_data, observations, feature_names=feature_names
-    )
-
-
 def make_serializable(obj: Any, allowed_types=None) -> Any:
     """Recursively convert a nested dictionary/object to be JSON serializable.
 
@@ -2179,11 +2191,20 @@ def make_serializable(obj: Any, allowed_types=None) -> Any:
     except Exception:
         return f"<unserializable object of type {type(obj).__name__}>"
 
+
 def combine_rank_files(size, filepath, num_galaxies, starts, ends):
     """Combine the rank files into a single file.
 
     Args:
         output_file (str): The name of the output file.
+        size (int): The number of MPI ranks.
+        filepath (str): The template filepath for the rank files.
+        num_galaxies (int): The total number of galaxies.
+        starts (list): The start indices for each rank.
+        ends (list): The end indices for each rank.
+
+    Returns:
+        None
     """
 
     def _recursive_copy(src, dest, slice):
@@ -2286,6 +2307,7 @@ def combine_rank_files(size, filepath, num_galaxies, starts, ends):
 
             # Delete the rank file
             os.remove(temp_path.replace("<rank>", str(rank)))
+
 
 def setup_mpi_named_logger(
     name: str, level: int = logging.INFO, stream: TextIO = sys.stdout
@@ -2463,7 +2485,7 @@ def update_plot(
 
     if plo is None:
         return
-    
+
     # Get the size of the terminal to make the plot fit.
     plo.clf()  # Clear the previous plot data
 

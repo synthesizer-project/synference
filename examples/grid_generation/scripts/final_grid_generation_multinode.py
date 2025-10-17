@@ -38,7 +38,6 @@ from synference import (
     calculate_mass_weighted_age,
     calculate_muv,
     calculate_sfh_quantile,
-    calculate_sfr,
     calculate_surviving_mass,
     draw_from_hypercube,
     generate_constant_R,
@@ -154,7 +153,7 @@ av_to_tau_v = 1.086  # conversion factor from Av to tau_v for the dust attenuati
 overwrite = False  # whether to overwrite existing grids
 Nmodels = 25_000  # number of models to generate
 grid_name = "BPASS"  # name for the grid
-cat_type = "spectra" # spectra or photometry
+cat_type = "spectra"  # spectra or photometry
 redshift = (0.01, 14)
 masses = (4, 12)
 max_redshift = 20  # gives maximum age of SFH at a given redshift
@@ -319,7 +318,7 @@ def continuity_agebins(
 """
 
 sfhs = {
-"continuity": { # SWITCH SYNTHESIZER BRANCH AND UNCOMMENT CONTINUITY REFERENCES BELOW
+    "continuity": {  # SWITCH SYNTHESIZER BRANCH AND UNCOMMENT CONTINUITY REFERENCES BELOW
         "sfh_type": SFH.Continuity,
         "agebins": continuity_agebins,
         "df": 2,
@@ -327,8 +326,8 @@ sfhs = {
         "params_to_ignore": ["max_age", "agebins"],
         "nbins": 6,  # number of bins to use for the Continuity SFH
         "sfh_param_names": [],
-}}
-
+    }
+}
 
 
 # Generate the grid. Could also seperate hyper-parameters for each model.
@@ -338,6 +337,8 @@ full_params_base = {
     "log_masses": masses,
     "log_Av": logAv,  # Av in magnitudes
     "log_zmet": log_zmet,
+    "slope": (-0.3, 1.1),  # slope for the Calzetti attenuation curve
+    "fesc_lya": (0.0, 1.0),  # escape fraction of Lyman-alpha photons
 }
 
 for sfh_name, sfh_params in sfhs.items():
@@ -347,11 +348,7 @@ for sfh_name, sfh_params in sfhs.items():
 
     sfh_name = str(sfh_type).split(".")[-1].split("'")[0]
 
-    name = f"{grid_name}_Chab_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_Calzetti_v4_multinode"  # noqa: E501
-
-    if cat_type == "spectra":
-        name = f"spectra_{name}"
-        
+    name = f"{grid_name}_Chab_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_Calzetti_v5_multinode"  # noqa: E501
     print(f"{out_dir}/grid_{name}.hdf5")
     if os.path.exists(f"{out_dir}/grid_{name}.hdf5") and not overwrite:
         print(f"Grid {name} already exists, skipping.")
@@ -388,7 +385,7 @@ for sfh_name, sfh_params in sfhs.items():
     # Create the grid
     grid = Grid(
         grid_dict[grid_name],
-        #"bpass-2.2.1-bin_chabrier03-0.1,300.0_cloudy-c23.01-sps.hdf5",
+        # "bpass-2.2.1-bin_chabrier03-0.1,300.0_cloudy-c23.01-sps.hdf5",
         grid_dir=grid_dir,
         new_lam=new_wav,
     )
@@ -410,10 +407,10 @@ for sfh_name, sfh_params in sfhs.items():
 
         skip = os.path.exists(f"{out_dir}/sps_{name}.hdf5") and not overwrite
 
-        # Alternatively check for all of _0 to _N given total number of models/nodes and max_models_per_node
+        # Alternatively check for all of _0 to _N given total number of models/nodes
         # and skip if all exist.
 
-        '''n_required = Nmodels // batch_size
+        """n_required = Nmodels // batch_size
 
         if all(
             os.path.exists(f"{out_dir}/sps_{name}_{i}.hdf5") and not overwrite
@@ -422,7 +419,7 @@ for sfh_name, sfh_params in sfhs.items():
             skip = True
 
         if skip:
-            print(f"SPS models for {name} already exist, skipping SFH generation.")'''
+            print(f"SPS models for {name} already exist, skipping SFH generation.")"""
 
         for i in tqdm(range(Nmodels), desc="Generating SFH models", disable=rank != 0):
             if not skip or i == 0:
@@ -465,7 +462,7 @@ for sfh_name, sfh_params in sfhs.items():
                     scale=sfh_params["scale"],
                     limits=(-30, 30),
                 )
-        )
+            )
 
     else:
         if "beta" in sfh_param_names:
@@ -489,10 +486,10 @@ for sfh_name, sfh_params in sfhs.items():
     emission_model = PacmanEmission(
         grid=grid,
         tau_v="tau_v",
-        dust_curve=Calzetti2000(),
+        dust_curve=Calzetti2000(slope="slope"),
         dust_emission=dust_emission,
         fesc=0.0,  # escape fraction of ionizing photons
-        fesc_ly_alpha=0.0,  # escape fraction of Lyman-alpha photons
+        fesc_ly_alpha="fesc_lya",  # escape fraction of Lyman-alpha photons
     )
 
     # List of other varying or fixed parameters. Either a distribution to pull from or a list.
@@ -500,6 +497,8 @@ for sfh_name, sfh_params in sfhs.items():
     # galaxy and processed by the emission model.
     galaxy_params = {
         "tau_v": all_param_dict["Av"] / av_to_tau_v,
+        "slope": all_param_dict["slope"],
+        "fesc_lya": all_param_dict["fesc_lya"],
     }
 
     # Dictionary of alternative parametrizations for the galaxy parameters -
@@ -596,12 +595,11 @@ for sfh_name, sfh_params in sfhs.items():
     compile_grid = True if sys.argv[2] == "1" else False  # Check if running in multinode mode
 
     param_transforms_to_save = {
-            "tau_v": lambda x: x["Av"] / av_to_tau_v,  # Save Av instead of tau_v
-        }
-    
+        "tau_v": lambda x: x["Av"] / av_to_tau_v,  # Save Av instead of tau_v
+    }
+
     if sfh_type == SFH.DenseBasis:
-        param_transforms_to_save['db_tuple'] = make_db_tuple
-           
+        param_transforms_to_save["db_tuple"] = make_db_tuple
 
     basis.create_mock_cat(
         emission_model_key=emission_key,
@@ -610,10 +608,10 @@ for sfh_name, sfh_params in sfhs.items():
         overwrite=overwrite,
         mUV=(calculate_muv, cosmo),  # Calculate mUV using the provided cosmology
         mass_weighted_age=calculate_mass_weighted_age,  # Calculate mass-weighted age
-        sfr_3=(calculate_sfr, 3 * Myr),  # Calculate SFR averaged over the last 3 Myr
-        sfr_10=(calculate_sfr, 10 * Myr),  # Calculate SFR averaged over the last 10 Myr
-        sfr_30=(calculate_sfr, 30 * Myr),  # Calculate SFR averaged over the last 30 Myr
-        sfr_100=(calculate_sfr, 100 * Myr),  # Calculate SFR averaged over the last 100 Myr
+        # sfr_3=(calculate_sfr, 3 * Myr),  # Calculate SFR averaged over the last 3 Myr
+        # sfr_10=(calculate_sfr, 10 * Myr),  # Calculate SFR averaged over the last 10 Myr
+        # sfr_30=(calculate_sfr, 30 * Myr),  # Calculate SFR averaged over the last 30 Myr
+        # sfr_100=(calculate_sfr, 100 * Myr),  # Calculate SFR averaged over the last 100 Myr
         sfh_quant_25=(calculate_sfh_quantile, 0.25, True),  # Calculate SFH quantile at 25%
         sfh_quant_50=(calculate_sfh_quantile, 0.50, True),  # Calculate SFH quantile at 50%
         sfh_quant_75=(calculate_sfh_quantile, 0.75, True),  # Calculate SFH quantile at 75%
@@ -628,7 +626,7 @@ for sfh_name, sfh_params in sfhs.items():
         parameter_transforms_to_save=param_transforms_to_save,
         compile_grid=compile_grid,
         multi_node=multinode,
-        cat_type=cat_type
+        cat_type=cat_type,
     )
 
 
