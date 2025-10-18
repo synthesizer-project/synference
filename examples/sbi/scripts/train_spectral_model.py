@@ -8,7 +8,7 @@ from astropy.io import fits
 
 fitter = SBI_Fitter.init_from_hdf5(
     "Spectra_BPASS_Chab_Continuity_SFH_0.01_z_14_logN_4.4_Calzetti_v4_multinode",
-    "/cosma7/data/dp276/dc-harv3/work/sbi_grids/grid_spectra_BPASS_Chab_Continuity_SFH_0.01_z_14_logN_4.4_Calzetti_v4_multinode.hdf5"
+    "/cosma7/data/dp276/dc-harv3/work/sbi_grids/grid_spectra_BPASS_Chab_Continuity_SFH_0.01_z_14_logN_4.4_Calzetti_v4_multinode.hdf5" # noqa: E501
 )
 tab = fits.getdata('/cosma/apps/dp276/dc-harv3/synference/priv/jwst_nirspec_prism_disp.fits')
 wavs = tab['WAVELENGTH'] * um

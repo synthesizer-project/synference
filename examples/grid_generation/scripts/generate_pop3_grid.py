@@ -4,16 +4,12 @@ import sys
 
 import numpy as np
 from astropy.cosmology import Planck18
-from synthesizer.emission_models import PacmanEmission
-from synthesizer.emission_models.attenuation import (
-    Calzetti2000,
-)  # noqa
-from synthesizer.emission_models.dust.emission import Blackbody
-from synthesizer.emission_models.stellar.models import IncidentEmission, IntrinsicEmission
+from synthesizer.emission_models import EmissionModel
+from synthesizer.emission_models.stellar.models import IncidentEmission
 from synthesizer.grid import Grid
 from synthesizer.instruments import FilterCollection, Instrument
-from synthesizer.parametric import SFH, ZDist
-from unyt import K, Myr
+from synthesizer.parametric import ZDist
+from unyt import Myr
 
 from synference import (
     GalaxyBasis,
@@ -21,7 +17,6 @@ from synference import (
     calculate_muv,
     draw_from_hypercube,
     generate_constant_R,
-    generate_sfh_basis,
 )
 
 """try:
@@ -132,12 +127,8 @@ except Exception:
     n_proc = 6
 
 print(f"Number of processes/task: {n_proc}")
-
-from mpi4py import MPI
-
 # params
-
-overwrite = True
+overwrite = False
 Nmodels = 25_000  # 00
 redshift = (0.001, 14)
 masses = (4, 12)  # log10 of stellar mass in solar masses
@@ -146,7 +137,7 @@ cosmo = Planck18  # cosmology to use for age calculations
 
 
 # ---------------------------------------------------------------
-# Pop II
+# Pop III
 
 zmet = 0
 
@@ -171,66 +162,90 @@ all_param_dict = draw_from_hypercube(
 redshifts = all_param_dict["redshift"]
 masses = all_param_dict["log_masses"]
 
-# Load Synthesizer SPS grid
-grid = Grid(
+popIII_grids = [
+    "yggdrasil-1.3.3-PopIII_kroupa-0.1,100",
     "yggdrasil-1.3.3-PopIII_salpeter-10,1,500",
-    grid_dir=grid_dir,
-    new_lam=new_wav,
-)
+    "yggdrasil-1.3.3-PopIII_salpeter-50,500",
+    "yggdrasil-1.3.3-POPIII-fcov_0.5_kroupa-0.1,100",
+    "yggdrasil-1.3.3-POPIII-fcov_0.5_salpeter-10,1,500",
+    "yggdrasil-1.3.3-POPIII-fcov_0.5_salpeter-50,500",
+    "yggdrasil-1.3.3-POPIII-fcov_1_kroupa-0.1,100",
+    "yggdrasil-1.3.3-POPIII-fcov_1_salpeter-10,1,500",
+    "yggdrasil-1.3.3-POPIII-fcov_1_salpeter-50,500",
+]
 
-# Metallicity
-Z_dists = [ZDist.DeltaConstant(metallicity=zmet) for i in range(Nmodels)]
+for grid_name in popIII_grids:
+    # Load Synthesizer SPS grid
+    grid = Grid(
+        grid_name,
+        grid_dir=grid_dir,
+        new_lam=new_wav,
+    )
 
-# Create ages for SFH models
-sfh_models = [10 ** log_age * Myr for log_age in all_param_dict["log_stellar_age"]]
+    # Metallicity
+    Z_dists = [ZDist.DeltaConstant(metallicity=zmet) for i in range(Nmodels)]
 
+    # Create ages for SFH models
+    sfh_models = [10**log_age * Myr for log_age in all_param_dict["log_stellar_age"]]
 
-# Emission parameters
-emission_model = IncidentEmission(
-    grid=grid,
-)
+    if "fcov" not in grid_name:
+        # Emission parameters
+        emission_model = IncidentEmission(
+            grid=grid,
+        )
+    else:
+        emission_model = EmissionModel(
+            grid=grid,
+            label=grid.available_spectra[0],
+            extract=grid.available_spectra[0],
+            emitter="stellar",
+        )
 
-name = f"Yggdrasil_Chab_Burst_SFH_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_v1"  # noqa: E501
-#name = "test_sbi"
+    name = (
+        f"{grid.grid_name}_Burst_SFH_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_v1"  # noqa: E501
+    )
+    # name = "test_sbi"
 
-basis = GalaxyBasis(
-    model_name=f"sps_{name}",
-    redshifts=redshifts,
-    grid=grid,
-    emission_model=emission_model,
-    sfhs=sfh_models,
-    log_stellar_masses=masses,
-    cosmo=cosmo,
-    instrument=instrument,
-    metal_dists=Z_dists,
-    galaxy_params=None,
-)
+    if os.path.exists(f"{out_dir}/grid_{name}.hdf5") and not overwrite:
+        print(f"Grid {name} already exists. Skipping...")
+        continue
 
+    basis = GalaxyBasis(
+        model_name=f"sps_{name}",
+        redshifts=redshifts,
+        grid=grid,
+        emission_model=emission_model,
+        sfhs=sfh_models,
+        log_stellar_masses=masses,
+        cosmo=cosmo,
+        instrument=instrument,
+        metal_dists=Z_dists,
+        galaxy_params=None,
+    )
 
-def z_to_max_age(params, max_redshift=20):
-    """Convert redshift to maximum age of the SFH at that redshift."""
-    z = params["redshift"]
-    from astropy.cosmology import Planck18 as cosmo
+    def z_to_max_age(params, max_redshift=20):
+        """Convert redshift to maximum age of the SFH at that redshift."""
+        z = params["redshift"]
+        from astropy.cosmology import Planck18 as cosmo
 
-    age = cosmo.age(z) - cosmo.age(max_redshift)
-    age = age.to_value("Myr") * Myr
-    return age
+        age = cosmo.age(z) - cosmo.age(max_redshift)
+        age = age.to_value("Myr") * Myr
+        return age
 
+    # This is the simple way-
+    # it runs the following three steps for you.
 
-# This is the simple way-
-# it runs the following three steps for you.
-
-basis.create_mock_cat(
-    out_name=f"grid_{name}",
-    out_dir=out_dir,
-    overwrite=overwrite,
-    n_proc=n_proc,
-    emission_model_key=emission_model.label,
-    verbose=False,
-    batch_size=50_000,
-    mUV=(calculate_muv, cosmo),  # Calculate mUV for the mock catalogue.
-    mwa=calculate_mass_weighted_age,  # Calculate MWA for the mock catalogue.
-)
+    basis.create_mock_cat(
+        out_name=f"grid_{name}",
+        out_dir=out_dir,
+        overwrite=overwrite,
+        n_proc=n_proc,
+        emission_model_key=emission_model.label,
+        verbose=False,
+        batch_size=50_000,
+        mUV=(calculate_muv, cosmo),  # Calculate mUV for the mock catalogue.
+        mwa=calculate_mass_weighted_age,  # Calculate MWA for the mock catalogue.
+    )
 
 """
 # This is the complex way

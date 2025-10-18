@@ -21,6 +21,7 @@ htmlcov/
 *.h5
 *.sqlite
 *.db
+*.pt
 
 sbi-logs/
 plots/
