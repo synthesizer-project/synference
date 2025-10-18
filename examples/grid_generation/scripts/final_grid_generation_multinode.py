@@ -44,6 +44,8 @@ from synference import (
     generate_constant_R,
     generate_random_DB_sfh,
     generate_sfh_basis,
+    calculate_line_ew,
+    calculate_line_flux,
 )
 
 # Filters
@@ -338,6 +340,9 @@ full_params_base = {
     "log_masses": masses,
     "log_Av": logAv,  # Av in magnitudes
     "log_zmet": log_zmet,
+    "slope": (-0.3, 1.1),  # slope for the Calzetti attenuation curve
+    "fesc_lya": (0.0, 1.0),  # escape fraction of Lyman-alpha photons
+    "dust_bump_amplitude": (0.0, 5.0),  # amplitude of the 2175A dust bump
 }
 
 for sfh_name, sfh_params in sfhs.items():
@@ -489,10 +494,10 @@ for sfh_name, sfh_params in sfhs.items():
     emission_model = PacmanEmission(
         grid=grid,
         tau_v="tau_v",
-        dust_curve=Calzetti2000(),
+        dust_curve=Calzetti2000(slope="slope", ampl='dust_bump_amplitude'),
         dust_emission=dust_emission,
         fesc=0.0,  # escape fraction of ionizing photons
-        fesc_ly_alpha=0.0,  # escape fraction of Lyman-alpha photons
+        fesc_ly_alpha="fesc_lya",  # escape fraction of Lyman-alpha photons
     )
 
     # List of other varying or fixed parameters. Either a distribution to pull from or a list.
@@ -500,6 +505,9 @@ for sfh_name, sfh_params in sfhs.items():
     # galaxy and processed by the emission model.
     galaxy_params = {
         "tau_v": all_param_dict["Av"] / av_to_tau_v,
+        "slope": all_param_dict["slope"],
+        "fesc_lya": all_param_dict["fesc_lya"],
+        "dust_bump_amplitude": all_param_dict["dust_bump_amplitude"],
     }
 
     # Dictionary of alternative parametrizations for the galaxy parameters -
@@ -622,6 +630,10 @@ for sfh_name, sfh_params in sfhs.items():
         log_surviving_mass=(calculate_surviving_mass, grid),  # Calculate surviving mass
         d4000=(calculate_d4000, emission_key),  # Calculate D4000 using the emission model
         beta=(calculate_beta, emission_key),  # Calculate beta using the qinstrument
+        Ha_EW=(calculate_line_ew, emission_model, "Ha", emission_key),  # Calculate EW of H-alpha line
+        Ha_flux=(calculate_line_flux, emission_model, "Ha", emission_key, cosmo),  # Calculate flux of H-alpha line
+        OIII_EW=(calculate_line_ew, emission_model, "O3", emission_key),  # Calculate EW of OIII doublet
+        OIII_flux=(calculate_line_flux, emission_model, "O3", emission_key, cosmo),  # Calculate flux of OIII doublet
         n_proc=n_proc,
         verbose=False,
         batch_size=batch_size,
