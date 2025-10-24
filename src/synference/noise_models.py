@@ -1076,10 +1076,20 @@ def load_unc_model_from_hdf5(filepath: str, group_name: str = "all") -> Uncertai
             models = {}
             for name in f.keys():
                 group = f[name]
-                class_name = group.attrs.get("__class__")
-                if class_name not in MODEL_CLASS_REGISTRY:
-                    raise TypeError(f"Unknown model class '{class_name}'.")
-                models[name] = MODEL_CLASS_REGISTRY[class_name]._from_hdf5_group(group)
+                if group.attrs is None or "__class__" not in group.attrs:
+                    # Go one level deeper if needed
+                    for name2 in group.keys():
+                        group2 = group[name2]
+                        class_name = group2.attrs.get("__class__")
+                        models[f"{name}/{name2}"] = MODEL_CLASS_REGISTRY[
+                            class_name
+                        ]._from_hdf5_group(group2)  # noqa: E501
+                else:
+                    class_name = group.attrs.get("__class__")
+
+                    if class_name not in MODEL_CLASS_REGISTRY:
+                        raise TypeError(f"Unknown model class '{class_name}'.")
+                    models[name] = MODEL_CLASS_REGISTRY[class_name]._from_hdf5_group(group)
             return models
         else:
             if group_name not in f:

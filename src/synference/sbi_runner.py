@@ -5435,12 +5435,13 @@ class SBI_Fitter:
 
         try:
             simulator = GalaxySimulator.from_grid(grid_path, **default_kwargs)
-        except ValueError:
+        except ValueError as e:
             logger.error(
                 "Could not recreate simulator from grid. This model"
                 " may not be compatible. A GalaxySimulator object can"
                 " be provided manually to recover the SED."
             )
+            logger.error(f"Error message: {e}")
             return None
 
         removed_params = flags.get("parameters_to_remove", [])
