@@ -22,6 +22,7 @@ htmlcov/
 *.sqlite
 *.db
 *.pt
+*.csv
 
 sbi-logs/
 plots/
@@ -40,6 +41,7 @@ examples/grid_generation/filters/*
 uv.lock
 
 *.log
+*.png
 
 .pytest_cache/
 
@@ -50,3 +52,5 @@ tests/test_output/*
 tests/test_grids/*
 !tests/test_grids/sbi_test_grid.hdf5
 !tests/test_grids/sps_test_grid.hdf5
+!docs/build/gfx
+!docs/source/example_models
