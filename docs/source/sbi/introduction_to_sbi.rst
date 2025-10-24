@@ -5,4 +5,3 @@ Introduction to SBI
    :maxdepth: 2
 
    SBI
-   NPE

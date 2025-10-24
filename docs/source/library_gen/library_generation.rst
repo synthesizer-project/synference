@@ -14,4 +14,5 @@ Normal use of synference uses the 'Synthesizer' package to generate synthetic ob
    basic_library_generation
    complex_library_generation
    multithreading_library_generation
+   bring_your_own_grid
 

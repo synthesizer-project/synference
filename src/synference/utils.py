@@ -71,6 +71,8 @@ def load_grid_from_hdf5(
         parameters = f[parameters_key][:]
 
         filter_codes = f.attrs[filter_codes_attr]
+        if isinstance(filter_codes, (bytes, str)):
+            filter_codes = f[filter_codes_attr][()]
         parameter_names = f.attrs[parameters_attr]
 
         # Load the photometry units
@@ -255,7 +257,7 @@ def generate_constant_R(
     filterset=None,
     **kwargs,
 ):
-    """Generate a constant R wavelength grid.
+    r"""Generate a constant R wavelength grid.
 
     Parameters:
         R: The resolution of the grid.
@@ -263,7 +265,7 @@ def generate_constant_R(
         end: The ending wavelength of the grid.
         auto_start_stop: If True, calculate start and end from the filterset.
         filterset: A filter set to calculate the start and end wavelengths.
-        **kwargs: Additional keyword arguments for filterset calculations.
+        \**kwargs: Additional keyword arguments for filterset calculations.
 
     Returns:
         A numpy array of wavelengths in Angstroms.
@@ -339,20 +341,20 @@ def rename_overlapping_parameters(lists_dict):
 
 
 class FilterArithmeticParser:
-    """Parser for filter arithmetic expressions.
+    r"""Parser for filter arithmetic expressions.
 
     Parser for filter arithmetic expressions.
     Supports operations like:
-    - Basic arithmetic: +, -, *, /
+    - Basic arithmetic: +, -, \*, /
     - Parentheses for grouping
     - Constants and coefficients
 
     Examples:
         "F356W"                    -> single filter
         "F356W + F444W"           -> filter addition
-        "2 * F356W"               -> coefficient multiplication
+        "2 \* F356W"               -> coefficient multiplication
         "(F356W + F444W) / 2"     -> average of filters
-        "F356W - 0.5 * F444W"     -> weighted subtraction
+        "F356W - 0.5 \* F444W"     -> weighted subtraction
     """
 
     def __init__(self):
@@ -826,7 +828,18 @@ def save_emission_model(model):
         dust_law = model._transformation["attenuated"][1]
         dust_attenuation_keys.update(dust_law.__dict__)
         dust_attenuation_keys.pop("description")
-        dust_attenuation_keys.pop("_required_params")
+        # drop any hidden keys (starting with _)
+        for key in list(dust_attenuation_keys.keys()):
+            if isinstance(dust_attenuation_keys[key], np.ndarray):
+                dust_attenuation_keys[key] = dust_attenuation_keys[key].tolist()
+            # force numpy types to native python types
+            if "numpy" in str(type(dust_attenuation_keys[key])) and not hasattr(
+                dust_attenuation_keys[key], "units"
+            ):
+                dust_attenuation_keys[key] = dust_attenuation_keys[key].item()
+            if key.startswith("_"):
+                dust_attenuation_keys.pop(key)
+
         dust_law = type(dust_law).__name__
 
     else:
@@ -864,6 +877,8 @@ def save_emission_model(model):
             dust_attenuation_units.append("")
 
     dust_attenuation_values = list(dust_attenuation_keys.values())
+    if any(isinstance(v, str) for v in dust_attenuation_values):
+        dust_attenuation_values = [str(item).encode("utf-8") for item in dust_attenuation_values]
     dust_attenuation_keys = list(dust_attenuation_keys.keys())
 
     dust_emission_units = []
@@ -975,7 +990,7 @@ def detect_outliers_pyod(
     return_scores=False,
     **kwargs,
 ):
-    """Detect outliers in multivariate data using pyod methods.
+    r"""Detect outliers in multivariate data using pyod methods.
 
     Parameters:
     -----------
@@ -993,7 +1008,7 @@ def detect_outliers_pyod(
          - 'none': Return individual method results without combination
     return_scores : bool, default=False
         Whether to return outlier scores along with the mask
-    **kwargs : dict
+    \**kwargs : dict
         Additional parameters for specific pyod methods
     """
     try:
@@ -1073,39 +1088,38 @@ def detect_outliers(
     plot=True,
     **kwargs,
 ):
-    """Detect outliers in multivariate data using various methods.
+    r"""Detect outliers in multivariate data using various methods.
 
-    Parameters:
-    -----------
-    base_distribution : array-like, shape (n_samples, n_features)
-        Reference distribution data
-    observations : array-like, shape (n_obs, n_features)
-        Observations to test for outliers
-    method : str, default='mahalanobis'
-        Method to use: 'mahalanobis', 'robust_mahalanobis', 'lof', 'isolation_forest',
-        'one_class_svm', 'pca', 'hotelling_t2', 'kde'
-    contamination : float, default=0.1
-        Expected proportion of outliers (for applicable methods)
-    n_neighbors : int, default=20
-        Number of neighbors for LOF
-    threshold : float, optional
-        Manual threshold for outlier detection
-    confidence : float, default=0.95
-        Confidence level for statistical tests
-    n_components : int, optional
-        Number of components for PCA (if None, uses all)
-    plot : bool, default=True
-        Whether to plot results (only applicable for some methods)
-    **kwargs : dict
-        Additional parameters for specific methods
+    Args:
+        base_distribution (np.ndarray): Reference distribution data of
+            shape (n_samples, n_features).
+        observations (np.ndarray): Observations to test for outliers,
+            of shape (n_obs, n_features).
+        method (str, optional): Method to use. Options include:
+            'mahalanobis', 'robust_mahalanobis', 'lof', 'isolation_forest',
+            'one_class_svm', 'pca', 'hotelling_t2', 'kde'.
+            Defaults to 'mahalanobis'.
+        contamination (float, optional): Expected proportion of outliers
+            (for applicable methods). Defaults to 0.1.
+        n_neighbors (int, optional): Number of neighbors for LOF.
+            Defaults to 20.
+        threshold (float, optional): Manual threshold for outlier
+            detection. Defaults to None.
+        confidence (float, optional): Confidence level for statistical
+            tests. Defaults to 0.95.
+        n_components (int, optional): Number of components for PCA
+            (if None, uses all). Defaults to None.
+        plot (bool, optional): Whether to plot results (only applicable
+            for some methods). Defaults to True.
+        **kwargs (Any): Additional parameters for specific methods.
 
     Returns:
-    --------
-    dict : Dictionary containing:
-        - 'outlier_mask': Boolean array indicating outliers
-        - 'scores': Outlier scores
-        - 'threshold_used': Threshold value used
-        - 'method_info': Additional method-specific information
+        Dict[str, Any]: A dictionary containing:
+
+            - 'outlier_mask' (np.ndarray): Boolean array indicating outliers.
+            - 'scores' (np.ndarray): Outlier scores for each observation.
+            - 'threshold_used' (float): The threshold value used for detection.
+            - 'method_info' (dict): Additional method-specific information.
     """
     from sklearn.covariance import EllipticEnvelope
     from sklearn.decomposition import PCA
@@ -1951,8 +1965,7 @@ def optimize_sfh_xlimit(ax, mass_threshold=0.001, buffer_fraction=0.2):
 
     Returns:
     --------
-    float
-        The optimal maximum x value for the plot
+    float - The optimal maximum x value for the plot
     """
     # Get all lines from the plot
     lines = ax.get_lines()
@@ -2525,3 +2538,137 @@ def update_plot(
 
     # Display the plot.
     plo.show()
+
+
+def cumsum_dirichlet_prior_transform(unit_cube, alpha):
+    """Transform from unit hypercube to cumulative sum of Dirichlet-distributed parameters.
+
+    This produces ordered breakpoints on [0,1] by taking the cumulative sum of
+    a Dirichlet distribution. Useful for nested sampling priors with ordered
+    parameters (e.g., transition times, change points, ordered categories).
+
+    Uses stick-breaking transformation with Beta distributions appropriate
+    for Dirichlet(alpha, alpha, ..., alpha) distribution.
+
+    Parameters
+    ----------
+    unit_cube : array-like, shape (N,)
+        Values from the unit hypercube [0,1]^N
+    alpha : float
+        Dirichlet concentration parameter (same for all dimensions)
+
+    Returns:
+    -------
+    breakpoints : ndarray, shape (N,)
+        Ordered values 0 < breakpoints[0] < ... < breakpoints[N-1] < 1
+        These are cumulative sums of Dirichlet(alpha, ..., alpha) with (N+1) components
+
+    Examples:
+    --------
+    >>> # Transform 3D unit cube to 3 ordered breakpoints
+    >>> unit_cube = [
+    ...     0.5,
+    ...     0.5,
+    ...     0.5,
+    ... ]
+    >>> breakpoints = cumsum_dirichlet_prior_transform(
+    ...     unit_cube,
+    ...     alpha=1.0,
+    ... )
+    >>> print(
+    ...     f"Breakpoints: {breakpoints}"
+    ... )
+    >>> print(
+    ...     f"All ordered: {np.all(breakpoints[:-1] < breakpoints[1:])}"
+    ... )
+
+    >>> # Equivalent to:
+    >>> # txs = np.cumsum(np.random.dirichlet(np.ones(N+1)*alpha))[:-1]
+    """
+    unit_cube = np.asarray(unit_cube)
+    N = len(unit_cube)  # Number of breakpoints (Dirichlet has N+1 components)
+
+    # Pre-allocate output for N+1 Dirichlet components
+    theta = np.zeros(N + 1)
+
+    # Compute remaining stick length
+    remaining = 1.0
+
+    # Stick-breaking process for N+1 components
+    for k in range(N):
+        # Transform u_k through inverse CDF of Beta(alpha, (N+1-k-1)*alpha)
+        beta_a = alpha
+        beta_b = (N - k) * alpha  # N+1 total components, so N-k remaining
+        u_k = stats.beta.ppf(unit_cube[k], beta_a, beta_b)
+
+        # Break off piece of stick
+        theta[k] = remaining * u_k
+        remaining *= 1 - u_k
+
+    # Last parameter gets remaining stick
+    theta[N] = remaining
+
+    # Return cumulative sum, dropping the last element (which equals 1.0)
+    return np.cumsum(theta)[:-1]
+
+
+def search_parameter_array(
+    array: np.ndarray,
+    parameter_names: List[str],
+    constraints: List[Tuple[str, str, Union[int, float]]],
+) -> np.ndarray:
+    """Return indexes in array with columns which meet constraints.
+
+    Args:
+        array (np.ndarray): The data array where rows are entries and columns
+                            are parameters.
+        parameter_names (List[str]): A list of string names for each column
+                                     in the array.
+        constraints (List[Tuple[str, str, Union[int, float]]]):
+            A list of tuples, where each tuple defines a constraint in the
+            format: (parameter_name, operator_string, value).
+            e.g., ('mass', '>', 100)
+
+    Returns:
+        np.ndarray: A NumPy array of integer indices for the rows in the input
+                    array that satisfy all of the given constraints.
+    """
+    # A mapping from string representations of operators to the actual
+    # functions from the `operator` module.
+    operator_map = {
+        ">": operator.gt,
+        "<": operator.lt,
+        ">=": operator.ge,
+        "<=": operator.le,
+        "==": operator.eq,
+        "!=": operator.ne,
+    }
+
+    # Start with a boolean mask of all True values, the same length as the array.
+    # We will combine this with the mask from each constraint.
+    combined_mask = np.ones(array.shape[0], dtype=bool)
+
+    # Iterate over each constraint and apply it to the array
+    for param_name, operator_str, value in constraints:
+        try:
+            # Find the column index for the given parameter name
+            col_idx = parameter_names.index(param_name)
+        except ValueError:
+            print(f"Warning: Parameter '{param_name}' not found. Skipping constraint.")
+            continue
+
+        # Get the corresponding operator function from our map
+        op_func = operator_map.get(operator_str)
+        if not op_func:
+            raise ValueError(f"Unsupported operator: {operator_str}")
+
+        # Create a boolean mask for the current constraint
+        current_mask = op_func(array[:, col_idx], value)
+
+        # Update the combined mask using a logical AND.
+        # This ensures that only rows satisfying *all* constraints are kept.
+        combined_mask &= current_mask
+
+    # np.where returns a tuple of arrays (one for each dimension).
+    # Since our mask is 1D, we just need the first element.
+    return np.where(combined_mask)[0]

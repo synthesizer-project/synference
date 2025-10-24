@@ -23,7 +23,7 @@ from .grid import (
     test_out_of_distribution, calculate_mass_weighted_age, calculate_lum_weighted_age,
     calculate_flux_weighted_age, calculate_colour, calculate_d4000, calculate_beta, calculate_balmer_decrement,
     calculate_line_flux, calculate_line_ew, calculate_sfh_quantile, calculate_surviving_mass, calculate_agn_fraction,
-    SUPP_FUNCTIONS
+    calculate_xi_ion0, calculate_Ndot_ion, SUPP_FUNCTIONS, GridCreator
 )
 
 
@@ -52,6 +52,7 @@ __all__ = [
     "generate_emission_models",
     "generate_sfh_basis",
     "GalaxyBasis",
+    "GridCreator",
     "generate_constant_R",
     "draw_from_hypercube",
     "grid_folder",
@@ -70,6 +71,8 @@ __all__ = [
     "calculate_sfh_quantile",
     "calculate_surviving_mass",
     "calculate_agn_fraction",
+    "calculate_xi_ion0",
+    "calculate_Ndot_ion"
     "SUPP_FUNCTIONS",
     "SBI_Fitter",
     "MissingPhotometryHandler",

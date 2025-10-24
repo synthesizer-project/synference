@@ -235,9 +235,11 @@ class SBI_Fitter:
         self.simulator = simulator
         self.has_simulator = simulator is not None
 
+        """
         assert (self.simulator is not None) or (self.raw_observation_grid is not None), (
             "Either a simulator or raw photometry grid must be provided."
         )
+        """
 
         # This allows you to subset the parameters to fit
         # if you want to marginalize over some parameters.
@@ -245,7 +247,11 @@ class SBI_Fitter:
         self.fitted_parameter_array = None
         self.fitted_parameter_names = parameter_names
         self.fitted_parameter_units = parameter_units
-        self.simple_fitted_parameter_names = [i.split("/")[-1] for i in parameter_names]
+
+        if parameter_names is not None:
+            self.simple_fitted_parameter_names = [i.split("/")[-1] for i in parameter_names]
+        else:
+            self.simple_fitted_parameter_names = None
 
         # Feature array and names
         self.feature_array = feature_array
@@ -315,13 +321,13 @@ class SBI_Fitter:
         return_output=False,
         **kwargs,
     ):
-        """Initialize the SBI fitter from an HDF5 file.
+        r"""Initialize the SBI fitter from an HDF5 file.
 
         Parameters:
             hdf5_path: Path to the HDF5 file.
             model_name: Name of the model to be used.
             return_output: If True, returns the output dictionary from the HDF5 file.
-            **kwargs: Additional keyword arguments to pass to the SBI_Fitter constructor.
+            \**kwargs: Additional keyword arguments to pass to the SBI_Fitter constructor.
 
         Returns:
             An instance of the SBI_Fitter class.
@@ -333,7 +339,27 @@ class SBI_Fitter:
             if os.path.exists(f"{code_path}/grids/{hdf5_path}"):
                 hdf5_path = f"{code_path}/grids/{hdf5_path}"
 
-        output = load_grid_from_hdf5(hdf5_path)
+        try:
+            output = load_grid_from_hdf5(hdf5_path)
+        except Exception as e:
+            logger.warn(
+                f"Error loading HDF5 file {hdf5_path}: {e}Won't be able to fit model without grid."
+            )
+            return cls(
+                name=model_name,
+                raw_observation_grid=None,
+                raw_observation_names=None,
+                parameter_array=None,
+                parameter_names=None,
+                parameter_units=None,
+                raw_observation_units=None,
+                feature_array=None,
+                feature_names=None,
+                feature_units=None,
+                grid_path=hdf5_path,
+                observation_type=None,
+                **kwargs,
+            )
 
         if return_output:
             return output
@@ -392,17 +418,22 @@ class SBI_Fitter:
     ):
         """Load a prefit SBI model from a file.
 
-        Argument:
-            model_file: Path to the saved model file.
-            grid_path: Optional path to the grid file. If not provided,
-                it will be loaded from the model file parameters.
-            model_name: Optional name of the model. If not provided,
-                it will be loaded from the model file parameters.
-            load_arrays: Whether to load the feature and parameter arrays
-            **kwargs: Additional keyword arguments to pass to the SBI_Fitter constructor.
+        Args:
+            model_file (str): Path to the saved model file.
+            grid_path (Optional[str], optional): Optional path to the grid file.
+                If not provided, it will be loaded from the model
+                file parameters. Defaults to None.
+            model_name (Optional[str], optional): Optional name of the model.
+                If not provided, it will be loaded from the model
+                file parameters. Defaults to None.
+            load_arrays (bool, optional): Whether to load the feature and
+                parameter arrays. Defaults to True.
+            **kwargs (Any): Additional keyword arguments to pass to the
+                SBI_Fitter constructor.
 
         Returns:
-            Instance of SBI_Fitter initialized with the loaded model.
+            SBI_Fitter:
+                An instance of SBI_Fitter initialized with the loaded model.
         """
         if not os.path.exists(model_file):
             if os.path.exists(f"{code_path}/models/{model_file}"):
@@ -591,7 +622,6 @@ class SBI_Fitter:
 
         # Repeat the photometry array for each scatter
         photometry_repeated = np.repeat(photometry_array, N_scatters, axis=1)
-
         # Check if depths is 2D and handle accordingly
         if depths.ndim == 2:
             k, depth_cols = depths.shape
@@ -629,6 +659,10 @@ class SBI_Fitter:
 
             # Expand to match output dimensions: (m, N_scatters * n)
             depths_std_expanded = np.repeat(depths_std[:, np.newaxis], N_scatters * n, axis=1)
+        elif depths.ndim == 0:
+            # Single depth value for all rows
+            depth_value = depths.to(photometry_array.units).value / depth_sigma
+            depths_std_expanded = np.full((m, N_scatters * n), depth_value)
         else:
             raise ValueError("depths must be 1D or 2D array")
 
@@ -664,7 +698,7 @@ class SBI_Fitter:
         has_grid=True,
         **extras,
     ):
-        """Save the state of the SBI fitter to a file.
+        r"""Save the state of the SBI fitter to a file.
 
         Parameters:
             out_dir: Directory to save the model parameters.
@@ -673,7 +707,7 @@ class SBI_Fitter:
                 'joblib', 'hdf5', 'dill', or 'hickle'. Default is 'joblib'.
             has_grid: Whether the model has a grid. If True, feature and parameter
                 arrays will be saved. Default is True.
-            **extras: Additional parameters to save in the parameter dictionary.
+            \**extras: Additional parameters to save in the parameter dictionary.
         """
         param_dict = {
             "feature_names": self.feature_names,
@@ -871,24 +905,39 @@ class SBI_Fitter:
     def detect_misspecification(self, x_obs, X_train=None, retrain=False):
         """Tests misspecification of the model using the MarginalTrainer from sbi.
 
-        X_test: The test data to check for misspecification.
-        X_train: The training data to use for the misspecification check. If None,
-        it will use the training data set in the class.
-
-        This function uses the MarginalTrainer from sbi to train a density estimator on
-        the training data, and then calculates the misspecification
+        This function uses the MarginalTrainer from sbi to train a density
+        estimator on the training data, and then calculates the misspecification
         log probability of the test data.
 
-        @inproceedings{schmitt2023detecting,
-            title={Detecting model misspecification in amortized Bayesian
-                    inference with neural networks},
-            author={Schmitt, Marvin and Burkner, Paul-Christian and Kothe,
-                    Ullrich and Radev, Stefan T},
-            booktitle={DAGM German Conference on Pattern Recognition},
-            pages={541--557},
-            year={2023},
-            organization={Springer}
-        }
+        Args:
+            x_obs (np.ndarray): The observed data to test for misspecification.
+            X_test (np.ndarray): The test data to check for misspecification.
+            X_train (Optional[np.ndarray], optional): The training data to use
+                for the misspecification check. If None, it will use the
+                training data set in the class. Defaults to None.
+            retrain (bool, optional): Whether to retrain the density estimator.
+                If False, it will use the previously trained estimator if available.
+                Defaults to False.
+
+        Returns:
+            np.ndarray:
+                An array of misspecification log probabilities for the test data.
+
+        .. note::
+           This method is based on the following paper:
+
+           .. code-block:: bibtex
+
+              @inproceedings{schmitt2023detecting,
+                  title={Detecting model misspecification in amortized Bayesian
+                         inference with neural networks},
+                  author={Schmitt, Marvin and Burkner, Paul-Christian and Kothe,
+                          Ullrich and Radev, Stefan T},
+                  booktitle={DAGM German Conference on Pattern Recognition},
+                  pages={541--557},
+                  year={2023},
+                  organization={Springer}
+              }
         """
         from packaging import version
 
@@ -1246,28 +1295,28 @@ class SBI_Fitter:
 
     def create_feature_array_from_raw_photometry(
         self,
-        normalize_method: str = None,
-        extra_features: list = None,
+        normalize_method: Optional[str] = None,
+        extra_features: Optional[list] = None,
         normed_flux_units: str = "AB",
         normalization_unit: str = "AB",
         verbose: bool = True,
         scatter_fluxes: Union[int, bool] = False,
         empirical_noise_models: Optional[Dict[str, EmpiricalUncertaintyModel]] = None,
-        depths: Union[unyt_array, None] = None,
-        include_errors_in_feature_array=False,
+        depths: Optional[unyt_array] = None,
+        include_errors_in_feature_array: bool = False,
         min_flux_pc_error: float = 0.0,
-        simulate_missing_fluxes=False,
-        missing_flux_value=99.0,
-        missing_flux_fraction=0.0,
-        missing_flux_options: list = None,
-        include_flags_in_feature_array=False,
-        override_phot_grid: np.ndarray = None,
-        override_phot_grid_units: str = None,
+        simulate_missing_fluxes: bool = False,
+        missing_flux_value: float = 99.0,
+        missing_flux_fraction: float = 0.0,
+        missing_flux_options: Optional[list] = None,
+        include_flags_in_feature_array: bool = False,
+        override_phot_grid: Optional[np.ndarray] = None,
+        override_phot_grid_units: Optional[str] = None,
         norm_mag_limit: float = 50.0,
         remove_nan_inf: bool = True,
-        parameters_to_remove: list = None,
-        photometry_to_remove: list = None,
-        parameters_to_add: list = None,
+        parameters_to_remove: Optional[list] = None,
+        photometry_to_remove: Optional[list] = None,
+        parameters_to_add: Optional[list] = None,
         drop_dropouts: bool = False,
         drop_dropout_fraction: float = 1.0,
         asinh_softening_parameters: Union[
@@ -1275,124 +1324,89 @@ class SBI_Fitter:
             List[unyt_array],
             Dict[str, unyt_array],
             str,
+            None,
         ] = None,
         max_rows: int = -1,
-        parameter_transformations: Dict[str, Callable] = None,
+        parameter_transformations: Optional[Dict[str, Callable]] = None,
     ) -> np.ndarray:
         """Create a feature array from the raw observation grid.
 
-        Parameters:
-            normalize_method: The method to normalize the photometry.
-                At the moment only the names of the filters, names
-                of supplementary parameters, or None are accepted.
-                This will be used to normalize the fluxes in the feature array.
-            extra_features: Any extra features to be added. These should be
-                generally written as functions of filter codes.
-                E.g. NIRCam.F090W - NIRCam.F115W color as
-                a feature would be written as ['F090W - F115W'].
-                They can also be parameters in the parameter grid,
-                in which case they won't be predicted by the model -e.g. redshift.
-                or supplementary parameters (e.g. things generated)
-                with grid, e.g. spectral indicices, mUV, morphology, etc.
-            normed_flux_units: The units of the flux to normalize to. E.g. 'AB', 'nJy',
-                etc. So when combined with normalize method,
-                the fluxes for each filter will be relative to the normalization filter,
-                in the given units. The overall
-                normalization factor will be provided as well.
-                Options include:
-                    "AB" - AB magnitude normalization.
-                    "asinh" - Asinh magnitude normalization.
-                    any string or unyt_quantity equivalent to a flux density unit.
-                    NOTE: Certain noise models can ignore this flux unit,
-                    e.g. if you provide a AsinhEmpiricalUncertaintyModel, the fluxes will be
-                    in asinh magnitudes regardless of the normed_flux_units.
-            normalization_unit: The unit of the normalization factor, if used.
-                E.g. 'log10 nJy', 'nJy', AB', etc. This can be different to
-                normed_flux_units, but should be a valid flux density unit. E.g.
-                you could provide normed_flux_units="nJy", but given the normalisation
-                in magnitudes. Can start with 'log10 unit' to indicate a logarithmic
-                normalization, e.g. 'log10 nJy' (not for AB magnitudes as these are
-                already logarithmic).
-            scatter_fluxes: Whether to scatter fluxes with uncertainity. Either False,
-                or an integer for the number of scatters to apply. Noise model used
-                is either the empirical noise model, or the depths, depending on the
-                supplied parameters.
-            empirical_noise_models: A dictionary of empirical noise models to
-                use for scattering the fluxes. The keys should be the filter names,
-                and the values should be the EmpiricalUncertaintyModel objects.
-            depths: Either None, or a unyt_array of length photometry.
-            include_errors_in_feature_array: boolean, default False.
-                Whether to include the RMS uncertainty in the input model.
-                This would pass in the uncertainity as a seperate parameter.
-                Could be either 2D, or (value, error) pairs in 1D training dataset.
-                Could also allow options to under or
-                overestimate model uncertainity in depths.
-            min_flux_pc_error: The minimum percentage error to apply to the fluxes.
-                This is used to set the minimum error on the fluxes when scattering.
-            simulate_missing_fluxes:  boolean, default False.
-                This would allow missing photometry for some fraction of the time,
-                which could be marked with a specific filler flag,
-                or a seperate boolean row/column to flag missing data.
-            missing_flux_value: The value to use for missing fluxes. Default is 99.0.
-            missing_flux_fraction: The fraction of missing fluxes. Default is 0.0.
-            missing_flux_options: If simulate_missing_fluxes is True,
-                this is a list of mask for the missing fluxes. E.g.
-                rather than randomly masking galaxies, we have a set of possible options
-                which are randomly selected from.
-            include_flags_in_feature_array: boolean, default False.
-            override_phot_grid: The photometry grid to use
-                instead of the raw observation grid.
-                This is used to override the photometry grid for testing purposes.
-            override_phot_grid_units: The units of the override photometry grid.
-                This is used to override the units of the photometry grid
-                for testing purposes.
-            norm_mag_limit: The maximum magnitude limit for the normalized fluxes.
-                This is used to set a maximum difference of some large amount -
-                say 50 magnitudes.
-            remove_nan_inf: boolean, default True.
-                Whether to remove any rows with NaN or Inf values in the feature array.
-            parameters_to_remove: List of parameters to remove from the parameter array.
-            photometry_to_remove: List of photometry filters to remove from the grid.
-                Generally if a filter is listed here, it is removed first, so other
-                arguments which expect lists of arguments matching the length of the
-                filter array (e.g. depths, empirical_noise_models,
-                asinh_softening_parameters) will not include filters listed here.
-                Dictionaries matching self.raw_observation_names to these keys are
-                also accepted for more explicit control.
-            parameters_to_add: List of parameters to add to the feature array.
-                Only parameters in supplementary_parameters are currently supported.
-            drop_dropouts: boolean, default False.
-                Whether to drop the dropouts from the feature array.
-            drop_dropout_fraction: float, default 1.0.
-                The fraction of dropouts to drop from the feature array.
-                E.g. if a galaxy dropouts out in more than this fraction of the filters,
-                it will be dropped from the feature array.
-            asinh_softening_parameters: float, list, dict or str, default None.
-                The softening parameter for the asinh normalization.
-                Only used if normed_flux_units is 'asinh'.
-                If a single quantity, it is used for all filters.
-                If a list, it should be the same length as the number of (raw) filters.
-                If a dict, it should map filter names to the softening parameters.
-                Or it can be 'SNR_{level} to set it from the noise model
-                or depths.
-                NOTE: NOT USED if Depth models are used for scattering fluxes.
-                MAY END UP DEPRECATING THIS AND DEPTH ARRAY ENTIRELY IN FAVOUR OF
-                A NOISE MODEL CLASS.
-            max_rows: int, default -1.
-                The maximum number of rows to return in the feature array.
-                If -1, all rows are returned. If >0 and len(feature_array) > max_rows,
-                rows are randomly sampled to return only max_rows rows.
-            parameter_transformations: A dictionary of parameter transformations to apply
-                to the parameter array. The keys should be the parameter names,
-                and the values should be callable functions that take a numpy array
-                and return a transformed numpy array.
-                For example, if you want to infer log_age, rather than age - you would
-                provide a dictionary with {'age': np.log10} to transform the age
-
-            TODO: How should normalization work with the scattering?
+        Args:
+            normalize_method (str, optional): Method to normalize photometry (e.g.,
+                filter names, parameter names). Used to normalize fluxes.
+                Defaults to None.
+            extra_features (list, optional): Extra features to add. Can be
+                functions of filter codes (e.g., ['F090W - F115W']) or
+                parameters from the grid (e.g., redshift). Defaults to None.
+            normed_flux_units (str, optional): Target units for normalized flux
+                (e.g., "AB", "asinh", "nJy"). Fluxes will be relative to the
+                normalization filter in these units. Defaults to "AB".
+            normalization_unit (str, optional): Units for the normalization
+                factor (e.g., 'log10 nJy', 'nJy', 'AB'). Can differ from
+                `normed_flux_units`. Defaults to "AB".
+            verbose (bool, optional): If True, prints progress and summary
+                information. Defaults to True.
+            scatter_fluxes (Union[int, bool], optional): Whether to scatter
+                fluxes with uncertainty. If False, no scatter. If an integer,
+                applies that many scatters using noise models or depths.
+                Defaults to False.
+            empirical_noise_models (Dict[str, EmpiricalUncertaintyModel], optional):
+                Dictionary mapping filter names to EmpiricalUncertaintyModel
+                objects for flux scattering. Defaults to None.
+            depths (unyt_array, optional): An array of depths, one per
+                photometric filter. Defaults to None.
+            include_errors_in_feature_array (bool, optional): If True,
+                includes the RMS uncertainty as a separate feature in the
+                input. Defaults to False.
+            min_flux_pc_error (float, optional): Minimum percentage error to
+                apply to fluxes when scattering. Defaults to 0.0.
+            simulate_missing_fluxes (bool, optional): If True, simulates
+                missing photometry for a fraction of data, marked with
+                `missing_flux_value`. Defaults to False.
+            missing_flux_value (float, optional): Value to use for missing
+                fluxes. Defaults to 99.0.
+            missing_flux_fraction (float, optional): Fraction of missing
+                fluxes to simulate. Defaults to 0.0.
+            missing_flux_options (list, optional): A list of predefined
+                masks for missing fluxes, used if `simulate_missing_fluxes`
+                is True. Defaults to None.
+            include_flags_in_feature_array (bool, optional): If True, includes
+                flags in the feature array. Defaults to False.
+            override_phot_grid (np.ndarray, optional): A photometry grid to
+                use instead of the raw observation grid. Defaults to None.
+            override_phot_grid_units (str, optional): Units for the
+                `override_phot_grid`. Defaults to None.
+            norm_mag_limit (float, optional): Maximum magnitude limit for
+                normalized fluxes. Defaults to 50.0.
+            remove_nan_inf (bool, optional): If True, removes rows with
+                NaN or Inf values from the feature array. Defaults to True.
+            parameters_to_remove (list, optional): List of parameters to
+                remove from the parameter array. Defaults to None.
+            photometry_to_remove (list, optional): List of filters to remove.
+                This is applied early, so other arguments (like `depths`)
+                should not include these filters. Defaults to None.
+            parameters_to_add (list, optional): List of supplementary
+                parameters to add to the feature array. Defaults to None.
+            drop_dropouts (bool, optional): If True, drops dropouts from
+                the feature array. Defaults to False.
+            drop_dropout_fraction (float, optional): The fraction of filters
+                a galaxy can drop out in before being dropped. Defaults to 1.0.
+            asinh_softening_parameters (Union[unyt_array, List, Dict, str], optional):
+                Softening parameter for 'asinh' normalization. Can be a
+                single quantity, list, dict, or string (e.g., 'SNR_10').
+                Defaults to None.
+            max_rows (int, optional): Maximum number of rows to return. If -1,
+                all rows are returned. If > 0, rows are randomly sampled.
+                Defaults to -1.
+            parameter_transformations (Dict[str, Callable], optional):
+                Dictionary of functions to apply to parameters (e.g.,
+                {'age': np.log10} to infer log_age). Defaults to None.
 
         Returns:
-            The feature array and feature names.
+            tuple:
+                - **feature_array** (np.ndarray): The processed feature array.
+                - **feature_names** (List[str]): The names of the features
+                  (columns) in the feature array.
         """
         if self.observation_type != "photometry":
             raise ValueError("This method is only for photometric models.")
@@ -1488,8 +1502,7 @@ class SBI_Fitter:
 
             if depths is not None:
                 logger.info(
-                    f"""Using depth-based noise models with \
-                        {scatter_fluxes} scatters per row."""
+                    f"Using depth-based noise models with {scatter_fluxes} scatters per row."
                 )
 
                 if isinstance(depths, dict):
@@ -1690,12 +1703,12 @@ class SBI_Fitter:
                 normalization_factor = self.supplementary_parameters[norm_index, :]
                 # count where normalzation is 0
 
-                assert (
-                    normalization_factor.shape[0] == phot_grid.shape[1]
-                ), """Normalization factor should
-                    have the same shape as the photometry grid."""
-                assert norm_unit == raw_observation_units, """Normalization factor should have the
-                        same units as the photometry grid."""
+                assert normalization_factor.shape[0] == phot_grid.shape[1], (
+                    "Normalization factor should have the same shape as the photometry grid."
+                )
+                assert norm_unit == raw_observation_units, (
+                    "Normalization factor should have the same units as the photometry grid."
+                )
 
                 if normed_flux_units == "AB":
                     normalization_factor_use = (
@@ -1773,8 +1786,8 @@ class SBI_Fitter:
         if np.sum(normalization_factor == 0.0) > 0:
             # delete these indexes from the photometry
             logger.info(
-                f"""Warning: Normalization factor is 0.0 for
-                {np.sum(normalization_factor == 0.0)} rows. These will be deleted."""
+                "Warning: Normalization factor is 0.0 for "
+                f"{np.sum(normalization_factor == 0.0)} rows. These will be deleted."
             )
             delete_rows.extend(np.where(normalization_factor == 0.0)[0].tolist())
 
@@ -2335,40 +2348,42 @@ class SBI_Fitter:
     ):
         """Create a feature array from observational data.
 
-        Transformations applied to an existing feature array are
-        saved in the self.feature_array_flags dictionary, but can be overridden
-        with override_transformations. Available transformations are the arguments
-        to the create_feature_array_from_raw_photometry method, although some,
-        like scattering fluxes or error modelling, are not applicable here and
-        will have no effect.
+        .. note::
+           Transformations applied to an existing feature array are
+           saved in `self.feature_array_flags`, but can be overridden
+           with `override_transformations`. Available transformations are
+           arguments to `create_feature_array_from_raw_photometry`,
+           although some (like scattering fluxes or error modelling)
+           are not applicable here and will have no effect.
 
-        Parameters
-        ----------
+        Args:
+            observations (Union[np.ndarray, Table, pd.DataFrame]): The
+                observational data to create the feature array from.
+            flux_units (Union[str, unyt_quantity, None], optional):
+                Required if the observations do not match 'normed_flux_units'
+                in `self.feature_array_flags`. If None, units are taken
+                from column metadata or assumed to be the same as the
+                training data. Defaults to None.
+            columns_to_feature_names (Dict[str, str], optional): A dictionary
+                mapping column names in `observations` to feature names.
+                If None, a direct mapping to
+                `self.feature_array_flags['raw_observation_names']`
+                is assumed. Defaults to None.
+            missing_data_flag (Any, optional): Value in columns
+                delineating missing data. Depending on setup, this may be
+                flagged to the model or cause the entry to be ignored.
+                Defaults to None.
+            override_transformations (Dict[str, Any], optional): A dictionary
+                of transformations to override defaults in
+                `self.feature_array_flags` (e.g., normalization method).
+                Defaults to None.
+            ignore_missing (bool, optional): If True, will ignore missing
+                data in the observations, keeping missing values unchanged.
+                Primarily useful for SBI++ techniques. Defaults to False.
 
-        observations : Union[np.ndarray, Table, pd.DataFrame]
-            The observational data to create the feature array from.
-        flux_units : Union[str, unyt_quantity, None]
-            Required if the observations do not match 'normed_flux_units'
-            in self.feature_array_flags. If None, the units will be taken from the column
-            metadata if available and otherwise assumed to be the same as the
-            training data.
-        columns_to_feature_names : dict
-            A dictionary mapping the column names in the observations to feature names.
-            If None, then assumed there will be a direct mapping between the columns
-            in the observations and feature names in
-            self.feature_array_flags['raw_observation_names'].
-        missing_data_flag : Any
-            Value in columns delineating missing data. Depending on setup of features,
-            this may be flagged to model or the galaxy will be ignored entirely.
-        override_transformations : dict
-            A dictionary of transformations to override the defaults in
-            self.feature_array_flags. This can be used to change the normalization method,
-             extra features, etc.
-        ignore_missing : bool
-            If True, will ignore missing data in the observations and keep missing
-            values unchanged. Primarily useful if using SBI++ techniques to model
-            missing data.
-
+        Returns:
+            np.ndarray:
+                The processed feature array derived from the observations.
         """
         if len(self.feature_array_flags) == 0:
             raise ValueError("No feature array flags found. Please create the feature array first.")
@@ -2806,7 +2821,7 @@ class SBI_Fitter:
         use_temp_samples: bool = False,
         **kwargs,
     ):
-        """Infer posteriors for observational data.
+        r"""Infer posteriors for observational data.
 
         This method creates a feature array from the observations and then samples
         the posterior distributions of the fitted parameters based on the feature array.
@@ -2868,7 +2883,7 @@ class SBI_Fitter:
         use_temp_samples : bool
             If True, try to use the samples stored in self. This is useful for
             debugging and testing, or jumping straight to SED recovery.
-        **kwargs: Optional params - only used internally for simformer model.
+        \**kwargs: Optional params - only used internally for simformer model.
 
         Returns:
         -------
@@ -3142,6 +3157,7 @@ class SBI_Fitter:
 
         self.temp_samples = samples_quant
 
+        output = {}
         if recover_SEDs:
             if not hasattr(self, "simulator"):
                 self.recreate_simulator_from_grid()
@@ -3169,7 +3185,16 @@ class SBI_Fitter:
                     extra_parameters=extra_parameters,
                 )
 
+                id = table["ID"][pos]
+                output[id] = {
+                    "wav": wav,
+                    "fnu_quantiles": fnu_quantiles,
+                    "phot_wav": phot_wav,
+                    "phot_fnu_draws": phot_fnu_draws,
+                }
+
                 plt.show(block=False)
+            return table, output
 
         return table
 
@@ -3180,12 +3205,8 @@ class SBI_Fitter:
         -----------
         data : str
             'all' to include all data, 'photometry' for only photometry,
-              'parameters' for only parameters
+            'parameters' for only parameters
 
-        Returns:
-        --------
-        pd.DataFrame
-            DataFrame with the requested data
         """
         if data == "all":
             return pd.DataFrame(
@@ -3249,6 +3270,7 @@ class SBI_Fitter:
         verbose: bool = True,
         debug_sample_acceptance: bool = False,
         extend_prior_range_pc: float = 0.0,
+        set_self: bool = False,
     ):
         """Create parameter priors.
 
@@ -3366,6 +3388,8 @@ class SBI_Fitter:
             logger.info("Processing prior...")
             param_prior, _, _ = process_prior(param_prior)
 
+        if set_self:
+            self._prior = param_prior
         return param_prior
 
     def create_restricted_priors(
@@ -3439,7 +3463,7 @@ class SBI_Fitter:
         - clip_max_norm: Maximum norm for gradient clipping.
 
         Parameters:
-        ----------
+        ------------
         - study_name: Name of the Optuna study.
         - suggested_hyperparameters: Dictionary of hyperparameters to suggest.
             Keys are hyperparameter names and values are lists of possible values.
@@ -3461,7 +3485,8 @@ class SBI_Fitter:
             or a list of directions if using multi-objective optimization.
         - timeout_minutes_trial_sampling: Timeout in minutes for each trial sampling.
             e.g. if sampling gets stuck, will prune this trial.
-        - sql_db_path: Optional path to an existing SQLite/MySQL database for Optuna.
+        - sql_db_path: Optional path to an existing MySQL database for Optuna.
+            If you don't have one set up, leave as None to create a SQLite database.
 
         """
         if not self.has_features and not self.has_simulator:
@@ -3587,8 +3612,8 @@ class SBI_Fitter:
         distribution of self.feature_array. If 'out' we check if self.feature_array is
         within the distribution of X_test.
 
-        Arguments:
-        ----------
+        Parameters:
+        ------------
         X_test : np.ndarray
             The test data to check for in-distribution or out-of-distribution.
         methods : list
@@ -3645,57 +3670,58 @@ class SBI_Fitter:
     ):
         """Test if X_test is in distribution of self.feature_array.
 
-        If direction is "in", then we check if X_test is within the
-        distribution of self.feature_array. If 'out' we check if self.feature_array is
-        within the distribution of X_test.
+        If `direction` is "in", then we check if `X_test` is within the
+        distribution of `self.feature_array`. If 'out', we check if
+        `self.feature_array` is within the distribution of `X_test`.
 
-        uses utils.detect_outliers
+        .. note::
+           This function is a wrapper for `utils.detect_outliers`.
 
         Methods available:
-            - 'robust_mahalanobis': Uses robust Mahalanobis distance to detect outliers.
-            - 'mahalanobis': Uses standard Mahalanobis distance to detect outliers.
-            - 'lof': Uses Local Outlier Factor to detect outliers.
-            - 'isolation_forest': Uses Isolation Forest to detect outliers.
-            - 'one_class_svm': Uses One-Class SVM to detect outliers.
-            - 'pca': Uses PCA to detect outliers.
-            - 'hotelling_t2': Uses Hotelling's T-squared test to detect outliers.
-            - 'kde': Uses Kernel Density Estimation to detect outliers.
+            - 'robust_mahalanobis': Uses robust Mahalanobis distance.
+            - 'mahalanobis': Uses standard Mahalanobis distance.
+            - 'lof': Uses Local Outlier Factor.
+            - 'isolation_forest': Uses Isolation Forest.
+            - 'one_class_svm': Uses One-Class SVM.
+            - 'pca': Uses PCA.
+            - 'hotelling_t2': Uses Hotelling's T-squared test.
+            - 'kde': Uses Kernel Density Estimation.
 
-        Parameters:
-        ----------
-        X_test : np.ndarray
-            The test data to check for in-distribution or out-of-distribution.
-        method : str, default='robust_mahalanobis'
-            The method to use for outlier detection. Options are listed above.
-        direction : str, default='in'
-            Direction of the test, either 'in' or 'out'.
-        contamination : float, default=0.1
-            Expected proportion of outliers (for applicable methods)
-        n_neighbors : int, default=20
-            Number of neighbors for LOF
-        threshold : float, optional
-            Manual threshold for outlier detection
-        confidence : float, default=0.95
-            Confidence level for statistical tests
-        n_components : int, optional
-            Number of components for PCA (if None, uses all)
-        plot : bool, default=True
-            Whether to plot the results of the outlier detection.
-        feature_breakdown : bool, default=False
-            If True, will analyze feature contributions to outlier scores.
-            Only works for certain methods
-            ('robust_mahalanobis', 'mahalanobis', 'euclidean').
-        **kwargs : dict
-            Additional parameters for specific methods
+        Args:
+            X_test (np.ndarray): The test data to check for in-distribution
+                or out-of-distribution.
+            method (str, optional): The method to use for outlier detection.
+                Defaults to 'robust_mahalanobis'.
+            direction (str, optional): Direction of the test. 'in' (is `X_test`
+                in `self.feature_array`?) or 'out' (is `self.feature_array`
+                in `X_test`?). Defaults to 'in'.
+            contamination (float, optional): Expected proportion of outliers
+                (for applicable methods). Defaults to 0.1.
+            n_neighbors (int, optional): Number of neighbors for LOF.
+                Defaults to 20.
+            threshold (float, optional): Manual threshold for outlier
+                detection. Defaults to None.
+            confidence (float, optional): Confidence level for statistical
+                tests. Defaults to 0.95.
+            n_components (int, optional): Number of components for PCA
+                (if None, uses all). Defaults to None.
+            plot (bool, optional): Whether to plot the results of the
+                outlier detection. Defaults to True.
+            feature_breakdown (bool, optional): If True, will analyze
+                feature contributions to outlier scores. Only works for
+                'robust_mahalanobis', 'mahalanobis', 'euclidean'.
+                Defaults to False.
+            **kwargs (Any): Additional parameters passed to the underlying
+                `detect_outliers` method.
 
         Returns:
-        --------
-        dict : Dictionary containing:
-            - 'outlier_mask': Boolean array indicating outliers
-            - 'scores': Outlier scores
-            - 'threshold_used': Threshold value used
-            - 'method_info': Additional method-specific information
+            Dict[str, Any]:
+                A dictionary containing the outlier detection results:
 
+                - 'outlier_mask' (np.ndarray): Boolean array indicating outliers.
+                - 'scores' (np.ndarray): Outlier scores for each observation.
+                - 'threshold_used' (float): The threshold value used for detection.
+                - 'method_info' (dict): Additional method-specific information.
         """
         assert self.has_features, (
             "Feature array not created. Please create the feature array first."
@@ -3820,16 +3846,18 @@ class SBI_Fitter:
             if isinstance(score, str):
                 if score == "log_prob-pit":
                     # Do the evaluation
-                    score = np.mean(self.log_prob(X_test, y_test, posterior))
+                    scoreval = np.mean(self.log_prob(X_test, y_test, posterior))
 
                     # Continue with the PIT calculation and adjust the score
                     pit = self.calculate_PIT(X_test, y_test, num_samples=5000, posteriors=posterior)
                     dpit_max = np.max(np.abs(pit - np.linspace(0, 1, len(pit))))
-                    score += -0.5 * np.log(dpit_max)
+                    scoreval += -0.5 * np.log(dpit_max)
                 elif score == "log_prob":
-                    score = np.mean(self.log_prob(X_test, y_test, posterior))
+                    scoreval = np.mean(self.log_prob(X_test, y_test, posterior))
                 elif score == "loss":
-                    score = np.mean(-self.log_prob(X_test, y_test, posterior))
+                    scoreval = np.mean(-self.log_prob(X_test, y_test, posterior))
+                elif callable(score):
+                    scoreval = score(posterior, X_test, y_test)
                 else:
                     raise ValueError(f"Unknown score type: {score}")
 
@@ -3884,7 +3912,7 @@ class SBI_Fitter:
         clip_max_norm: float = 5.0,
         training_args: dict = {},
     ) -> tuple:
-        """Trains a single Simformer model using the SBI implementation.
+        r"""Trains a single Simformer model using the SBI implementation.
 
         May need to be on this branch:
         https://github.com/sbi-dev/sbi/pull/1621/
@@ -3920,7 +3948,7 @@ class SBI_Fitter:
                 - dim_id: int = 32,
                 - dim_cond: int = 16,
                 - ada_time: bool = False,
-                - **kwargs: Any,
+                - \**kwargs: Any,
             learning_rate: Learning rate for the optimizer.
             training_batch_size: Batch size for training.
             validation_fraction: Fraction of the training set to use for validation.
@@ -3962,7 +3990,7 @@ class SBI_Fitter:
 
             if params is not None:
                 save_model = False  # Don't save the model again if we loaded it.
-        else:
+        elif os.path.exists(f"{out_dir}/{self.name}_{name_append}_simformer.pkl"):
             logger.info(
                 "Model with same name already exists. \
                 Please change the name of this model or delete the existing one."
@@ -4102,7 +4130,7 @@ class SBI_Fitter:
             if set_self:
                 self.simformer = inference
                 self.posteriors = posterior
-                self.prior = prior
+                self._prior = prior
                 self.stats = stats
                 self._X_train = X_train.cpu().numpy()
                 self._y_train = y_train.cpu().numpy()
@@ -4188,11 +4216,11 @@ class SBI_Fitter:
     def run_single_sbi(
         self,
         train_test_fraction: float = 0.8,
-        random_seed: int = None,
+        random_seed: Optional[int] = None,
         backend: str = "sbi",
         engine: Union[str, List[str]] = "NPE",
-        train_indices: np.ndarray = None,
-        test_indices: np.ndarray = None,
+        train_indices: Optional[np.ndarray] = None,
+        test_indices: Optional[np.ndarray] = None,
         n_nets: int = 1,
         model_type: Union[str, List[str]] = "mdn",
         hidden_features: Union[int, List[int]] = 50,
@@ -4210,16 +4238,16 @@ class SBI_Fitter:
         out_dir: str = f"{code_path}/models/",
         plot: bool = True,
         name_append: str = "timestamp",
-        feature_scalar=StandardScaler,
-        target_scalar=StandardScaler,
+        feature_scalar: Callable = StandardScaler,
+        target_scalar: Callable = StandardScaler,
         set_self: bool = True,
         learning_type: str = "offline",
-        simulator: callable = None,
-        num_simulations=1000,
-        num_online_rounds=5,
+        simulator: Optional[Callable] = None,
+        num_simulations: int = 1000,
+        num_online_rounds: int = 5,
         initial_training_from_grid: bool = False,
         override_prior_ranges: dict = {},
-        online_training_xobs: np.ndarray = None,
+        online_training_xobs: Optional[np.ndarray] = None,
         load_existing_model: bool = True,
         use_existing_indices: bool = True,
         evaluate_model: bool = True,
@@ -4231,75 +4259,101 @@ class SBI_Fitter:
     ) -> tuple:
         """Run a single SBI training instance.
 
-        Parameters:
-            train_test_fraction: Fraction of the dataset to be used for training.
-            random_seed: Random seed for reproducibility.
-            backend: Backend to use for training. Either 'sbi', 'lampe', or 'pydelfi'.
-              Pydelfi cannot be installed in the same environment as it requires a
-              different Python version.
-            engine: Engine to use for training. Either 'NPE', 'NLE', 'NRE
-                or the sequential variants (SNPE, SNLE, SNRE).
-            train_indices: Indices of the training set.
-            test_indices: Indices of the test set. If None, no test set is used.
-            n_nets: Number of networks to use in the ensemble.
-            model_type: Type of model to use. Can be most models supported by sbi or lampe.
-                If a list, will be an ensemble of models.
-                E.g. 'mdn', 'maf', 'nsf' etc.
-            hidden_features: Number of hidden features in the neural network.
-            num_components: Number of components in the mixture density network.
-            num_transforms: Number of transforms in the masked autoregressive flow.
-            training_batch_size: Batch size for training.
-            learning_rate: Learning rate for the optimizer.
-            validation_fraction: Fraction of the training set to use for validation.
-                    This validation is used to prevent over-fitting
-                    training is stopped if the validation loss
-                    does not improve for stop_after_epochs epochs
-                    for this fraction of the training set.
-            stop_after_epochs: Number of epochs without improvement before stopping.
-            clip_max_norm: Maximum norm for gradient clipping.
-            additional_model_args: Additional arguments to pass to the model.
-                E.g. check sbi, pydelfi config. For sbi could include num_layers,
-                use_batch_norm, activation, dropout probability, etc.
-            save_model: Whether to save the trained model.
-            verbose: Whether to print verbose output.
-            prior_method: Method to create the prior. Either 'manual' or 'ili'.
-            feature_scalar: Scaler for the features.
-            target_scalar: Scaler for the targets.
-            out_dir: Directory to save the model.
-            plot: Whether to plot the diagnostics.
-            name_append: Append to the model name.
-            set_self: Whether to set the self object with the trained model.
-            learning_type: Type of learning. Either 'offline' or 'online'.
-                If 'online', you need to provide a function which takes in model arguments
-                and returns a torch.Tensor of shape (1, *data.shape)
-            simulator: Function to simulate the data.
-                    This is only used if learning_type is 'online'.
-            num_simulations: Number of simulations to run in each call
-                            if learning_type is 'online'.
-            num_online_rounds: Number of rounds to run in online learning.
-            num_bins: Number of bins used for the splines in `nsf`. Ignored if density
-            estimator not `nsf`.
-            initial_training_from_grid: Whether to use the initial trainin
-                from the grid when learning_type is 'online'.
-                Reduces number of calls to the simulator. WARNING! BROKEN.
-            override_prior_ranges: Dictionary of prior ranges to
-                override the default ranges.
-            online_training_xobs: A single input observation
-                to condition on for online training.
-            load_existing_model: Whether to load an existing model if it exists.
-            use_existing_indices: Whether to use
-                existing train and test indices if they exist.
-            evaluate_model: Whether to evaluate the model after training.
-                Computes metrics like log probability and PIT.
-            save_method: Method to save the model. Either 'torch', 'pickle',
-                'joblib' or 'h5py'. h5py not implented for model posteriors.
-            num_posterior_draws_per_sample: Number of posterior draws per sample
-                for computing metrics and diagnostic plots from the validation set.
-            embedding_net: Optional embedding network to use for the simulator.
-                Default does not use an embedding network.
+        Args:
+            train_test_fraction (float, optional): Fraction of the dataset to be
+                used for training. Defaults to 0.8.
+            random_seed (int, optional): Random seed for reproducibility.
+                Defaults to None.
+            backend (str, optional): Backend to use for training ('sbi', 'lampe',
+                or 'pydelfi'). Pydelfi cannot be installed in the same
+                environment. Defaults to "sbi".
+            engine (Union[str, List[str]], optional): Engine to use ('NPE',
+                'NLE', 'NRE' or sequential variants). Defaults to "NPE".
+            train_indices (np.ndarray, optional): Indices of the training set.
+                Defaults to None.
+            test_indices (np.ndarray, optional): Indices of the test set. If None,
+                no test set is used. Defaults to None.
+            n_nets (int, optional): Number of networks to use in the ensemble.
+                Defaults to 1.
+            model_type (Union[str, List[str]], optional): Type of model (e.g.,
+                'mdn', 'maf', 'nsf'). If a list, an ensemble is used.
+                Defaults to "mdn".
+            hidden_features (Union[int, List[int]], optional): Number of hidden
+                features in the neural network. Defaults to 50.
+            num_components (Union[int, List[int]], optional): Number of components
+                in the mixture density network. Defaults to 4.
+            num_transforms (Union[int, List[int]], optional): Number of transforms
+                in the masked autoregressive flow. Defaults to 4.
+            training_batch_size (int, optional): Batch size for training.
+                Defaults to 64.
+            learning_rate (float, optional): Learning rate for the optimizer.
+                Defaults to 1e-4.
+            validation_fraction (float, optional): Fraction of training set for
+                validation to prevent over-fitting. Training stops if
+                validation loss doesn't improve for `stop_after_epochs`.
+                Defaults to 0.2.
+            stop_after_epochs (int, optional): Epochs without improvement
+                before stopping. Defaults to 15.
+            clip_max_norm (float, optional): Maximum norm for gradient clipping.
+                Defaults to 5.0.
+            additional_model_args (dict, optional): Additional arguments for
+                the model (e.g., num_layers, use_batch_norm). Defaults to {}.
+            save_model (bool, optional): Whether to save the trained model.
+                Defaults to True.
+            verbose (bool, optional): Whether to print verbose output.
+                Defaults to True.
+            prior_method (str, optional): Method to create the prior
+                ('manual' or 'ili'). Defaults to "ili".
+            feature_scalar (Callable, optional): Scaler class for the features.
+                Defaults to StandardScaler.
+            target_scalar (Callable, optional): Scaler class for the targets.
+                Defaults to StandardScaler.
+            out_dir (str, optional): Directory to save the model. Defaults to
+                f"{code_path}/models/".
+            plot (bool, optional): Whether to plot the diagnostics.
+                Defaults to True.
+            name_append (str, optional): String to append to the model name.
+                Defaults to "timestamp".
+            set_self (bool, optional): Whether to set instance attributes with
+                the trained model. Defaults to True.
+            learning_type (str, optional): Type of learning ('offline' or
+                'online'). If 'online', a simulator must be provided.
+                Defaults to "offline".
+            simulator (Callable, optional): Function to simulate data for
+                'online' learning. Defaults to None.
+            num_simulations (int, optional): Number of simulations to run in
+                each call during 'online' learning. Defaults to 1000.
+            num_online_rounds (int, optional): Number of rounds for 'online'
+                learning. Defaults to 5.
+            initial_training_from_grid (bool, optional): Whether to use the
+                initial training from the grid in 'online' learning.
+                WARNING: This is broken. Defaults to False.
+            override_prior_ranges (dict, optional): Dictionary of prior ranges
+                to override the defaults. Defaults to {}.
+            online_training_xobs (np.ndarray, optional): A single input
+                observation to condition on for 'online' training.
+                Defaults to None.
+            load_existing_model (bool, optional): Whether to load an existing
+                model if it exists. Defaults to True.
+            use_existing_indices (bool, optional): Whether to use existing
+                train/test indices if they exist. Defaults to True.
+            evaluate_model (bool, optional): Whether to evaluate the model
+                after training (computes log prob, PIT). Defaults to True.
+            save_method (str, optional): Method to save the model ('torch',
+                'pickle', 'joblib', or 'h5py'). Defaults to "joblib".
+            num_posterior_draws_per_sample (int, optional): Number of posterior
+                draws for metrics and plots. Defaults to 1000.
+            embedding_net (Optional[torch.nn.Module], optional): Optional
+                embedding network for the simulator.
+                Defaults to torch.nn.Identity().
+            custom_config_yaml (Optional[str], optional): Path to a custom YAML
+                config file to override settings. Defaults to None.
+            sql_db_path (Optional[str], optional): Path to an SQL database for
+                logging or results. Defaults to None.
 
         Returns:
-            A tuple containing the posterior distribution and training statistics.
+            tuple: A tuple containing the trained posterior distribution
+            and a dictionary of training statistics.
         """
         assert learning_type in [
             "offline",
@@ -4538,7 +4592,7 @@ class SBI_Fitter:
                 loader = SBISimulator(
                     in_dir=f"{out_dir}/online/",
                     xobs_file="xobs.npy",
-                    thetafid_file="thetafid.npy",
+                    thetafid_file="thetafid.npy" if online_training_xobs is None else None,
                     num_simulations=num_simulations,
                     save_simulated=True,
                     x_file="x.npy",  # if initial_training_from_grid else None,
@@ -4646,8 +4700,6 @@ class SBI_Fitter:
                 extra_args = {}
             else:
                 from .custom_runner import SBICustomRunner
-
-                print(embedding_net)
 
                 trainer = SBICustomRunner(
                     engine=engine,
@@ -4883,7 +4935,6 @@ class SBI_Fitter:
             )
             for key, value in model_args.items():
                 logger.info(f"     {key}: {value}")
-        print(embedding_net)
         return net(
             engine=engine,
             model=model_type,
@@ -4902,6 +4953,7 @@ class SBI_Fitter:
         min_flux_pc_error: float = 0.0,
         interpolate_grid: bool = False,
         time_loglikelihood: bool = False,
+        override_prior_distributions: dict = {},
         out_dir: str = f"{code_path}/models/name/nested_logs/",
         sampler_kwargs: dict = dict(
             nlive=500, bound="multi", sample="rwalk", update_interval=0.6, walks=25
@@ -4922,6 +4974,10 @@ class SBI_Fitter:
                 to the observation errors.
                 Either min_flux_error or min_flux_pc_error can be used, not both.
             interpolate_grid: Whether to recreate the simulator using interpolation.
+            override_prior_distributions: Dictionary of prior distributions to
+                override the default prior distributions. Needs to transform the
+                unit cube to the parameter space. If multiple parameters are to be
+                overridden by the same function, provide a list of parameter names as the key.
             sampler_kwargs: Additional keyword arguments to pass to the sampler.
             out_dir: directory for outputs.
             time_loglikelihood: whether to print execution times for log likelhood calls.
@@ -5029,10 +5085,6 @@ class SBI_Fitter:
         low = prior.base_dist.low.cpu().numpy()
         high = prior.base_dist.high.cpu().numpy()
 
-        def sampling_prior(u):
-            """Transform from the unit cube to the prior."""
-            return low + (high - low) * u
-
         if interpolate_grid:
             from scipy.spatial import cKDTree
 
@@ -5110,7 +5162,13 @@ class SBI_Fitter:
         # Drop dimensions which are't constrained.
         test_params = {i: j for i, j in zip(self.fitted_parameter_names, 0.5 * (low + high))}
         test_params.update(pass_in_observables)
-        self.simulator(test_params)
+        try:
+            self.simulator(test_params)
+        except Exception as e:
+            raise RuntimeError(f"Error testing simulator with mid prior parameters: {e}")
+
+        if remove_params is None:
+            remove_params = []
 
         idx_to_drop = np.ones(len(self.fitted_parameter_names), dtype=bool)
         for param in self.fitted_parameter_names:
@@ -5130,6 +5188,43 @@ class SBI_Fitter:
             low = low[idx_to_drop]
             high = high[idx_to_drop]
 
+            fitted_parameter_names = self.fitted_parameter_names[idx_to_drop]
+        else:
+            fitted_parameter_names = self.fitted_parameter_names
+
+        print("Fitting parameters:", fitted_parameter_names)
+
+        def sampling_prior(u):
+            """Transform from the unit cube to the prior."""
+            output = low + (high - low) * u
+            for key, dist_func in override_prior_distributions.items():
+                if isinstance(key, str):
+                    if key in fitted_parameter_names:
+                        index = list(fitted_parameter_names).index(key)
+                        if isinstance(dist_func, tuple):
+                            dist_func, extra_args = dist_func
+                            output[index] = dist_func(u[index], **extra_args)
+                        else:
+                            output[index] = dist_func(u[index])
+                elif isinstance(key, (list, tuple)):
+                    indexes = []
+                    temp = []
+                    for param in key:
+                        index = list(fitted_parameter_names).index(param)
+                        indexes.append(index)
+                        temp.append(output[index])
+                    if isinstance(dist_func, tuple):
+                        dist_func, extra_args = dist_func
+                        transformed = dist_func(temp, **extra_args)
+                    else:
+                        transformed = dist_func(temp)
+                    for i, index in enumerate(indexes):
+                        output[index] = transformed[i]
+                else:
+                    raise ValueError("Keys in override_prior_distributions must be str or list.")
+
+            return output
+
         def log_likelihood(theta):
             """Calculate the log likelihood of the observation given the parameters."""
             if time_loglikelihood:
@@ -5140,7 +5235,7 @@ class SBI_Fitter:
                 }
             theta.update(pass_in_observables)
             sim = self.simulator(theta)
-            # Assuming Gaussian errors with sigma=1 for simplicity
+
             if phot_err is not None and len(phot_err) == len(phot_obs):
                 chi2 = np.sum(((phot_obs - sim) / phot_err) ** 2)
             else:
@@ -5281,7 +5376,9 @@ class SBI_Fitter:
         else:
             raise ValueError("Sampler must be either 'dynesty', 'ultranest' or 'nautilus'.")
 
-    def recreate_simulator_from_grid(self, set_self=True, overwrite=False, **kwargs):
+    def recreate_simulator_from_grid(
+        self, set_self=True, overwrite=False, override_grid_path=None, **kwargs
+    ):
         """Recreate the simulator from the HDF5 grid.
 
         Simple grids (single SFH, ZDist, one basis)
@@ -5299,7 +5396,10 @@ class SBI_Fitter:
 
         """
         # grid path
-        grid_path = self.grid_path
+        if override_grid_path is not None:
+            grid_path = override_grid_path
+        else:
+            grid_path = self.grid_path
 
         if self.has_simulator and not overwrite:
             return self.simulator
@@ -5403,6 +5503,7 @@ class SBI_Fitter:
         plot_sfh=True,
         plot_histograms=True,
         kde=True,
+        save_plots=True,
         fig=None,
         ax=None,
         ax_sfh=None,
@@ -5432,6 +5533,15 @@ class SBI_Fitter:
                 to plot closest draws. E.g. if you want to plot the closest draw
                 for a specific redshift, or mass, to see degeneracies in the posteriors.
             plot_sfh: Whether to plot the SFH in addition to the SED.
+            plot_histograms: Whether to plot histograms of the parameters.
+            kde: Whether to use KDE for the histograms.
+            save_plots: Whether to save the plots.
+            fig: Matplotlib figure to use for the SED plot.
+            ax: Matplotlib axis to use for the SED plot.
+            ax_sfh: Matplotlib axis to use for the SFH plot.
+
+        Returns:
+            fnu_quantiles: The quantiles of the recovered SED.
 
         """
         import astropy.units as u
@@ -5480,7 +5590,7 @@ class SBI_Fitter:
         wav_draws = []
         sfh = []
         counter = 0
-        if isinstance(simulator, GalaxySimulator):
+        if isinstance(simulator, GalaxySimulator) or True:  # This is broken somehow??
             simulator.output_type = ["photo_fnu", "fnu", "sfh"]
             simulator.out_flux_unit = "nJy"
             for i in trange(num_samples, desc="Running simulator on samples"):
@@ -6006,11 +6116,13 @@ class SBI_Fitter:
             if plot_name is None:
                 plot_name = f"{self.name}_SED_{self._timestamp}.png"
             # plt.show(block=False)
-            if fig is not None:
+            if fig is not None and save_plots:
                 logger.info(f"Saving SED plot to {plots_dir}/{plot_name}")
                 if not os.path.exists(plots_dir):
                     os.makedirs(plots_dir)
                 fig.savefig(os.path.join(plots_dir, plot_name), dpi=200)
+            if not save_plots:
+                plt.show(block=False)
 
         else:
             fig = None
@@ -6070,9 +6182,14 @@ class SBI_Fitter:
         X_test_array = np.asarray(X_test)  # Ensure it's a numpy array
         X_test_array = torch.as_tensor(X_test_array, device=self.device)
         # Handle single sample case
+        single = False
         if X_test_array.ndim == 1 or (X_test_array.ndim == 2 and X_test_array.shape[0] == 1):
-            print("Single sample inference.")
-            return sample_with_timeout(sampler, num_samples, X_test_array, timeout_seconds_per_test)
+            # Just ensure shape is correct
+            X_test_array = torch.unsqueeze(X_test_array, 0)
+            single = True
+            # print("Single sample inference.")
+            # return sample_with_timeout(sampler, num_samples, X_test_array,
+            #                                   timeout_seconds_per_test)
 
         # ISSUE! sample_batched seems to be much slower than sampling one by one!
         """
@@ -6133,6 +6250,9 @@ class SBI_Fitter:
                 f"16th-84th: {np.percentile(times, 16):.5f}-{np.percentile(times, 84):.5f}s."
             )
 
+        if single:
+            samples = np.squeeze(samples, 0)
+
         return samples
 
     def evaluate_model(
@@ -6148,53 +6268,57 @@ class SBI_Fitter:
     ) -> dict:
         """Evaluate the trained model on test data.
 
-        Metrics:
-        - mse - Mean Squared Error - Lower values indicate better fit.
-            Average of the squared differences between predicted and actual values.
-        - rmse - Root Mean Squared Error - Lower values indicate better fit.
-            Square root of the mean squared error.
-            Provides error in the same units as the target variable.
-        - mae - Mean Absolute Error - Lower values indicate better fit.
-            Average of the absolute differences between predicted and actual values.
-            Less sensitive to outliers than MSE.
-        - median_ae - Median Absolute Error - Lower values indicate better fit.
-            Median of the absolute differences between predicted and actual values.
-            Robust to outliers, providing a better measure of central tendency
-            in the presence of noise.
-        - r_squared - Coefficient of Determination - Value of 1 indicates perfect fit.
-            Proportion of variance in the target variable that can be explained by the model.
-        - rmse_norm - Normalized RMSE - Lower values indicate better fit.
-            RMSE divided by the range of the target variable.
-        - mae_norm - Normalized MAE - Lower values indicate better fit.
-            MAE divided by the range of the target variable.
-        - tarp - Tests of Accuracy with Random Points (TARP) - Lower values indicate better fit.
-            Probability that the model's predictions fall within a certain range of the true values.
-        - log_dpit_max - Lower values indicate better fit.
-             Logarithm of the maximum distance between the predicted and true values
-        - mean_log_prob -
-         Mean log probability of the predictions given the true values.
+        .. note::
+            The following metrics are calculated:
 
-        TODO: Split per model for ensemble models.
+            - **mse**: Mean Squared Error (Lower is better).
+              Average of squared differences between predicted and actual values.
+            - **rmse**: Root Mean Squared Error (Lower is better).
+              Square root of MSE, in the same units as the target.
+            - **mae**: Mean Absolute Error (Lower is better).
+              Average of absolute differences, less sensitive to outliers.
+            - **median_ae**: Median Absolute Error (Lower is better).
+              Median of absolute differences, robust to outliers.
+            - **r_squared**: Coefficient of Determination (1 is perfect).
+              Proportion of variance in the target explained by the model.
+            - **rmse_norm**: Normalized RMSE (Lower is better).
+              RMSE divided by the range of the target variable.
+            - **mae_norm**: Normalized MAE (Lower is better).
+              MAE divided by the range of the target variable.
+            - **tarp**: Tests of Accuracy with Random Points (Lower is better).
+              Probability of predictions falling within a range of true values.
+            - **log_dpit_max**: (Lower is better).
+              Log of the max distance between predicted and true values.
+            - **mean_log_prob**: Mean log probability of the predictions given
+              the true values.
 
-        Parameters:
-            X_test: Test feature array.
-            y_test: Test target array.
-            X_scaler: Scaler for the features (if used).
-            y_scaler: Scaler for the targets (if used).
-            num_samples: Number of samples to draw from the posterior.
-            verbose: Whether to print verbose output.
-            posteriors: List of posterior distributions. If None, will use the stored
-                posteriors.
-            samples: Precomputed samples from the posterior. If None, will draw samples
-                from the posterior using the `sample_posterior` method.
-            independent_metrics: If True, calculate metrics independently for each parameter.
-            return_samples: If True, return the samples used for evaluation.
+        Args:
+            X_test (np.ndarray): Test feature array.
+            y_test (np.ndarray): Test target array.
+            X_scaler (StandardScaler, optional): Scaler for the features (if used).
+                Defaults to None.
+            y_scaler (StandardScaler, optional): Scaler for the targets (if used).
+                Defaults to None.
+            num_samples (int, optional): Number of samples to draw from the
+                posterior. Defaults to 1000.
+            verbose (bool, optional): Whether to print verbose output.
+                Defaults to True.
+            posteriors (List[Any], optional): List of posterior distributions.
+                If None, will use the stored posteriors. Defaults to None.
+            samples (np.ndarray, optional): Precomputed samples from the
+                posterior. If None, will draw new samples. Defaults to None.
+            independent_metrics (bool, optional): If True, calculate metrics
+                independently for each parameter. Defaults to True.
+            return_samples (bool, optional): If True, return the samples
+                used for evaluation. Defaults to False.
 
         Raises:
             ValueError: If posteriors or test data are not provided.
 
         Returns:
-            A dictionary of evaluation metrics.
+            Union[Dict[str, Any], Tuple[Dict[str, Any], np.ndarray]]:
+                A dictionary of evaluation metrics. If `return_samples` is True,
+                returns a tuple of (metrics_dict, samples_array).
         """
         if posteriors is None:
             if hasattr(self, "posteriors"):
@@ -6399,19 +6523,24 @@ class SBI_Fitter:
     ) -> None:
         """Plot the diagnostics of the SBI model.
 
-        Parameters:
-            X_train: Training feature array.
-            y_train: Training target array.
-            X_test: Test feature array.
-            y_test: Test target array.
-            stats: List of statistics to plot. If None, will use self.stats.
-            plots_dir: Directory to save the plots.
-            sample_method: Method to use for sampling. Options are 'direct', 'emcee',
-                'pyro', or 'vi'.
-            posteriors: List of posterior distributions. If None, will use self.posteriors
-            online: If True, will not plot the posterior and coverage.
-            num_samples: Number of samples to draw from the posterior for plotting for
-            each test sample. Samples will be saved in the plots_dir.
+        Args:
+            X_train (np.ndarray): Training feature array.
+            y_train (np.ndarray): Training target array.
+            X_test (np.ndarray): Test feature array.
+            y_test (np.ndarray): Test target array.
+            stats (Optional[List[str]], optional): List of statistics to plot.
+                If None, will use `self.stats`. Defaults to None.
+            plots_dir (str, optional): Directory to save the plots.
+            sample_method (str, optional): Method to use for sampling.
+                Options are 'direct', 'emcee', 'pyro', or 'vi'.
+                Defaults to 'direct'.
+            posteriors (Optional[List[Any]], optional): List of posterior distributions.
+                If None, will use `self.posteriors`. Defaults to None.
+            online (bool, optional): If True, will not plot the posterior
+                and coverage. Defaults to False.
+            num_samples (int, optional): Number of samples to draw from the
+                posterior for plotting for each test sample. Samples will
+                be saved in the plots_dir. Defaults to 1000.
         """
         plots_dir = plots_dir.replace("name", self.name)
         if not os.path.exists(plots_dir):
@@ -6489,6 +6618,8 @@ class SBI_Fitter:
         for i, m in enumerate(summaries):
             tlp = m.get("training_log_probs", None)
             if tlp is None:
+                if "training_loss" not in m:
+                    continue
                 tlp = -1.0 * np.array(m["training_loss"])
 
             vlp = m.get("validation_log_probs", None)
@@ -7020,7 +7151,7 @@ class SBI_Fitter:
         """Validation set log-probability of each epoch for each net.
 
         Returns:
-        -------
+        ---------
         list of 1-dimensional arrays
         """
         if self.stats is None:
@@ -7033,7 +7164,7 @@ class SBI_Fitter:
         """Training set log-probability of each epoch for each net.
 
         Returns:
-        -------
+        ---------
         list of 1-dimensional array
         """
         if self.stats is None:
@@ -7050,7 +7181,7 @@ class SBI_Fitter:
         """Load the model from a pickle file.
 
         Parameters
-        ----------
+        -----------
         model_file : str
             Path to the model file. Can be a directory or a file.
         set_self : bool, optional
@@ -7061,7 +7192,7 @@ class SBI_Fitter:
             Default is True.
 
         Returns:
-        -------
+        ---------
         posteriors : list
             List of posteriors loaded from the model file.
         stats : dict
@@ -7234,11 +7365,13 @@ class SBI_Fitter:
                         if "train_fraction" in params:
                             self._train_fraction = params["train_fraction"]
                         if hasattr(self, "_train_indices") and hasattr(self, "_test_indices"):
-                            self._X_test = self.feature_array[self._test_indices]
-                            self._y_test = self.fitted_parameter_array[self._test_indices]
-                            self._X_train = self.feature_array[self._train_indices]
-                            self._y_train = self.fitted_parameter_array[self._train_indices]
-
+                            try:
+                                self._X_test = self.feature_array[self._test_indices]
+                                self._y_test = self.fitted_parameter_array[self._test_indices]
+                                self._X_train = self.feature_array[self._train_indices]
+                                self._y_train = self.fitted_parameter_array[self._train_indices]
+                            except IndexError:
+                                logger.warning("IndexError when trying to set train/test arrays. ")
                             self._X_test = np.squeeze(self._X_test)
                             self._y_test = np.squeeze(self._y_test)
                             self._X_train = np.squeeze(self._X_train)
@@ -7598,10 +7731,6 @@ class MissingPhotometryHandler:
         synference : object
             Fitted SBI model object
 
-        Returns:
-        --------
-        MissingPhotometryHandler
-            Instance of the handler
         """
         feature_array_flags = getattr(synference, "feature_array_flags", None)
         uncertainty_models = None
@@ -7710,78 +7839,65 @@ class Simformer_Fitter(SBI_Fitter):
         backend: str = "jax",
         num_training_simulations: int = 10_000,
         train_test_fraction: float = 0.9,
-        random_seed=42,
+        random_seed: int = 42,
         set_self: bool = True,
         verbose: bool = True,
         load_existing_model: bool = True,
         name_append: str = "timestamp",
         save_method: str = "joblib",
-        task_func: Callable = None,
-        model_config_dict_overrides: dict = None,
-        train_config_dict_overrides: dict = None,
-        sde_config_dict_overrides: dict = None,
+        task_func: Optional[Callable] = None,
+        model_config_dict_overrides: Optional[Dict[str, Any]] = None,
+        sde_config_dict: Optional[Dict[str, Any]] = None,
+        train_config_dict_overrides: Optional[Dict[str, Any]] = None,
+        sde_config_dict_overrides: Optional[Dict[str, Any]] = None,
         attention_mask_type: str = "full",
         evaluate_model: bool = True,
     ):
         """Train a Simformer model using the provided configurations.
 
-        This method sets up the Simformer task, prepares the data,
-        and trains the model using the specified configurations,
-        and saves the trained model to a pickle file.
+        This method sets up the Simformer task, prepares the data, trains
+        the model using the specified configurations, and saves the trained
+        model to a pickle file.
 
-        Parameters:
-        ----------
+        Args:
+            backend (str, optional): Backend to use for training ('jax' or 'torch').
+                Defaults to "jax".
+            num_training_simulations (int, optional): Number of training simulations
+                to generate. Only used if `has_simulator` is True, otherwise
+                the `feature_array` is used. Defaults to 10,000.
+            train_test_fraction (float, optional): Fraction of samples to use for
+                training. Defaults to 0.9.
+            random_seed (int, optional): Random seed for reproducibility.
+                Defaults to 42.
+            set_self (bool, optional): If True, sets the trained model and task
+                to the instance attributes. Defaults to True.
+            verbose (bool, optional): If True, prints progress information
+                during training. Defaults to True.
+            load_existing_model (bool, optional): If True, loads an existing
+                model from a pickle file if it exists. Defaults to True.
+            name_append (str, optional): String to append to the model name in
+                the output file. Defaults to "timestamp".
+            save_method (str, optional): Method to use for saving the model
+                (e.g., 'torch', 'pickle'). Defaults to "joblib".
+            task_func (Callable, optional): Function to create the task. If None,
+                uses the default `GalaxyPhotometryTask`. Defaults to None.
+            model_config_dict_overrides (dict, optional): Dictionary to override
+                the default model configuration. Defaults to None.
+            sde_config_dict (dict, optional): Dictionary to override configs
+                for the SDE. Defaults to a pre-defined VPSDE configuration.
+            train_config_dict_overrides (dict, optional): Dictionary to override the
+                training configuration. Defaults to a pre-defined configuration.
+            sde_config_dict_overrides (dict, optional): Dictionary to override
+                the SDE configuration. Defaults to None.
+            attention_mask_type (str, optional): Type of attention mask to use
+                ('full', 'causal', or 'none'). Defaults to "full".
+            evaluate_model (bool, optional): If True, evaluates the trained
+                model on the validation set and prints metrics. Defaults to True.
 
-        backend : str, optional
-            Backend to use for training. Default is "jax".
-            Options are 'jax' and 'torch'.
-        num_training_simulations : int, optional
-            Number of training simulations to generate. Default is 10,000.
-            Only used if `has_simulator` is True, otherwise
-            the `feature_array` is used.
-        train_test_fraction : float, optional
-            Fraction of samples to use for training.
-            Default is 0.9.
-        random_seed : int, optional
-            Random seed for reproducibility. Default is 42.
-        set_self : bool, optional
-            If True, sets the trained model and task to the instance attributes.
-            Default is True.
-        verbose : bool, optional
-            If True, prints progress information during training.
-            Default is True.
-        load_existing_model : bool, optional
-            If True, loads an existing model from a pickle file if it exists.
-            Default is True.
-        name_append : str, optional
-            String to append to the model name in the output file.
-            Default is "timestamp", which appends the current timestamp.
-        save_method : str, optional
-            Method to use for saving the model. Default is "joblib".
-            Options are 'torch' and 'pickle'.
-        task_func : Callable, optional
-            Function to create the task. If None, uses the default
-            `GalaxyPhotometryTask` from `simformer`.
-        model_config_dict_overrides : dict, optional
-            Dictionary to override the default model configuration.
-            Default is None, which uses the pre-defined configuration.
-        sde_config_dict : dict, optional
-            Dictionary to override configs for the SDE (Stochastic Differential Equation).
-            Default is a pre-defined configuration for VPSDE.
-        train_config_dict : dict, optional
-            Dictionary to override the training configuration.
-            Default is a pre-defined configuration for training.
-        attention_mask_type : str, optional
-            Type of attention mask to use. Default is "full".
-            Options are 'full', 'causal', and 'none'.
-        evaluate_model : bool, optional
-            If True, evaluates the trained model on the validation set
-            and prints metrics. Default is True.
 
-        Todo:
-        - Add support for constraint functions during sampling to allow intervals.
-        - e.g. from scoresbibm.methods.guidance import generalized_guidance, get_constraint_fn
-
+        - Add support for constraint functions during sampling to allow intervals
+            (e.g., from `scoresbibm.methods.guidance` import
+            `generalized_guidance`, `get_constraint_fn`).
         """
         from omegaconf import OmegaConf
         from scoresbibm.methods.score_transformer import train_transformer_model
@@ -7990,6 +8106,7 @@ class Simformer_Fitter(SBI_Fitter):
         """Load a Simformer model from a pickle file.
 
         Parameters:
+        -----------
         model_dir : str
             Directory where the model file is located.
         model_name : str, optional
@@ -8045,6 +8162,7 @@ class Simformer_Fitter(SBI_Fitter):
         """Save the Simformer model to a pickle file.
 
         Parameters:
+        *************
         task : object, optional
             Task object containing the model and data.
             If None, uses the simformer_task attribute of the object.
@@ -8162,33 +8280,33 @@ class Simformer_Fitter(SBI_Fitter):
     ):
         """Plot diagnostics for the Simformer model.
 
-        Arguments:
-        ----------
-        X_test : np.ndarray, optional
-            Test data to evaluate the model. If None, uses the X_test attribute of the object.
-        y_test : np.ndarray, optional
-            True values for the test data. If None, uses the y_test attribute of the object.
-        num_samples : int, optional
-            Number of samples to draw from the posterior. Default is 1000.
-        num_evaluations : int, optional
-            Number of evaluations to perform for coverage. Default is 25.
-        task : object, optional
-            Task object containing the model and data.
-            If None, uses the simformer_task attribute of the object.
-        posteriors : object, optional
-            Posteriors to use for sampling. If None, uses the posteriors stored in the object.
-        rng_seed : int, optional
-            Random seed for reproducibility. Default is 42.
-        plots_dir : str, optional
-            Directory to save the plots. Default is f"{code_path}/models/{name}/plots/".
-        metric_path : str, optional
-            Path to save the metrics JSON file. Default is f"{code_path}/models/{name
-        }/{name}_metrics.json".
-        overwrite : bool, optional
-            If True, overwrites existing plots and metrics. Default is False.
+        Args:
+            X_test (np.ndarray, optional): Test data to evaluate the model.
+                If None, uses the `X_test` attribute. Defaults to None.
+            y_test (np.ndarray, optional): True values for the test data.
+                If None, uses the `y_test` attribute. Defaults to None.
+            num_samples (int, optional): Number of samples to draw from the
+                posterior. Defaults to 1000.
+            num_evaluations (int, optional): Number of evaluations to perform
+                for coverage. Defaults to 25.
+            task (object, optional): Task object containing the model and data.
+                If None, uses the `simformer_task` attribute. Defaults to None.
+            posteriors (object, optional): Posteriors to use for sampling.
+                If None, uses the posteriors stored in the object.
+                Defaults to None.
+            rng_seed (int, optional): Random seed for reproducibility.
+                Defaults to 42.
+            plots_dir (str, optional): Directory to save the plots.
+                Defaults to f"{code_path}/models/{name}/plots/".
+            metric_path (str, optional): Path to save the metrics JSON file.
+                Defaults to f"{code_path}/models/{name}/{name}_metrics.json".
+            overwrite (bool, optional): If True, overwrites existing plots
+                and metrics. Defaults to False.
 
         Returns:
-        None
+            None:
+                This function saves plots and metrics to disk and does not
+                return anything.
         """
         if task is None:
             task = self.simformer_task
@@ -8264,7 +8382,8 @@ class Simformer_Fitter(SBI_Fitter):
     ):
         """Plot the accuracy of the sampled posterior distribution.
 
-        Arguments:
+        Parameters:
+        ------------
         num_samples : int, optional
             Number of samples to draw from the posterior. Default is 1000.
         X_test : np.ndarray, optional
@@ -8366,7 +8485,8 @@ class Simformer_Fitter(SBI_Fitter):
     ):
         """Plot the coverage of the posterior distribution.
 
-        Arguments:
+        Parameters:
+        ------------
         num_samples : int, optional
             Number of samples to draw from the posterior. Default is 1000.
         num_evaluations : int, optional
@@ -8593,20 +8713,22 @@ class Simformer_Fitter(SBI_Fitter):
         else:
             return theta_samples"""
 
-    def create_priors(self, override_prior_ranges: dict = {}, verbose: bool = True):
+    def create_priors(
+        self, override_prior_ranges: dict = {}, verbose: bool = True, set_self: bool = False
+    ):
         """Create priors for the Simformer model.
 
-        Arguments:
+        Parameters:
+        -----------
         override_prior_ranges : dict, optional
             Dictionary to override the default prior ranges.
             Default is an empty dictionary.
         verbose : bool, optional
             If True, prints information about the prior creation.
             Default is True.
+        set_self : bool, optional
+            If True, sets the created prior to the instance attribute.
 
-        Returns:
-        GalaxyPrior
-            An instance of GalaxyPrior with the specified prior ranges.
         """
         from .simformer import GalaxyPrior
 
@@ -8626,6 +8748,9 @@ class Simformer_Fitter(SBI_Fitter):
             prior_ranges[name] = (low, high)
 
         prior = GalaxyPrior(prior_ranges, self.fitted_parameter_names)
+
+        if set_self:
+            self._prior = prior
 
         return prior
 
