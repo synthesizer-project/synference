@@ -4,13 +4,13 @@
 [![License: GPLv3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 <center>
 
-<img src="docs/source/gfx/sbi-logo-cropped-no-bkg.png" alt="logo" width="100"/><h1>synference</h1>
+<img src="docs/source/gfx/synference_logo.png" alt="logo" width="100"/><h1>synference</h1>
 
 </center>
 
 ### Overview
 
-synference is a Python package designed to fit to perform simulation-based inference (SBI, also known as likelihood free inference) SED fitting. It integrates with [Synthesizer](https://synthesizer-project.github.io) for flexible and fast generation of mock spectra and photometry,
+Synference is a Python package designed to fit to perform simulation-based inference (SBI, also known as likelihood free inference) SED fitting. It integrates with [Synthesizer](https://synthesizer-project.github.io) for flexible and fast generation of mock spectra and photometry,
 and uses the [LtU-ILI](https://ltu-ili.readthedocs.io/) package for fast, amortised posterior inference.
 
 ### Key Features
