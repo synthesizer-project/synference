@@ -2583,7 +2583,8 @@ def cumsum_dirichlet_prior_transform(unit_cube, alpha):
     ... )
 
     >>> # Equivalent to:
-    >>> # txs = np.cumsum(np.random.dirichlet(np.ones(N+1)*alpha))[:-1]
+    >>> # txs = np.cumsum(np.random.dirichlet(np.ones(N+1)*alpha)i)[:-1]
+    
     """
     unit_cube = np.asarray(unit_cube)
     N = len(unit_cube)  # Number of breakpoints (Dirichlet has N+1 components)
