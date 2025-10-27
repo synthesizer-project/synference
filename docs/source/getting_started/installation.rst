@@ -2,7 +2,7 @@ Installation
 ************
 
 
-Creating a python environment
+Creating a Python Environment
 #############################
 
 For best results, we recommend installing Synference in a virtual environment. You can use `venv <https://docs.python.org/3/library/venv.html>`_ or `conda <https://docs.conda.io/projects/conda/en/latest/user-guide/tasks/manage-environments.html>`_ to create a virtual environment.
@@ -15,7 +15,7 @@ Synference requires Python 3.10 or higher. It is recommended to use the latest s
     source /path_to_new_virtual_environment/bin/activate
 
 
-Installing from PyPI (recommended)
+Installing from PyPI (Recommended)
 ##################################
 
 To install Synference, you can use pip (not yet!):
@@ -25,7 +25,7 @@ To install Synference, you can use pip (not yet!):
    pip install synference
 
 
-Installing from source 
+Installing from Source 
 ###################### 
 
 Alternatively, you can clone the repository and install it manually:
@@ -40,7 +40,7 @@ This will install Synference in editable mode, allowing you to make changes to t
 
 
 
-Optional dependencies
+Optional Dependencies
 ##################### 
 
 Synference provides several optional dependency groups to cater to different use cases. These groups can be installed directly from PyPI using the following syntax:
