@@ -4,7 +4,7 @@ Getting Help & Contributing
 Help
 ~~~~
 
-If you wish to report an issue or get help with synference, please `raise an issue <https://github.com/synthesizer-project/synference/issues>`_ on Github.
+If you wish to report an issue or get help with Synference, please `raise an issue <https://github.com/synthesizer-project/synference/issues>`_ on Github.
 
 Contributing
 ~~~~~~~~~~~~
@@ -15,7 +15,7 @@ The GitHub workflow will automatically run `Ruff <https://github.com/astral-sh/r
 Settting up your development environment
 ----------------------------------------
 
-To begin developing in Synthesizer first set up a new environment.
+To begin developing Synference, first set up a new environment.
 
 .. code-block:: bash
 
