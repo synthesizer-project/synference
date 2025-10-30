@@ -5,5 +5,5 @@ Posterior Inference
    :maxdepth: 2
 
    using_your_model
-   catalogue_fitting
    sed_recovery
+   catalogue_fitting
