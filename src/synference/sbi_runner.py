@@ -2903,10 +2903,10 @@ class SBI_Fitter:
 
         # Check length of feature array matches e.g. self._X_test
 
-        if self._X_test is not None and feature_array.shape[1] != self._X_test.shape[1]:
+        if self._X_test is not None and feature_array.shape[1] != len(self.feature_names):
             raise ValueError(
                 f"""Feature array samples have {feature_array.shape[1]} features,
-                but the model was trained on {self._X_test.shape[1]} features."""
+                but the model was trained on {len(self.feature_names)} features."""
             )
 
         if check_out_of_distribution:
@@ -2916,9 +2916,14 @@ class SBI_Fitter:
             outliers = self.test_in_distribution_pyod(
                 feature_array, direction="in", methods=outlier_methods, contamination=0.01
             )
+            if np.any(outliers):
+                logger.warning(f"{np.sum(outliers)} outlier(s) detected in the observational data.")
 
-            obs_mask[outliers] = True
+                temp = np.zeros(len(observations), dtype=bool)
+                temp[~obs_mask] |= outliers
+                temp[obs_mask] = True
 
+                obs_mask = temp
         if return_feature_array:
             # If return_feature_array is True, return the feature array and the mask
             return feature_array, obs_mask
@@ -2962,8 +2967,6 @@ class SBI_Fitter:
                 output_missing_samples = np.zeros(
                     (len(self.simple_fitted_parameter_names), np.sum(mask_missing), total_samples)
                 )
-
-                # Work out with need an error as well.
 
                 if self.feature_array_flags["include_errors_in_feature_array"]:
                     include_errors = True
@@ -3103,10 +3106,12 @@ class SBI_Fitter:
             samples_q = np.quantile(samples_i, quantiles, axis=1)
             for j, quant in enumerate(samples_q):
                 # need to expand quant with dummy values for masked obs if append_to_input
-                if append_to_input:
-                    full_quant = np.zeros(len(obs_mask)) + np.nan
-                    full_quant[~(obs_mask | mask_missing)] = quant
-                    quant = full_quant
+                # if append_to_input:
+                full_quant = np.zeros(len(obs_mask)) + np.nan
+                full_quant[~(obs_mask | mask_missing)] = quant
+                quant = full_quant
+                # else:
+
                 table[f"{param}_{int(quantiles[j] * 100)}"] = quant
                 table[f"{param}_{int(quantiles[j] * 100)}"][obs_mask] = np.nan
 
@@ -3184,13 +3189,17 @@ class SBI_Fitter:
                     simulator=simulator,
                     extra_parameters=extra_parameters,
                 )
+                try:
+                    id = table["ID"][pos]
+                except KeyError:
+                    id = pos
 
-                id = table["ID"][pos]
                 output[id] = {
                     "wav": wav,
                     "fnu_quantiles": fnu_quantiles,
                     "phot_wav": phot_wav,
                     "phot_fnu_draws": phot_fnu_draws,
+                    "fig": fig,
                 }
 
                 plt.show(block=False)
