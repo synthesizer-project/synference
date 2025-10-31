@@ -1,3 +1,4 @@
+import copy
 import datetime
 import multiprocessing as mp
 import os
@@ -10,6 +11,7 @@ from astropy.table import Table
 from simple_parsing import ArgumentParser
 
 from synference import (
+    AsinhEmpiricalUncertaintyModel,
     SBI_Fitter,
     Simformer_Fitter,
     create_uncertainty_models_from_EPOCHS_cat,
@@ -58,6 +60,10 @@ class Args:
     num_components: int = 10
     scatter_fluxes: float = 1
     include_errors_in_feature_array: bool = True
+    simulate_missing_fluxes: bool = False
+    include_flags_in_feature_array: bool = False
+    missing_flux_fraction: float = 0.0
+    missing_flux_options: str = None
     min_flux_error: float = 0.00
     norm_mag_limit: float = 40.0
     drop_dropouts: bool = False
@@ -65,9 +71,11 @@ class Args:
     max_rows: int = -1
     parameter_transformations: tuple = ()  # This can be a dict of transformations
     photometry_to_remove: tuple = ()
+    set_photometry: tuple = ()
     plot: bool = True
     additional_model_args: tuple = ()
     parameters_to_add: tuple = ()
+    parameters_to_remove: tuple = ()
     data_err_file: str = """/home/tharvey/Downloads/JADES-Deep-GS_MASTER_Sel-f277W+f356W+f444W_v9_loc_depth_masked_10pc_EAZY_matched_selection_ext_src_UV.fits"""  # noqa
     data_err_hdu: str = "OBJECTS"  # The HDU name in the FITS file
     background: bool = False
@@ -108,7 +116,10 @@ def main_task(args: Args) -> None:
         print(f"Training started at {datetime.datetime.now()}", file=sys.stdout)
         print(f"Arguments: {args}", file=sys.stdout)
 
-    phot_to_remove = args.photometry_to_remove[0]
+    if len(args.photometry_to_remove) > 0:
+        phot_to_remove = args.photometry_to_remove[0]
+    else:
+        phot_to_remove = ""
     phot_to_remove = phot_to_remove.split(",")
     hst_bands = ["F435W", "F606W", "F775W", "F814W", "F850LP"]
 
@@ -123,7 +134,7 @@ def main_task(args: Args) -> None:
             for band in bands
         ]
 
-        root_out_dir = os.path.dirname(os.path.dirname(file_dir))
+        root_out_dir = os.path.dirname(os.path.dirname(os.path.dirname(file_dir)))
         out_dir = f"{root_out_dir}/models/{args.model_name}/plots/"
         if not os.path.exists(out_dir):
             os.makedirs(out_dir, exist_ok=True)
@@ -209,6 +220,38 @@ def main_task(args: Args) -> None:
         model_name=args.model_name, hdf5_path=args.grid_path, device=args.device
     )
 
+    if args.missing_flux_options:
+        inputs = args.missing_flux_options.split(",")
+
+        missing_flux_options = np.empty((len(inputs), len(empirical_noise_models)))
+        for i, item in enumerate(inputs):
+            if item == "none":
+                missing_flux_options[i] = 0
+            else:
+                if "+" in item:
+                    sub_items = item.split("+")
+                    for sub_item in sub_items:
+                        band_name = (
+                            f"JWST/NIRCam.{sub_item.upper()}"
+                            if sub_item not in hst_bands
+                            else f"HST/ACS_WFC.{sub_item.upper()}"
+                        )
+                        if band_name in empirical_noise_models:
+                            index = list(empirical_noise_models).index(band_name)
+                            missing_flux_options[i, index] = 1
+                else:
+                    band_name = (
+                        f"JWST/NIRCam.{item.upper()}"
+                        if item not in hst_bands
+                        else f"HST/ACS_WFC.{item.upper()}"
+                    )
+                    if band_name in empirical_noise_models:
+                        index = list(empirical_noise_models).index(band_name)
+                        missing_flux_options[i, index] = 1
+
+    else:
+        missing_flux_options = None
+
     if args.scatter_fluxes > 0 and not args.include_errors_in_feature_array:
         unused_filters = [
             filt
@@ -228,6 +271,14 @@ def main_task(args: Args) -> None:
             filt for filt in unused_filters if filt in empirical_model_fitter.raw_observation_names
         ]
 
+    if len(args.set_photometry) > 0:
+        unused_filters = []
+        inputs = args.set_photometry[0].split(",")
+        for item in copy.deepcopy(empirical_model_fitter.raw_observation_names):
+            band_name = item
+            if band_name not in inputs:
+                unused_filters.append(band_name)
+
     print("Photometry in grid:", empirical_model_fitter.raw_observation_names, file=sys.stdout)
     for filt in empirical_model_fitter.raw_observation_names:
         if (
@@ -238,6 +289,16 @@ def main_task(args: Args) -> None:
             unused_filters.append(filt)
 
     print(f"Unused filters: {unused_filters}", file=sys.stdout)
+
+    # flux_units is "AB" unless scatter_fluxes and include_errors_in_feature_array
+    # and all noise models are AsinhUncertaintyModels
+    flux_units = "AB"
+    if args.scatter_fluxes > 0 and args.include_errors_in_feature_array:
+        if all(
+            isinstance(model, AsinhEmpiricalUncertaintyModel)
+            for model in empirical_noise_models.values()
+        ):
+            flux_units = "asinh"
 
     print(empirical_noise_models)
     empirical_model_fitter.create_feature_array_from_raw_photometry(
@@ -253,8 +314,16 @@ def main_task(args: Args) -> None:
         drop_dropouts=args.drop_dropouts,
         drop_dropout_fraction=args.drop_dropout_fraction,
         parameters_to_add=args.parameters_to_add[0].split(",") if args.parameters_to_add else [],
+        parameters_to_remove=args.parameters_to_remove[0].split(",")
+        if args.parameters_to_remove
+        else [],
         parameter_transformations=parameter_transformations,
         max_rows=args.max_rows,
+        simulate_missing_fluxes=args.simulate_missing_fluxes,
+        include_flags_in_feature_array=args.include_flags_in_feature_array,
+        missing_flux_options=missing_flux_options if args.simulate_missing_fluxes else None,
+        missing_flux_fraction=args.missing_flux_fraction if args.simulate_missing_fluxes else 0.0,
+        normed_flux_units=flux_units,
     )
 
     # col_i = empirical_model_fitter.feature_array[:, 0]
@@ -263,8 +332,8 @@ def main_task(args: Args) -> None:
     # v25, v75 = np.percentile(col_i, [25, 75])
     # print(v25, v75, dx, n, 'check')
     # dx = 2 * (v75 - v25) / (n ** (1 / 3))
-    empirical_model_fitter.plot_histogram_feature_array(bins="scott")
-    empirical_model_fitter.plot_histogram_parameter_array(bins="scott")
+    # empirical_model_fitter.plot_histogram_feature_array(bins="scott")
+    # empirical_model_fitter.plot_histogram_parameter_array(bins="scott")
 
     if args.optimize:
         if args.simformer:

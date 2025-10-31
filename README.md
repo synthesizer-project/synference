@@ -7,6 +7,11 @@
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![Contributions welcome](https://img.shields.io/badge/contributions-welcome-brightgreen.svg?style=flat)](https://github.com/synthesizer-project/synference/blob/main/docs/CONTRIBUTING.md)
 [![License: GPLv3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+<center>
+
+<img src="docs/source/gfx/synference_logo.png" alt="logo" width="100"/><h1>synference</h1>
+
+</center>
 <!--[![Documentation Status](https://github.com/synthesizer-project/synference/actions/workflows/static.yml/badge.svg)](https://synthesizer-project.github.io/synference/)-->
 
 ### Overview

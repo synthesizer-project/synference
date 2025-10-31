@@ -26,23 +26,13 @@ source sbi-dev-env/bin/activate
 You can then clone the repo and install it in editable mode with the extra development dependencies.
 
 ```bash
-git clone https://github.com/synference-project/synference.git
+git clone https://github.com/synthesizer-project/synference.git
 cd synference
 pip install -e .[dev]
 ```
 
 Note: if you are planning to build the docs locally you'll also need to include the `docs` dependency group.
 
-### Test data
-
-To run existing examples or docs and add new ones, you'll need test data, provided [here](https://synference-project.github.io/synference/getting_started/downloading_grids.html#downloading-the-test-grid). This can be downloaded through the command line interface. Run the following at the root of the synference repo.
-
-```bash
-synference-download --test-grids --dust-grid -d tests/test_grid
-synference-download --camels-data -d tests/data
-```
-
-These commands will store the test data in the `tests` directory at the root of the repo; all examples expect this data to reside in this location.
 
 ### Setting up pre-commit hooks
 
@@ -95,7 +85,7 @@ z = x * 2  # this is an inline comment
 
 ## Development documentation 
 
-The [published documentation](https://synference-project.github.io/synference/) reflects the current distribution available on PyPI. If you would like to see the current development version in your branch or the main branch, you will have to build the documentation locally. To do so, navigate to the ``docs`` directory and run:
+The [published documentation](https://synthesizer-project.github.io/synference/) reflects the current distribution available on PyPI. If you would like to see the current development version in your branch or the main branch, you will have to build the documentation locally. To do so, navigate to the ``docs`` directory and run:
 
 ```bash
 make clean; make html
@@ -160,17 +150,3 @@ Each script (`.py`) should have a top-level docstring written in reST, with a he
     """
 
 Subfolders of examples should contain a `README.rst` with a section heading (please follow the template in other subfolders).
-
-## Debugging C development
-
-If you are writing C extensions for synference you can include debugging checks and optionally activate them using the `WITH_DEBUGGING_CHECKS` preprocessor directive. To use this wrap the debugging code in an ifdef:
-
-```
-#ifdef WITH_DEBUGGING_CHECKS
-debugging code...
-#endif
-```
-
-To activate debugging checks, install with `WITH_DEBUGGING_CHECKS=1 pip install .`.
-
-It is also advisable to turn warnings into errors by including `-Werror` in the CFLAGS; however, the Python source code itself will fail with this turned on for some compilers because it does produce some warnings (observed with gcc).
