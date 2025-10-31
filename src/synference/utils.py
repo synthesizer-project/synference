@@ -2673,3 +2673,104 @@ def search_parameter_array(
     # np.where returns a tuple of arrays (one for each dimension).
     # Since our mask is 1D, we just need the first element.
     return np.where(combined_mask)[0]
+
+
+def average_coverage_probability(
+    true_values: List[float], intervals: List[Tuple[float, float]]
+) -> float:
+    """Calculates the average coverage probability of a set of prediction intervals.
+
+    Coverage is the proportion of true values that fall within their
+    corresponding predicted interval.
+
+    Args:
+        true_values: A list of the true, observed values.
+        intervals: A list of tuples, where each tuple represents the
+                   (lower_bound, upper_bound) of a prediction interval.
+
+    Returns:
+        The proportion (between 0.0 and 1.0) of true values covered
+        by their intervals.
+
+    Raises:
+        ValueError: If the number of true values and intervals do not match.
+    """
+    if len(true_values) != len(intervals):
+        raise ValueError("The number of true values and intervals must be the same.")
+
+    if not true_values:
+        return 0.0
+
+    hits = sum(
+        1 for true_val, (lower, upper) in zip(true_values, intervals) if lower <= true_val <= upper
+    )
+
+    return hits / len(true_values)
+
+
+def average_coverage_error(
+    true_values: List[float], intervals: List[Tuple[float, float]], alpha: float
+) -> float:
+    """Calculates the Average Coverage Error (ACE).
+
+    ACE indicates the reliability of a prediction interval. A value
+    close to zero denotes a high reliability.
+
+    Args:
+        true_values: A list of the true, observed values (Y(i)).
+        intervals: A list of tuples representing the [L_alpha(i), U_alpha(i)].
+        alpha: The significance level.
+
+    Returns:
+        The Average Coverage Error.
+    """
+    coverage_prob = average_coverage_probability(true_values, intervals)
+    return coverage_prob * 100 - (1 - alpha) * 100
+
+
+def interval_sharpness(
+    true_values: List[float],
+    predicted_means: List[float],
+    predicted_sigmas: List[float],
+    alpha: float,
+) -> float:
+    """Calculates the Interval Sharpness (IS).
+
+    IS measures the accuracy of probabilistic forecasting, where a smaller
+    absolute value indicates a better, narrower prediction interval.
+
+    Args:
+        true_values: A list of the true, observed values (Y(i)).
+        predicted_means: A list of predicted mean values (mu(i)).
+        predicted_sigmas: A list of predicted standard deviations (sigma(i)).
+        alpha: The significance level.
+
+    Returns:
+        The Interval Sharpness (IS_alpha), which is always <= 0.
+    """
+    if not (len(true_values) == len(predicted_means) == len(predicted_sigmas)):
+        raise ValueError("Input lists must have the same length.")
+
+    if not true_values:
+        return 0.0
+
+    n = len(true_values)
+    ci = 1 - alpha
+    l_alpha = 0.5 - ci / 2
+    u_alpha = 0.5 + ci / 2
+    delta_alpha = u_alpha - l_alpha
+
+    sharpness_sum = 0
+    for y_true, mu, sigma in zip(true_values, predicted_means, predicted_sigmas):
+        # Calculate y(i) as the CDF of the ground truth value
+        y_i = stats.norm.cdf(y_true, loc=mu, scale=sigma)
+
+        term = -2 * alpha * delta_alpha
+        if y_i < l_alpha:
+            term += -4 * (l_alpha - y_i)
+        elif y_i > u_alpha:
+            term += -4 * (y_i - u_alpha)
+
+        sharpness_sum += term
+
+    return sharpness_sum / n
