@@ -6283,6 +6283,13 @@ class SBI_Fitter:
 
         return samples
 
+    @property
+    def likelihood_func(self):
+        if hasattr(self, "posteriors") and self.posteriors is not None:
+            likelihood = self.posteriors.potential_fn.potential_fns[0].likelihood_estimator
+            return likelihood
+        return None
+
     def evaluate_model(
         self,
         posteriors: list = None,
