@@ -2633,15 +2633,33 @@ class SBI_Fitter:
         training_flux_units = feature_array_flags["normed_flux_units"]
 
         if feature_array_flags["empirical_noise_models"] is not None:
-            for model_name, key in feature_array_flags["empirical_noise_models"].items():
-                if isinstance(key, tuple):
-                    logger.info("Loading noise models from HDF5.")
-                    empirical_model = load_unc_model_from_hdf5(filepath=key, group=model_name)
-                elif isinstance(key, UncertaintyModel):
-                    empirical_model = key
+            for pos, (model_name, val) in enumerate(
+                feature_array_flags["empirical_noise_models"].items()
+            ):
+                if isinstance(val, str):
+                    if pos == 0:
+                        logger.info("Loading noise models from HDF5.")
+                    try:
+                        empirical_model = load_unc_model_from_hdf5(
+                            filepath=val, group_name=model_name
+                        )
+                    except FileNotFoundError:
+                        # If we've moved computer, the path will be wrong, but we may still
+                        # be able to find the correct path.
+                        filename = os.path.basename(val)
+                        new_path = f"{code_path}/models/{self.name}/{filename}"
+                        if os.path.exists(new_path):
+                            empirical_model = load_unc_model_from_hdf5(
+                                filepath=new_path, group_name=model_name
+                            )
+                        else:
+                            logger.warning(f"Could not load noise model from {val}")
+
+                elif isinstance(val, UncertaintyModel):
+                    empirical_model = val
                 else:
                     raise TypeError(
-                        f"Invalid empirical noise model type: {type(key)}. "
+                        f"Invalid empirical noise model type: {type(val)}. "
                         "Expected tuple or EmpiricalNoiseModel instance."
                     )
 
@@ -7356,6 +7374,12 @@ class SBI_Fitter:
                 if "feature_array_flags" in params:
                     self.feature_array_flags = params["feature_array_flags"]
                     self.has_features = True
+
+                if "empirical_noise_models" in params:
+                    if "empirical_noise_models" not in self.feature_array_flags:
+                        self.feature_array_flags["empirical_noise_models"] = params[
+                            "empirical_noise_models"
+                        ]
 
                 if learning_type == "offline":
                     self.feature_names = params["feature_names"]
