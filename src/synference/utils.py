@@ -824,10 +824,10 @@ def save_emission_model(model):
                     fixed_params[i] = j
 
     dust_attenuation_keys = {}
-    if "attenuated" in model._transformation.keys():
-        dust_law = model._transformation["attenuated"][1]
+    if "attenuated" in model._models.keys():
+        dust_law = model._models["attenuated"]
         dust_attenuation_keys.update(dust_law.__dict__)
-        dust_attenuation_keys.pop("description")
+        dust_attenuation_keys.pop("description", None)
         # drop any hidden keys (starting with _)
         for key in list(dust_attenuation_keys.keys()):
             if isinstance(dust_attenuation_keys[key], np.ndarray):
@@ -2584,7 +2584,7 @@ def cumsum_dirichlet_prior_transform(unit_cube, alpha):
 
     >>> # Equivalent to:
     >>> # txs = np.cumsum(np.random.dirichlet(np.ones(N+1)*alpha)i)[:-1]
-    
+
     """
     unit_cube = np.asarray(unit_cube)
     N = len(unit_cube)  # Number of breakpoints (Dirichlet has N+1 components)
