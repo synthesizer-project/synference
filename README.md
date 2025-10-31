@@ -1,17 +1,15 @@
 # Synference
+<center>
+<img src="docs/source/gfx/synference_logo.png"  alt="logo" align="right" width="200px"/>
+</center>
 
-<img src="docs/source/gfx/sbi-logo-cropped-no-bkg.png"  align="right" alt="logo" width="200px"/>
 
 [![workflow](https://github.com/synthesizer-project/synference/actions/workflows/python-app.yml/badge.svg)](https://github.com/synthesizer-project/synference/actions)
 [![pre-commit](https://img.shields.io/badge/pre--commit-enabled-brightgreen?logo=pre-commit&logoColor=white)](https://github.com/pre-commit/pre-commit)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![Contributions welcome](https://img.shields.io/badge/contributions-welcome-brightgreen.svg?style=flat)](https://github.com/synthesizer-project/synference/blob/main/docs/CONTRIBUTING.md)
 [![License: GPLv3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-<center>
 
-<img src="docs/source/gfx/synference_logo.png" alt="logo" width="100"/><h1>synference</h1>
-
-</center>
 <!--[![Documentation Status](https://github.com/synthesizer-project/synference/actions/workflows/static.yml/badge.svg)](https://synthesizer-project.github.io/synference/)-->
 
 ### Overview
@@ -172,4 +170,5 @@ We welcome contributions to synference! If you have suggestions, bug reports, or
 
 ### License
 This project is licensed under the GNU General Public License v3.0 (GPLv3). See the [LICENSE](LICENSE) file for details. This means you can use, modify, and distribute the code freely, but any derivative works must also be open source and distributed under the same license. We warn users that this software is offered "as is", without any warranty or guarantee of fitness for a particular purpose. synference is under active development, and therefore may change in the future.
+
 
