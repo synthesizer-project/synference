@@ -6,3 +6,4 @@ Posterior Inference
 
    using_your_model
    sed_recovery
+   catalogue_fitting

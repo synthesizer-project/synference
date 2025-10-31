@@ -2,12 +2,12 @@ Installation
 ************
 
 
-Creating a python environment
+Creating a Python Environment
 #############################
 
-For best results, we recommend installing synference in a virtual environment. You can use `venv <https://docs.python.org/3/library/venv.html>`_ or `conda <https://docs.conda.io/projects/conda/en/latest/user-guide/tasks/manage-environments.html>`_ to create a virtual environment.
+For best results, we recommend installing Synference in a virtual environment. You can use `venv <https://docs.python.org/3/library/venv.html>`_ or `conda <https://docs.conda.io/projects/conda/en/latest/user-guide/tasks/manage-environments.html>`_ to create a virtual environment.
 
-synference requires Python 3.10 or higher. It is recommended to use the latest stable version of Python.
+Synference requires Python 3.10 or higher. It is recommended to use the latest stable version of Python.
 
 .. code-block:: bash
 
@@ -18,14 +18,14 @@ synference requires Python 3.10 or higher. It is recommended to use the latest s
 Installing from PyPI (Recommended)
 ##################################
 
-To install synference, you can use pip (not yet!):
+To install Synference, you can use pip (not yet!):
 
 .. code-block:: bash
 
    pip install synference
 
 
-Installing from source 
+Installing from Source 
 ###################### 
 
 Alternatively, you can clone the repository and install it manually:
@@ -33,17 +33,17 @@ Alternatively, you can clone the repository and install it manually:
 .. code-block:: bash
 
    git clone https://github.com/synthesizer-project/synference.git
-   cd synference
+   cd Synference
    pip install -e .
 
-This will install synference in editable mode, allowing you to make changes to the code if needed.
+This will install Synference in editable mode, allowing you to make changes to the code if needed.
 
 
 
 Optional Dependencies
 ##################### 
 
-synference provides several optional dependency groups to cater to different use cases. These groups can be installed directly from PyPI using the following syntax:
+Synference provides several optional dependency groups to cater to different use cases. These groups can be installed directly from PyPI using the following syntax:
 
 .. code-block:: bash
 
@@ -60,7 +60,7 @@ The available groups are:
 - **Development** (``dev``): Tools to help developing including linting and formatting.
 - **Testing** (``test``): Frameworks and utilities for running tests.
 - **Documentation** (``docs``): Packages required to build the project documentation.
-- **simformer** (``simformer``): Dependencies for using the Simformer model within synference.
+- **simformer** (``simformer``): Dependencies for using the Simformer model within Synference.
 
 
 For example, to install with development dependencies, run:

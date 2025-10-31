@@ -9,7 +9,8 @@ from .utils import (
     list_parameters, rename_overlapping_parameters, FilterArithmeticParser,
     timeout_handler, TimeoutException, create_sqlite_db, f_jy_err_to_asinh, create_database_universal,
     f_jy_to_asinh, check_scaling, detect_outliers, compare_methods_feature_importance,
-    analyze_feature_contributions, optimize_sfh_xlimit, make_serializable, setup_mpi_named_logger, move_to_device
+    analyze_feature_contributions, optimize_sfh_xlimit, make_serializable, setup_mpi_named_logger, move_to_device,
+    asinh_err_to_f_jy
 )
 # Set up logging
 logger = setup_mpi_named_logger("synference", level=logging.INFO)
@@ -21,7 +22,8 @@ from .grid import (
     calculate_muv, draw_from_hypercube, GalaxySimulator, generate_random_DB_sfh,
     test_out_of_distribution, calculate_mass_weighted_age, calculate_lum_weighted_age,
     calculate_flux_weighted_age, calculate_colour, calculate_d4000, calculate_beta, calculate_balmer_decrement,
-    calculate_line_flux, calculate_line_ew, calculate_sfh_quantile, calculate_surviving_mass, SUPP_FUNCTIONS
+    calculate_line_flux, calculate_line_ew, calculate_sfh_quantile, calculate_surviving_mass, calculate_agn_fraction,
+    calculate_xi_ion0, calculate_Ndot_ion, SUPP_FUNCTIONS, GridCreator
 )
 
 
@@ -50,6 +52,7 @@ __all__ = [
     "generate_emission_models",
     "generate_sfh_basis",
     "GalaxyBasis",
+    "GridCreator",
     "generate_constant_R",
     "draw_from_hypercube",
     "grid_folder",
@@ -67,6 +70,9 @@ __all__ = [
     "calculate_colour",
     "calculate_sfh_quantile",
     "calculate_surviving_mass",
+    "calculate_agn_fraction",
+    "calculate_xi_ion0",
+    "calculate_Ndot_ion"
     "SUPP_FUNCTIONS",
     "SBI_Fitter",
     "MissingPhotometryHandler",
@@ -86,6 +92,7 @@ __all__ = [
     "TimeoutException",
     "create_sqlite_db",
     "f_jy_err_to_asinh",
+    "asinh_err_to_f_jy",
     "f_jy_to_asinh",
     "check_scaling",
     "detect_outliers",

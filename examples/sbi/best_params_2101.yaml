@@ -1,0 +1,12 @@
+train_args:
+  skip_optimization: True
+  validation_fraction: 0.1
+  fixed_params:
+    model_choice: "nsf" # Must be a list
+    optimizer_choice: "Adam" # Must be a list
+    learning_rate: 0.0007460108070908076
+    training_batch_size: 79
+    stop_after_epochs: 57
+    clip_max_norm: 6.656577606872957
+    nsf_hidden_features: 30
+    nsf_num_transforms: 14

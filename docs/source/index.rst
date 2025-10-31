@@ -1,18 +1,16 @@
-synference
-^^^^^^^^^
+Synference
+^^^^^^^^^^^
 
-synference is an open-source python package for SED fitting of photometric and spectroscopic data using Simulation-Based Inference (SBI) methods. It is part of the broader Synthesizer project, which aims to provide tools for generating and analyzing synthetic astronomical observables.
+Synference is an open-source python package for SED fitting of photometric and spectroscopic data using Simulation-Based Inference (SBI) methods. It is part of the broader `Synthesizer project <https://synthesizer-project.github.io/>`_, which aims to provide tools for generating and analyzing synthetic astronomical observables.
 
-For the Synthesizer project homepage, see https://synthesizer-project.github.io/.
+This documentation provides a broad overview of the various components in Synference and how they interact.
+The `Getting Started guide <getting_started/getting_started>`_ contains download and installation instructions, as well as an overview of the code.
 
-This documentation provides a broad overview of the various components in synference and how they interact.
-The `getting started guide <getting_started/getting_started>`_ contains download and installation instructions, as well as an overview of the code.
-
-For detailed examples of what synference can do, take a look at the `examples <auto_examples/index>`_ page.
+For detailed examples of what synference can do, take a look at the `Examples <auto_examples/index>`_ page.
 A full description of the code base is provided in the `API <API>`_.
 
 Contents
-^^^^^^^^
+--------
 
 .. toctree::
    :maxdepth: 2
@@ -23,6 +21,7 @@ Contents
    sbi_train/intro_sbi
    noise_modelling/creating_noise_model
    posterior_inference/intro
+   advanced_topics/advanced_topics
    FAQ/FAQ
    notebook_examples/cookbook
    auto_examples/index
