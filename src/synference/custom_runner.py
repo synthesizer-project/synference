@@ -2,7 +2,6 @@
 
 import logging
 import os
-import sys
 import time
 from copy import deepcopy
 from datetime import datetime
@@ -367,7 +366,7 @@ class SBICustomRunner(SBIRunner):
             study_direction=study_direction,
             stop_after_epochs=stop_after_epochs,
             clip_max_norm=clip_max_norm,
-            save_dir=f'{self.out_dir}/{self.name}/'
+            save_dir=f"{self.out_dir}/{self.name}",
         )
 
         return trained_estimator, summary
@@ -558,18 +557,20 @@ class SBICustomRunner(SBIRunner):
         epoch = 0
 
         if save_dir is not None and trial is None:
-            if os.path.exists(f'{save_dir}/checkpoint_posterior.pt'):
+            if os.path.exists(f"{save_dir}checkpoint_posterior.pt"):
                 logger.info(f"Resuming training from checkpoint in {save_dir}")
-                checkpoint = torch.load(f'{save_dir}/checkpoint_posterior.pt', map_location='cpu')
-                density_estimator.load_state_dict(checkpoint['model_state_dict'])
-                optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-                epoch = checkpoint.get('epoch', 0)
-                train_log = checkpoint.get('train_loss', [])
-                val_log = checkpoint.get('val_loss', [])
-                epochs_since_improvement = checkpoint.get('epochs_since_improvement', 0)
-                best_val_loss = checkpoint.get('best_val_loss', float('inf'))
-                best_model_state_dict = checkpoint.get('best_model_state_dict', None)
-                logger.info(f"Resumed from epoch {epoch} with best validation loss {best_val_loss:.4f}")
+                checkpoint = torch.load(f"{save_dir}checkpoint_posterior.pt", map_location="cpu")
+                density_estimator.load_state_dict(checkpoint["model_state_dict"])
+                optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+                epoch = checkpoint.get("epoch", 0)
+                train_log = checkpoint.get("train_loss", [])
+                val_log = checkpoint.get("val_loss", [])
+                epochs_since_improvement = checkpoint.get("epochs_since_improvement", 0)
+                best_val_loss = checkpoint.get("best_val_loss", float("inf"))
+                best_model_state_dict = checkpoint.get("best_model_state_dict", None)
+                logger.info(
+                    f"Resumed from epoch {epoch} with best validation loss {best_val_loss:.4f}"
+                )
 
         # Helper function to check convergence
         def _converged(current_epoch: int, stop_after_epochs: int) -> bool:
@@ -671,19 +672,24 @@ class SBICustomRunner(SBIRunner):
                 time_elapsed = time.time() - start_time
 
                 # are we running in slurm or a non-interactive terminal?
-                if "SLURM_JOB_ID" in os.environ or os.getpgrp() != os.tcgetpgrp(sys.stdout.fileno()):
-                    logger.info(
-                        f"Epoch {epoch}: TL: {train_loss_average:.3f}, "
-                        f"VL: {current_val_loss:.3f}, "
-                        f"Best VL: {best_val_loss:.3f}, "
-                        f"ESI: {epochs_since_improvement}/{stop_after_epochs}"
-                    )
-                else:
-                    update_plot(train_log, val_log, epoch=epoch, time_elapsed=time_elapsed)
+
+                logger.info(
+                    f"Epoch {epoch}: TL: {train_loss_average:.3f}, "
+                    f"VL: {current_val_loss:.3f}, "
+                    f"Best VL: {best_val_loss:.3f}, "
+                    f"ESI: {epochs_since_improvement}/{stop_after_epochs}, "
+                    f"Avg. Time/epoch: {time_elapsed / epoch:.1f}s, "
+                    f"Min ETA: {((stop_after_epochs - epochs_since_improvement) * time_elapsed / epoch):.1f}s",  # noqa: E501
+                )
+                if "SLURM_JOB_ID" not in os.environ:
+                    try:
+                        update_plot(train_log, val_log, epoch=epoch, time_elapsed=time_elapsed)
+                    except Exception as e:
+                        logger.error(f"Error updating plot: {e}")
 
                 # torch save important info if epoch % 10 == 0:
                 if epoch % 10 == 0 and save_dir is not None:
-                    os.makedirs(save_dir, exist_ok=True)
+                    os.makedirs(os.path.dirname(save_dir), exist_ok=True)
                     save_dict = {
                         "epoch": epoch,
                         "model_state_dict": density_estimator.state_dict(),
@@ -695,7 +701,7 @@ class SBICustomRunner(SBIRunner):
                         "best_model_state_dict": best_model_state_dict,
                         "time_elapsed": time_elapsed,
                     }
-                    torch.save(save_dict, f"{save_dir}/checkpoint_posterior.pt")
+                    torch.save(save_dict, f"{save_dir}checkpoint_posterior.pt")
 
                     logger.info(f"Checkpoint saved at epoch {epoch}.")
         # Restore best model state
@@ -729,9 +735,9 @@ class SBICustomRunner(SBIRunner):
         )
 
         # Delete checkpoint after successful training
-        if save_dir is not None and os.path.exists(f"{save_dir}/checkpoint_posterior.pt"):
-            os.remove(f"{save_dir}/checkpoint_posterior.pt")
-            logger.info(f"Removed checkpoint file after training completion.")
+        if save_dir is not None and os.path.exists(f"{save_dir}checkpoint_posterior.pt"):
+            os.remove(f"{save_dir}checkpoint_posterior.pt")
+            logger.info("Removed checkpoint file after training completion.")
 
         return density_estimator, best_val_loss, summary
 
@@ -765,8 +771,10 @@ class SBICustomRunner(SBIRunner):
                 (cfg for cfg in self.net_configs if cfg["model"] == model_name), None
             )
             if base_model_config is None:
-                raise ValueError(f"Base config for model '{model_name}' not found. Available: "
-                                 f"{[cfg['model'] for cfg in self.net_configs]}")
+                raise ValueError(
+                    f"Base config for model '{model_name}' not found. Available: "
+                    f"{[cfg['model'] for cfg in self.net_configs]}"
+                )
 
             trial_model_params = base_model_config.copy()
             for param, settings in search_space["models"][model_name].items():
@@ -938,7 +946,7 @@ class SBICustomRunner(SBIRunner):
                 clip_max_norm=clip_max_norm,
             )
             end_train = datetime.now()
-            trial.set_user_attr("train_time", str(start_train - end_train))
+            trial.set_user_attr("train_time", str(end_train - start_train))
 
             # Use external validation data if available
             if x_val is not None and theta_val is not None:
@@ -1143,6 +1151,8 @@ class CustomUniform(Distribution):
         # Custom support validation with aggregated summary
         is_in_support = self._original_support.check(value)
         support_fraction = np.sum(is_in_support.cpu().numpy()) / is_in_support.numel()
+        if not hasattr(self, "report_threshold"):
+            self.report_threshold = 0.1
         if support_fraction < self.report_threshold:
             error_messages = []
             param_dim = -1  # Assumes parameters are in the last dimension

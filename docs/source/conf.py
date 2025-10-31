@@ -73,7 +73,7 @@ master_doc = "index"
 
 html_static_path = []
 
-html_logo = "gfx/sbi-logo-cropped-no-bkg.png"
+html_logo = "gfx/synference_logo.png"
 
 html_theme = "furo"
 html_theme_options = {

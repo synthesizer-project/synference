@@ -8,7 +8,7 @@ import os
 import pickle
 import re
 import sys
-from typing import Any, Dict, List, Optional, Set, TextIO, Union
+from typing import Any, Dict, List, Optional, Set, TextIO, Tuple, Union
 
 import h5py
 import matplotlib.pyplot as plt
@@ -18,9 +18,16 @@ import torch
 from unyt import Angstrom, Jy, nJy, unyt_array, unyt_quantity
 
 try:
-    import plotext as plt
+    import numba
+    import spectres
+except (ImportError, RuntimeError):
+    spectres = None
+
+
+try:
+    import plotext as plo
 except ImportError:
-    plt = None
+    plo = None
 
 
 def load_grid_from_hdf5(
@@ -53,8 +60,10 @@ def load_grid_from_hdf5(
         The loaded grid.
     """
     if not os.path.exists(hdf5_path):
-        raise FileNotFoundError(f"HDF5 file not found: {hdf5_path}. "
-                                f"Files in root directory: {os.listdir(os.path.dirname(hdf5_path))}")
+        raise FileNotFoundError(
+            f"HDF5 file not found: {hdf5_path}. "
+            f"Files in root directory: {os.listdir(os.path.dirname(hdf5_path))}"
+        )
 
     with h5py.File(hdf5_path, "r") as f:
         # Load the photometry and parameters from the HDF5 file
@@ -62,6 +71,8 @@ def load_grid_from_hdf5(
         parameters = f[parameters_key][:]
 
         filter_codes = f.attrs[filter_codes_attr]
+        if isinstance(filter_codes, (bytes, str)):
+            filter_codes = f[filter_codes_attr][()]
         parameter_names = f.attrs[parameters_attr]
 
         # Load the photometry units
@@ -110,6 +121,134 @@ def calculate_min_max_wav_grid(filterset, max_redshift, min_redshift=0):
     return min_wav, max_wav
 
 
+@numba.jit(nopython=True)
+def convolve_variable_width_gaussian(
+    flux: np.ndarray, sigma_pixels: np.ndarray, trunc: float = 4.0
+) -> np.ndarray:
+    """Convolves a 1D array with a Gaussian kernel of variable width using Numba for performance.
+
+    Args:
+        flux (np.ndarray): The input 1D flux array.
+        sigma_pixels (np.ndarray): An array of the same size as flux, where each
+                                   value is the Gaussian sigma (in pixels) for the
+                                   kernel at that position.
+        trunc (float): The number of sigmas at which to truncate the kernel.
+
+    Returns:
+        np.ndarray: The convolved flux array.
+    """
+    l_max = len(flux)
+    convolved_flux = np.zeros_like(flux)
+
+    for i in range(l_max):
+        sigma = sigma_pixels[i]
+        # If sigma is negligible, no convolution is needed at this pixel
+        if sigma <= 0.01:
+            convolved_flux[i] = flux[i]
+            continue
+
+        # Determine kernel size for this pixel based on truncation
+        kernel_half_width = int(np.ceil(sigma * trunc))
+        kernel_size = 2 * kernel_half_width + 1
+
+        # Create the kernel for this specific pixel
+        x = np.arange(kernel_size) - kernel_half_width
+        kernel = np.exp(-0.5 * (x / sigma) ** 2)
+        kernel /= np.sum(kernel)  # Normalize
+
+        # Determine the slice of the input spectrum to apply the kernel to
+        start = i - kernel_half_width
+
+        # Perform the dot product for the convolution at this pixel
+        flux_sum = 0.0
+        for j in range(kernel_size):
+            flux_idx = start + j
+
+            # Use 'nearest' padding for edges
+            if flux_idx < 0:
+                flux_idx = 0
+            if flux_idx >= l_max:
+                flux_idx = l_max - 1
+
+            flux_sum += flux[flux_idx] * kernel[j]
+
+        convolved_flux[i] = flux_sum
+
+    return convolved_flux
+
+
+def transform_spectrum(
+    theory_wave: np.ndarray,
+    theory_flux: np.ndarray,
+    z: float,
+    observed_wave: np.ndarray,
+    resolution_curve_wave: np.ndarray,
+    resolution_curve_r: np.ndarray,
+    theory_r: Union[float, np.ndarray] = np.inf,
+    trunc_constant: float = 4.0,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Transforms a high-resolution theoretical spectrum to a given redshift and match resolution.
+
+    Args:
+        theory_wave (np.ndarray): Wavelength array of the high-res theoretical spectrum.
+        theory_flux (np.ndarray): Flux array of the high-res theoretical spectrum.
+        z (float): The redshift to apply to the theoretical spectrum.
+        observed_wave (np.ndarray): The target wavelength grid of the observation.
+        resolution_curve_wave (np.ndarray): Wavelength points for the resolution curve.
+        resolution_curve_r (np.ndarray): The spectral resolution R at each point.
+        theory_r (Union[float, np.ndarray]): Intrinsic resolution R of the theoretical model.
+        trunc_constant (float): Truncation constant for the Gaussian kernel.
+
+    Returns:
+        Tuple[np.ndarray, np.ndarray]: A tuple containing the final wavelength array and the
+                                     transformed, resampled flux array.
+    """
+    # Step 1: Redshift the theoretical spectrum
+    theory_wave_z = theory_wave * (1 + z)
+    theory_flux_z = theory_flux  # / (1 + z)
+    # theory_flux_z = theory_flux
+    # Step 2: Prepare for Convolution
+    # Instrumental Resolution
+    interp_r_instrument = np.interp(theory_wave_z, resolution_curve_wave, resolution_curve_r)
+    fwhm_instrument = theory_wave_z / interp_r_instrument
+    sigma_instrument_wave = fwhm_instrument / (2 * np.sqrt(2 * np.log(2)))
+
+    # Theoretical Model's Intrinsic Resolution
+    if isinstance(theory_r, (int, float)):
+        interp_r_theory = np.full_like(theory_wave_z, theory_r)
+    else:
+        interp_r_theory = np.interp(theory_wave_z, theory_wave * (1 + z), theory_r)
+    fwhm_theory = theory_wave_z / interp_r_theory
+    sigma_theory_wave = fwhm_theory / (2 * np.sqrt(2 * np.log(2)))
+
+    # Kernel Calculation (in Quadrature)
+    sigma_kernel_wave_sq = sigma_instrument_wave**2 - sigma_theory_wave**2
+    sigma_kernel_wave_sq[sigma_kernel_wave_sq < 0] = 0
+    sigma_kernel_wave = np.sqrt(sigma_kernel_wave_sq)
+
+    pixel_scale = np.median(np.diff(theory_wave_z))
+    # Avoid division by zero if pixel_scale is 0
+    sigma_kernel_pixels = np.divide(
+        sigma_kernel_wave, pixel_scale, out=np.zeros_like(sigma_kernel_wave), where=pixel_scale != 0
+    )
+
+    # Step 3: Convolve with variable-width Gaussian kernel
+    convolved_flux = convolve_variable_width_gaussian(
+        theory_flux_z, sigma_kernel_pixels, trunc=trunc_constant
+    )
+
+    # Step 4: Resample onto the observed wavelength grid
+    final_flux = spectres.spectres(
+        new_wavs=observed_wave,
+        spec_wavs=theory_wave_z,
+        spec_fluxes=convolved_flux,
+        fill=0.0,
+        verbose=False,
+    )
+
+    return observed_wave, final_flux
+
+
 def generate_constant_R(
     R=300,
     start=1 * Angstrom,
@@ -118,7 +257,7 @@ def generate_constant_R(
     filterset=None,
     **kwargs,
 ):
-    """Generate a constant R wavelength grid.
+    r"""Generate a constant R wavelength grid.
 
     Parameters:
         R: The resolution of the grid.
@@ -126,20 +265,23 @@ def generate_constant_R(
         end: The ending wavelength of the grid.
         auto_start_stop: If True, calculate start and end from the filterset.
         filterset: A filter set to calculate the start and end wavelengths.
-        **kwargs: Additional keyword arguments for filterset calculations.
+        \**kwargs: Additional keyword arguments for filterset calculations.
 
     Returns:
         A numpy array of wavelengths in Angstroms.
     """
     if auto_start_stop and filterset is not None:
         start, end = calculate_min_max_wav_grid(filterset, **kwargs)
+    assert start < end, "Start wavelength must be less than end wavelength."
+    assert R > 0, "R must be greater than 0."
+    end = end.to(start.units)
 
-    x = [start.to(Angstrom).value]
+    x = [start.value]
 
-    while x[-1] < end.to(Angstrom).value:
+    while x[-1] < end.value:
         x.append(x[-1] * (1.0 + 0.5 / R))
 
-    return np.array(x) * Angstrom
+    return unyt_array(x, units=start.units)
 
 
 def list_parameters(distribution):
@@ -199,20 +341,20 @@ def rename_overlapping_parameters(lists_dict):
 
 
 class FilterArithmeticParser:
-    """Parser for filter arithmetic expressions.
+    r"""Parser for filter arithmetic expressions.
 
     Parser for filter arithmetic expressions.
     Supports operations like:
-    - Basic arithmetic: +, -, *, /
+    - Basic arithmetic: +, -, \*, /
     - Parentheses for grouping
     - Constants and coefficients
 
     Examples:
         "F356W"                    -> single filter
         "F356W + F444W"           -> filter addition
-        "2 * F356W"               -> coefficient multiplication
+        "2 \* F356W"               -> coefficient multiplication
         "(F356W + F444W) / 2"     -> average of filters
-        "F356W - 0.5 * F444W"     -> weighted subtraction
+        "F356W - 0.5 \* F444W"     -> weighted subtraction
     """
 
     def __init__(self):
@@ -557,6 +699,107 @@ def f_jy_err_to_asinh(
     return 2.5 * np.log10(np.e) * f_jy_err / np.sqrt(f_jy**2 + (2 * f_b) ** 2)
 
 
+def asinh_to_snr(f_asinh: unyt_array, f_asinh_err: unyt_array, f_b: unyt_array = 5 * nJy):
+    """Convert asinh magnitude and error to signal-to-noise ratio.
+
+    Parameters:
+    f_asinh: Flux in asinh magnitude scale.
+    f_asinh_err: Flux error in asinh magnitude scale.
+    f_b: Softening parameter (transition point for the asinh scale).
+
+    Returns:
+    Signal-to-noise ratio.
+    """
+    f_b = f_b.to(Jy).value
+
+    # Handle different dimensionalities of f_b like in the other functions
+    if f_b.ndim == 0:
+        f_b = np.full_like(f_asinh, f_b, dtype=f_asinh.dtype)
+    elif f_b.ndim == 1 and f_asinh.ndim == 2:
+        assert f_b.shape[0] == f_asinh.shape[0], "Flux softening must match the number of filters."
+        f_b = np.tile(f_b, (f_asinh.shape[1], 1)).T
+    else:
+        assert f_b.shape == f_asinh.shape, "Flux and flux error must have the same shape."
+
+    # Convert back to flux
+    arcsinh_arg = -f_asinh / (2.5 * np.log10(np.e)) - np.log(f_b / 3631)
+    f_jy = 2 * f_b * np.sinh(arcsinh_arg)
+
+    # Convert asinh magnitude error back to flux error
+    # From f_jy_err_to_asinh: f_asinh_err = 2.5 * log10(e) * f_jy_err / sqrt(f_jy^2 + (2*f_b)^2)
+    # Rearranging: f_jy_err = f_asinh_err * sqrt(f_jy^2 + (2*f_b)^2) / (2.5 * log10(e))
+    f_jy_err = f_asinh_err * np.sqrt(f_jy**2 + (2 * f_b) ** 2) / (2.5 * np.log10(np.e))
+
+    # Calculate SNR
+    snr = f_jy / f_jy_err
+
+    return snr
+
+
+def asinh_to_f_jy(f_asinh: np.ndarray, f_b: unyt_array = 5 * nJy) -> unyt_array:
+    """Convert asinh magnitude to flux in Jy.
+
+    Parameters:
+        f_asinh: Flux in asinh magnitude scale.
+        f_b: Softening parameter (transition point for the asinh scale).
+
+    Returns:
+        Flux in Jy.
+    """
+    f_b = f_b.to(Jy).value
+
+    # Handle different dimensionalities of f_b like in the other functions
+    if f_b.ndim == 0:
+        f_b = np.full_like(f_asinh, f_b, dtype=f_asinh.dtype)
+    elif f_b.ndim == 1 and f_asinh.ndim == 2:
+        assert f_b.shape[0] == f_asinh.shape[0], "Flux softening must match the number of filters."
+        f_b = np.tile(f_b, (f_asinh.shape[1], 1)).T
+    else:
+        assert f_b.shape == f_asinh.shape, "Flux and flux error must have the same shape."
+
+    # Convert back to flux
+    arcsinh_arg = -f_asinh / (2.5 * np.log10(np.e)) - np.log(f_b / 3631)
+    f_jy = 2 * f_b * np.sinh(arcsinh_arg)
+
+    return unyt_array(f_jy, units=Jy)
+
+
+def asinh_err_to_f_jy(
+    f_asinh: np.ndarray, f_asinh_err: np.ndarray, f_b: unyt_array = 5 * nJy
+) -> unyt_array:
+    """Convert asinh magnitude error to flux error in Jy.
+
+    Parameters:
+        f_asinh: Flux in asinh magnitude scale.
+        f_asinh_err: Flux error in asinh magnitude scale.
+        f_b: Softening parameter (transition point for the asinh scale).
+
+    Returns:
+        Flux error in Jy.
+    """
+    f_b = f_b.to(Jy).value
+
+    # Handle different dimensionalities of f_b like in the other functions
+    if f_b.ndim == 0:
+        f_b = np.full_like(f_asinh, f_b, dtype=f_asinh.dtype)
+    elif f_b.ndim == 1 and f_asinh.ndim == 2:
+        assert f_b.shape[0] == f_asinh.shape[0], "Flux softening must match the number of filters."
+        f_b = np.tile(f_b, (f_asinh.shape[1], 1)).T
+    else:
+        assert f_b.shape == f_asinh.shape, "Flux and flux error must have the same shape."
+
+    # Convert asinh magnitude back to flux
+    arcsinh_arg = -f_asinh / (2.5 * np.log10(np.e)) - np.log(f_b / 3631)
+    f_jy = 2 * f_b * np.sinh(arcsinh_arg)
+
+    # Convert asinh magnitude error back to flux error
+    # From f_jy_err_to_asinh: f_asinh_err = 2.5 * log10(e) * f_jy_err / sqrt(f_jy^2 + (2*f_b)^2)
+    # Rearranging: f_jy_err = f_asinh_err * sqrt(f_jy^2 + (2*f_b)^2) / (2.5 * log10(e))
+    f_jy_err = f_asinh_err * np.sqrt(f_jy**2 + (2 * f_b) ** 2) / (2.5 * np.log10(np.e))
+
+    return unyt_array(f_jy_err, units=Jy)
+
+
 def save_emission_model(model):
     """Save the fixed parameters of the emission model.
 
@@ -581,11 +824,22 @@ def save_emission_model(model):
                     fixed_params[i] = j
 
     dust_attenuation_keys = {}
-    if "attenuated" in model._transformation.keys():
-        dust_law = model._transformation["attenuated"][1]
+    if "attenuated" in model._models.keys():
+        dust_law = model._models["attenuated"]
         dust_attenuation_keys.update(dust_law.__dict__)
-        dust_attenuation_keys.pop("description")
-        dust_attenuation_keys.pop("_required_params")
+        dust_attenuation_keys.pop("description", None)
+        # drop any hidden keys (starting with _)
+        for key in list(dust_attenuation_keys.keys()):
+            if isinstance(dust_attenuation_keys[key], np.ndarray):
+                dust_attenuation_keys[key] = dust_attenuation_keys[key].tolist()
+            # force numpy types to native python types
+            if "numpy" in str(type(dust_attenuation_keys[key])) and not hasattr(
+                dust_attenuation_keys[key], "units"
+            ):
+                dust_attenuation_keys[key] = dust_attenuation_keys[key].item()
+            if key.startswith("_"):
+                dust_attenuation_keys.pop(key)
+
         dust_law = type(dust_law).__name__
 
     else:
@@ -623,6 +877,8 @@ def save_emission_model(model):
             dust_attenuation_units.append("")
 
     dust_attenuation_values = list(dust_attenuation_keys.values())
+    if any(isinstance(v, str) for v in dust_attenuation_values):
+        dust_attenuation_values = [str(item).encode("utf-8") for item in dust_attenuation_values]
     dust_attenuation_keys = list(dust_attenuation_keys.keys())
 
     dust_emission_units = []
@@ -726,6 +982,100 @@ def check_scaling(arr: Union[unyt_array, unyt_quantity]):
     return False
 
 
+def detect_outliers_pyod(
+    base_distribution,
+    observations,
+    methods=["ecod"],
+    combination="majority",
+    return_scores=False,
+    **kwargs,
+):
+    r"""Detect outliers in multivariate data using pyod methods.
+
+    Parameters:
+    -----------
+    base_distribution : array-like, shape (n_samples, n_features)
+        Reference distribution data
+    observations : array-like, shape (n_obs, n_features)
+        Observations to test for outliers
+    methods : str or list of str, default='ecod'
+        Method(s) to use from pyod. Available methods: 'ecod'
+    combination : str, default='majority'
+        How to combine results from multiple methods: 'majority', 'any', 'all', 'none'
+         - 'majority': Outlier if majority of methods flag as outlier
+         - 'any': Outlier if any method flags as outlier
+         - 'all': Outlier only if all methods flag as outlier
+         - 'none': Return individual method results without combination
+    return_scores : bool, default=False
+        Whether to return outlier scores along with the mask
+    \**kwargs : dict
+        Additional parameters for specific pyod methods
+    """
+    try:
+        import pyod  # noqa: F401
+    except ImportError:
+        raise ImportError(
+            "pyod is required for outlier detection with pyod methods. "
+            "Please install it via 'pip install pyod'."
+        )  # noqa: E501
+
+    if isinstance(methods, str):
+        methods = [methods]
+
+    # Automate this
+    import importlib
+
+    base_distribution = np.asarray(base_distribution)
+    observations = np.asarray(observations)
+
+    outlier_mask = np.zeros((observations.shape[0], len(methods)), dtype=bool)
+    scores = np.zeros((observations.shape[0], len(methods)))
+
+    for i, method in enumerate(methods):
+        try:
+            model_class = importlib.import_module(f"pyod.models.{method.lower()}")
+            model_name = method.replace("_", "").upper()
+            special_cases = {
+                "iforest": "IForest",
+                "feature_bagging": "FeatureBagging",
+            }
+            if method.lower() in special_cases:
+                model_name = special_cases[method.lower()]
+
+            model_class = getattr(model_class, model_name)
+
+        except ModuleNotFoundError:
+            raise ValueError(f"Method {method} is not recognized.")
+        print(f"Using method: {method}")
+        model = model_class(**kwargs)
+        model.fit(base_distribution)
+
+        predictions = model.predict(observations)
+        score = model.decision_function(observations)
+
+        outlier_mask[:, i] = predictions.astype(bool)
+        scores[:, i] = score
+
+    if combination == "majority":
+        final_outlier_mask = np.sum(outlier_mask, axis=1) >= (len(methods) / 2)
+    elif combination == "any":
+        final_outlier_mask = np.any(outlier_mask, axis=1)
+    elif combination == "all":
+        final_outlier_mask = np.all(outlier_mask, axis=1)
+    elif combination == "none":
+        final_outlier_mask = outlier_mask
+    else:
+        raise ValueError("Combination method must be 'majority' or 'any'.")
+
+    if return_scores:
+        return {
+            "outlier_mask": final_outlier_mask,
+            "scores": scores,
+        }
+
+    return final_outlier_mask
+
+
 def detect_outliers(
     base_distribution,
     observations,
@@ -738,39 +1088,38 @@ def detect_outliers(
     plot=True,
     **kwargs,
 ):
-    """Detect outliers in multivariate data using various methods.
+    r"""Detect outliers in multivariate data using various methods.
 
-    Parameters:
-    -----------
-    base_distribution : array-like, shape (n_samples, n_features)
-        Reference distribution data
-    observations : array-like, shape (n_obs, n_features)
-        Observations to test for outliers
-    method : str, default='mahalanobis'
-        Method to use: 'mahalanobis', 'robust_mahalanobis', 'lof', 'isolation_forest',
-        'one_class_svm', 'pca', 'hotelling_t2', 'kde'
-    contamination : float, default=0.1
-        Expected proportion of outliers (for applicable methods)
-    n_neighbors : int, default=20
-        Number of neighbors for LOF
-    threshold : float, optional
-        Manual threshold for outlier detection
-    confidence : float, default=0.95
-        Confidence level for statistical tests
-    n_components : int, optional
-        Number of components for PCA (if None, uses all)
-    plot : bool, default=True
-        Whether to plot results (only applicable for some methods)
-    **kwargs : dict
-        Additional parameters for specific methods
+    Args:
+        base_distribution (np.ndarray): Reference distribution data of
+            shape (n_samples, n_features).
+        observations (np.ndarray): Observations to test for outliers,
+            of shape (n_obs, n_features).
+        method (str, optional): Method to use. Options include:
+            'mahalanobis', 'robust_mahalanobis', 'lof', 'isolation_forest',
+            'one_class_svm', 'pca', 'hotelling_t2', 'kde'.
+            Defaults to 'mahalanobis'.
+        contamination (float, optional): Expected proportion of outliers
+            (for applicable methods). Defaults to 0.1.
+        n_neighbors (int, optional): Number of neighbors for LOF.
+            Defaults to 20.
+        threshold (float, optional): Manual threshold for outlier
+            detection. Defaults to None.
+        confidence (float, optional): Confidence level for statistical
+            tests. Defaults to 0.95.
+        n_components (int, optional): Number of components for PCA
+            (if None, uses all). Defaults to None.
+        plot (bool, optional): Whether to plot results (only applicable
+            for some methods). Defaults to True.
+        **kwargs (Any): Additional parameters for specific methods.
 
     Returns:
-    --------
-    dict : Dictionary containing:
-        - 'outlier_mask': Boolean array indicating outliers
-        - 'scores': Outlier scores
-        - 'threshold_used': Threshold value used
-        - 'method_info': Additional method-specific information
+        Dict[str, Any]: A dictionary containing:
+
+            - 'outlier_mask' (np.ndarray): Boolean array indicating outliers.
+            - 'scores' (np.ndarray): Outlier scores for each observation.
+            - 'threshold_used' (float): The threshold value used for detection.
+            - 'method_info' (dict): Additional method-specific information.
     """
     from sklearn.covariance import EllipticEnvelope
     from sklearn.decomposition import PCA
@@ -1616,8 +1965,7 @@ def optimize_sfh_xlimit(ax, mass_threshold=0.001, buffer_fraction=0.2):
 
     Returns:
     --------
-    float
-        The optimal maximum x value for the plot
+    float - The optimal maximum x value for the plot
     """
     # Get all lines from the plot
     lines = ax.get_lines()
@@ -1662,60 +2010,6 @@ def optimize_sfh_xlimit(ax, mass_threshold=0.001, buffer_fraction=0.2):
     new_xlimit = earliest_activity + buffer
 
     return new_xlimit
-
-
-# Example usage
-if __name__ == "__main__":
-    # Generate sample data with known feature importance
-    np.random.seed(42)
-
-    # Create base distribution
-    n_samples = 500
-    n_features = 5
-
-    # Feature 1 and 2 are highly correlated and important
-    # Feature 3 has higher variance
-    # Features 4 and 5 are less important
-
-    base_data = np.random.randn(n_samples, n_features)
-    base_data[:, 1] = base_data[:, 0] + 0.5 * np.random.randn(n_samples)  # Correlated
-    base_data[:, 2] = 2 * np.random.randn(n_samples)  # Higher variance
-
-    # Create observations with outliers driven by specific features
-    n_obs = 100
-    observations = np.random.randn(n_obs, n_features)
-    observations[:, 1] = observations[:, 0] + 0.5 * np.random.randn(n_obs)
-    observations[:, 2] = 2 * np.random.randn(n_obs)
-
-    # Add outliers driven primarily by feature 1
-    outlier_indices = [10, 25, 40, 60, 80]
-    observations[outlier_indices, 0] += 4  # Strong outlier in feature 1
-    observations[outlier_indices, 1] += 2  # Some effect in correlated feature
-
-    # Add outliers driven by feature 3
-    observations[[15, 35, 55], 2] += 6
-
-    feature_names = [
-        "Primary_Driver",
-        "Correlated_Feature",
-        "High_Variance",
-        "Low_Impact_1",
-        "Low_Impact_2",
-    ]
-
-    # Analyze feature contributions
-    print("SINGLE METHOD ANALYSIS")
-    print("=" * 50)
-    results = analyze_feature_contributions(
-        base_data, observations, method="robust_mahalanobis", feature_names=feature_names
-    )
-
-    print("\n" + "=" * 80)
-
-    # Compare methods
-    comparison_results = compare_methods_feature_importance(
-        base_data, observations, feature_names=feature_names
-    )
 
 
 def make_serializable(obj: Any, allowed_types=None) -> Any:
@@ -1911,6 +2205,123 @@ def make_serializable(obj: Any, allowed_types=None) -> Any:
         return f"<unserializable object of type {type(obj).__name__}>"
 
 
+def combine_rank_files(size, filepath, num_galaxies, starts, ends):
+    """Combine the rank files into a single file.
+
+    Args:
+        output_file (str): The name of the output file.
+        size (int): The number of MPI ranks.
+        filepath (str): The template filepath for the rank files.
+        num_galaxies (int): The total number of galaxies.
+        starts (list): The start indices for each rank.
+        ends (list): The end indices for each rank.
+
+    Returns:
+        None
+    """
+
+    def _recursive_copy(src, dest, slice):
+        """Recursively copy the contents of an HDF5 group.
+
+        Args:
+            src (h5py.Group): The source group.
+            dest (h5py.Group): The destination group.
+            slice: The slice (along the first axis) the data belongs to.
+        """
+        # Copy over the attributes
+        for attr in src.attrs:
+            dest.attrs[attr] = src.attrs[attr]
+
+        # Loop over the items in the source group
+        for k, v in src.items():
+            if k in ["Instruments", "EmissionModel"]:
+                continue
+
+            # If we found a group we need to recurse and create the group
+            # in the destination file if it doesn't exist. We also need to
+            # copy the attributes.
+            if isinstance(v, h5py.Group):
+                # Create the group if it doesn't exist
+                if k not in dest:
+                    dest.create_group(k)
+
+                # Recurse
+                _recursive_copy(v, dest[k], slice)
+
+            elif slice is None:
+                # Just copy the dataset directly
+                dset = dest.create_dataset(
+                    k,
+                    data=v[...],
+                    dtype=v.dtype,
+                )
+
+                # Copy the attributes
+                for attr in v.attrs:
+                    dset.attrs[attr] = v.attrs[attr]
+
+            else:
+                # If the dataset doesn't exist we need to create it
+                if k not in dest:
+                    dset = dest.create_dataset(
+                        k,
+                        shape=(num_galaxies, *v.shape[1:]),
+                        dtype=v.dtype,
+                    )
+                else:
+                    dset = dest[k]
+
+                # Copy the data into the slice
+                dset[slice, ...] = v[...]
+
+                # Copy the attributes
+                for attr in v.attrs:
+                    dset.attrs[attr] = v.attrs[attr]
+
+    # Define the new file path
+    ext = filepath.split(".")[-1]
+    path_no_ext = ".".join(filepath.split(".")[:-1])
+    new_path = "_".join(path_no_ext.split("_")[:-1]) + f".{ext}"
+    temp_path = "_".join(path_no_ext.split("_")[:-1]) + "_<rank>.hdf5"
+
+    # Open the output file
+    with h5py.File(new_path, "w") as hdf:
+        # Loop over each rank file
+        for rank in range(size):
+            # Open the rank file
+            with h5py.File(
+                temp_path.replace("<rank>", str(rank)),
+                "r",
+            ) as rank_hdf:
+                # We only the metadata groups once
+                if rank == 0:
+                    # Copy the instruments over (no slice needed)
+                    hdf.create_group("Instruments")
+                    _recursive_copy(
+                        rank_hdf["Instruments"],
+                        hdf["Instruments"],
+                        slice=None,
+                    )
+
+                    # Copy the emission model over (no slice needed)
+                    hdf.create_group("EmissionModel")
+                    _recursive_copy(
+                        rank_hdf["EmissionModel"],
+                        hdf["EmissionModel"],
+                        slice=None,
+                    )
+
+                # Copy the contents of the rank file to the output file
+                _recursive_copy(
+                    rank_hdf,
+                    hdf,
+                    slice=slice(starts[rank], ends[rank]),
+                )
+
+            # Delete the rank file
+            os.remove(temp_path.replace("<rank>", str(rank)))
+
+
 def setup_mpi_named_logger(
     name: str, level: int = logging.INFO, stream: TextIO = sys.stdout
 ) -> logging.Logger:
@@ -1946,13 +2357,15 @@ def setup_mpi_named_logger(
     if RANK == 0:
         # Configure the logger for the main process (rank 0)
         logger.setLevel(level)
-        handler = logging.StreamHandler(stream)
-        formatter = logging.Formatter("%(asctime)s | %(name)s | %(levelname)-8s | %(message)s")
-        handler.setFormatter(formatter)
-        logger.addHandler(handler)
+
     else:
-        # Add a NullHandler to silence the logger on all other processes
-        logger.addHandler(logging.NullHandler())
+        # Only raise warnings and errors for other ranks
+        logger.setLevel(logging.WARNING)
+
+    handler = logging.StreamHandler(stream)
+    formatter = logging.Formatter("%(asctime)s | %(name)s | %(levelname)-8s | %(message)s")
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
 
     return logger
 
@@ -2001,12 +2414,12 @@ def move_to_device(obj: Any, device: str | torch.device, visited: Set[int] | Non
     if hasattr(obj, "_device"):
         try:
             setattr(obj, "_device", device)
-        except AttributeError:
+        except (AttributeError, TypeError):
             pass  # Attribute is not writable
     if hasattr(obj, "device"):
         try:
             setattr(obj, "device", device)
-        except AttributeError:
+        except (AttributeError, TypeError):
             pass  # Attribute is not writable
 
     # --- 3. Recurse into attributes of a custom object ---
@@ -2015,7 +2428,7 @@ def move_to_device(obj: Any, device: str | torch.device, visited: Set[int] | Non
             new_value = move_to_device(value, device, visited)
             try:
                 setattr(obj, attr, new_value)
-            except AttributeError:
+            except (AttributeError, TypeError):
                 # This attribute is not writable (e.g., a property without a setter).
                 # We can safely ignore it.
                 pass
@@ -2029,7 +2442,7 @@ _alternate_screen_active = False
 def _enter_alternate_screen():
     """Internal function to switch the terminal to the alternate screen buffer."""
     global _alternate_screen_active
-    if plt is not None and not _alternate_screen_active:
+    if plo is not None and not _alternate_screen_active:
         sys.stdout.write("\x1b[?1049h")
         sys.stdout.flush()
         _alternate_screen_active = True
@@ -2038,7 +2451,7 @@ def _enter_alternate_screen():
 def _exit_alternate_screen():
     """Internal function to switch back from the alternate screen buffer."""
     global _alternate_screen_active
-    if plt is not None and _alternate_screen_active:
+    if plo is not None and _alternate_screen_active:
         sys.stdout.write("\x1b[?1049l")
         sys.stdout.flush()
         _alternate_screen_active = False
@@ -2083,12 +2496,15 @@ def update_plot(
         sys.stdout.write("\x1b[2J\x1b[H")
         sys.stdout.flush()
 
+    if plo is None:
+        return
+
     # Get the size of the terminal to make the plot fit.
-    plt.clf()  # Clear the previous plot data
+    plo.clf()  # Clear the previous plot data
 
     # Plot the training and validation loss.
-    plt.plot(train_loss, label="Training Loss", color="blue")
-    plt.plot(val_loss, label="Validation Loss", color="red")
+    plo.plot(train_loss, label="Training Loss", color="blue")
+    plo.plot(val_loss, label="Validation Loss", color="red")
 
     # Set the plot dimensions and labels.
     if trial_number is not None:
@@ -2104,16 +2520,16 @@ def update_plot(
         else:
             title += f" - Time Elapsed: {time_elapsed / 3600:.1f}h"
 
-    plt.title(title)
-    plt.xlabel("Epoch")
-    plt.ylabel("Loss")
-    plt.xfrequency(5)  # Set the frequency of x-axis ticks
-    plt.grid(True, True)
+    plo.title(title)
+    plo.xlabel("Epoch")
+    plo.ylabel("Loss")
+    plo.xfrequency(5)  # Set the frequency of x-axis ticks
+    plo.grid(True, True)
 
     # Add a vertical line at the best validation loss epoch
     if len(val_loss) > 0:
         best_epoch = np.argmin(val_loss)
-        plt.plot(
+        plo.plot(
             [best_epoch, best_epoch],
             [min(min(train_loss), min(val_loss)), max(max(train_loss), max(val_loss))],
             label="Best Val Loss = {:.4f}".format(val_loss[best_epoch]),
@@ -2121,4 +2537,139 @@ def update_plot(
         )
 
     # Display the plot.
-    plt.show()
+    plo.show()
+
+
+def cumsum_dirichlet_prior_transform(unit_cube, alpha):
+    """Transform from unit hypercube to cumulative sum of Dirichlet-distributed parameters.
+
+    This produces ordered breakpoints on [0,1] by taking the cumulative sum of
+    a Dirichlet distribution. Useful for nested sampling priors with ordered
+    parameters (e.g., transition times, change points, ordered categories).
+
+    Uses stick-breaking transformation with Beta distributions appropriate
+    for Dirichlet(alpha, alpha, ..., alpha) distribution.
+
+    Parameters
+    ----------
+    unit_cube : array-like, shape (N,)
+        Values from the unit hypercube [0,1]^N
+    alpha : float
+        Dirichlet concentration parameter (same for all dimensions)
+
+    Returns:
+    -------
+    breakpoints : ndarray, shape (N,)
+        Ordered values 0 < breakpoints[0] < ... < breakpoints[N-1] < 1
+        These are cumulative sums of Dirichlet(alpha, ..., alpha) with (N+1) components
+
+    Examples:
+    --------
+    >>> # Transform 3D unit cube to 3 ordered breakpoints
+    >>> unit_cube = [
+    ...     0.5,
+    ...     0.5,
+    ...     0.5,
+    ... ]
+    >>> breakpoints = cumsum_dirichlet_prior_transform(
+    ...     unit_cube,
+    ...     alpha=1.0,
+    ... )
+    >>> print(
+    ...     f"Breakpoints: {breakpoints}"
+    ... )
+    >>> print(
+    ...     f"All ordered: {np.all(breakpoints[:-1] < breakpoints[1:])}"
+    ... )
+
+    >>> # Equivalent to:
+    >>> # txs = np.cumsum(np.random.dirichlet(np.ones(N+1)*alpha)i)[:-1]
+
+    """
+    unit_cube = np.asarray(unit_cube)
+    N = len(unit_cube)  # Number of breakpoints (Dirichlet has N+1 components)
+
+    # Pre-allocate output for N+1 Dirichlet components
+    theta = np.zeros(N + 1)
+
+    # Compute remaining stick length
+    remaining = 1.0
+
+    # Stick-breaking process for N+1 components
+    for k in range(N):
+        # Transform u_k through inverse CDF of Beta(alpha, (N+1-k-1)*alpha)
+        beta_a = alpha
+        beta_b = (N - k) * alpha  # N+1 total components, so N-k remaining
+        u_k = stats.beta.ppf(unit_cube[k], beta_a, beta_b)
+
+        # Break off piece of stick
+        theta[k] = remaining * u_k
+        remaining *= 1 - u_k
+
+    # Last parameter gets remaining stick
+    theta[N] = remaining
+
+    # Return cumulative sum, dropping the last element (which equals 1.0)
+    return np.cumsum(theta)[:-1]
+
+
+def search_parameter_array(
+    array: np.ndarray,
+    parameter_names: List[str],
+    constraints: List[Tuple[str, str, Union[int, float]]],
+) -> np.ndarray:
+    """Return indexes in array with columns which meet constraints.
+
+    Args:
+        array (np.ndarray): The data array where rows are entries and columns
+                            are parameters.
+        parameter_names (List[str]): A list of string names for each column
+                                     in the array.
+        constraints (List[Tuple[str, str, Union[int, float]]]):
+            A list of tuples, where each tuple defines a constraint in the
+            format: (parameter_name, operator_string, value).
+            e.g., ('mass', '>', 100)
+
+    Returns:
+        np.ndarray: A NumPy array of integer indices for the rows in the input
+                    array that satisfy all of the given constraints.
+    """
+    # A mapping from string representations of operators to the actual
+    # functions from the `operator` module.
+    operator_map = {
+        ">": operator.gt,
+        "<": operator.lt,
+        ">=": operator.ge,
+        "<=": operator.le,
+        "==": operator.eq,
+        "!=": operator.ne,
+    }
+
+    # Start with a boolean mask of all True values, the same length as the array.
+    # We will combine this with the mask from each constraint.
+    combined_mask = np.ones(array.shape[0], dtype=bool)
+
+    # Iterate over each constraint and apply it to the array
+    for param_name, operator_str, value in constraints:
+        try:
+            # Find the column index for the given parameter name
+            col_idx = parameter_names.index(param_name)
+        except ValueError:
+            print(f"Warning: Parameter '{param_name}' not found. Skipping constraint.")
+            continue
+
+        # Get the corresponding operator function from our map
+        op_func = operator_map.get(operator_str)
+        if not op_func:
+            raise ValueError(f"Unsupported operator: {operator_str}")
+
+        # Create a boolean mask for the current constraint
+        current_mask = op_func(array[:, col_idx], value)
+
+        # Update the combined mask using a logical AND.
+        # This ensures that only rows satisfying *all* constraints are kept.
+        combined_mask &= current_mask
+
+    # np.where returns a tuple of arrays (one for each dimension).
+    # Since our mask is 1D, we just need the first element.
+    return np.where(combined_mask)[0]

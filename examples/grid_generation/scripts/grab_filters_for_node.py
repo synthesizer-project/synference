@@ -62,6 +62,24 @@ filter_codes = [
 ]
 
 filter_codes = [
+    "CTIO/DECam.u",
+    "CTIO/DECam.g",
+    "CTIO/DECam.r",
+    "CTIO/DECam.i",
+    "CTIO/DECam.z",
+    "CTIO/DECam.Y",
+    "LSST/LSST.u",
+    "LSST/LSST.g",
+    "LSST/LSST.r",
+    "LSST/LSST.i",
+    "LSST/LSST.z",
+    "LSST/LSST.Y",
+    "PAN-STARRS/PS1.g",
+    "PAN-STARRS/PS1.r",
+    "PAN-STARRS/PS1.i",
+    "PAN-STARRS/PS1.w",
+    "PAN-STARRS/PS1.z",
+    "PAN-STARRS/PS1.y",
     "Paranal/VISTA.Z",
     "Paranal/VISTA.Y",
     "Paranal/VISTA.J",
@@ -134,5 +152,5 @@ new_wav = generate_constant_R(R=300)
 filterset = FilterCollection(filter_codes, new_lam=new_wav)
 
 filterset.write_filters(
-    "/cosma/apps/dp276/dc-harv3/synference/examples/grid_generation/filters/GENERAL_SURVEY.hdf5"
+    "/cosma/apps/dp276/dc-harv3/synference/examples/grid_generation/scripts/filters/GENERAL_SURVEY.hdf5"
 )

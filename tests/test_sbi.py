@@ -1,7 +1,5 @@
 """Test suite for the SBI_Fitter class."""
 
-import os
-
 import numpy as np
 import pytest
 from astropy.cosmology import Planck18
@@ -10,7 +8,6 @@ from unyt import Angstrom, Jy, Myr, nJy, unyt_array
 from unyt.dimensions import mass, time
 
 from synference import GalaxyBasis, SBI_Fitter
-
 
 
 class TestSBIFitter:
@@ -284,4 +281,3 @@ class TestSuppFunctions:
         assert age.units == Myr, (
             "calculate_mass_weighted_age did not return a value with the correct units."
         )
-

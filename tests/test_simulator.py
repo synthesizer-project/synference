@@ -47,7 +47,8 @@ class TestGalaxySimulator:
         """Test initializing GalaxySimulator from a grid file."""
         pytest.skip()
         simulator = GalaxySimulator.from_grid(
-            grid_path=f"{grid_dir}/sbi_test_grid.hdf5", override_synthesizer_grid_dir=f'{synthesizer_grid_dir}/test_grid.hdf5'
+            grid_path=f"{grid_dir}/sbi_test_grid.hdf5",
+            override_synthesizer_grid_dir=f"{synthesizer_grid_dir}/test_grid.hdf5",
         )
         assert isinstance(simulator, GalaxySimulator)
 
