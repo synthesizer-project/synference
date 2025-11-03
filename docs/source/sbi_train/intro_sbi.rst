@@ -9,5 +9,5 @@ Training SBI Models
    complex_sbi_model
    model_validation
    model_optimization
-   online_sbi_model
+   online_training
    validation_sampling
