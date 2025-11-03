@@ -35,7 +35,8 @@ try:
     from synthesizer.pipeline import Pipeline
 
     synthesizer_available = True
-except Exception:
+except FileExistsError as e:
+    print(e)
     logger.warning(
         "Synthesizer dependencies not installed. Only the SBI functions will be available."
     )
@@ -86,13 +87,15 @@ UNIT_DICT = {
     "stellar_mass": "Msun",
 }
 
-
-uvj = UVJ()
-uvj = {
-    "U": FilterCollection(filters=[uvj["U"]]),
-    "V": FilterCollection(filters=[uvj["V"]]),
-    "J": FilterCollection(filters=[uvj["J"]]),
-}
+if synthesizer_available:
+    uvj = UVJ()
+    uvj = {
+        "U": FilterCollection(filters=[uvj["U"]]),
+        "V": FilterCollection(filters=[uvj["V"]]),
+        "J": FilterCollection(filters=[uvj["J"]]),
+    }
+else:
+    uvj = {}
 
 tophats = {
     "MUV": {"lam_eff": 1500 * Angstrom, "lam_fwhm": 100 * Angstrom},
