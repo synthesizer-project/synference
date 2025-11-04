@@ -30,23 +30,25 @@ Contents
 Citation & Acknowledgement
 --------------------------
 
-Please cite **all** of the following papers (Harvey et al. 2025 (in prep.), `Lovell et al. 2025 <https://ui.adsabs.harvard.edu/abs/2025arXiv250803888L/abstract>`_, `Roper et al. 2025 <https://ui.adsabs.harvard.edu/abs/2025arXiv250615811R/abstract>`_, `Ho et al. 2024 <https://ui.adsabs.harvard.edu/abs/2024OJAp....7E..54H/abstract>`_) if you use synference in your research:
+Please cite **all** of the following papers if you use synference in your research. Harvey et al. 2025 (in prep.) introduces the synference code, `Lovell et al. 2025 <https://ui.adsabs.harvard.edu/abs/2025arXiv250803888L/abstract>`_ & `Roper et al. 2025 <https://ui.adsabs.harvard.edu/abs/2025arXiv250615811R/abstract>`_ introduce the synthesizer code, and `Ho et al. 2024 <https://ui.adsabs.harvard.edu/abs/2024OJAp....7E..54H/abstract>`_ introduces the LtU-ILI framework.
 
 .. code-block:: bibtex
 
-      @ARTICLE{2025arXiv250803888L,
-             author = {{Lovell}, Christopher C. and {Roper}, William J. and {Vijayan}, Aswin P. and {Wilkins}, Stephen M. and {Newman}, Sophie and {Seeyave}, Louise},
-              title = "{Synthesizer: a Software Package for Synthetic Astronomical Observables}",
-            journal = {arXiv e-prints},
-           keywords = {Instrumentation and Methods for Astrophysics, Cosmology and Nongalactic Astrophysics, Astrophysics of Galaxies},
-               year = 2025,
-              month = aug,
-                eid = {arXiv:2508.03888},
-              pages = {arXiv:2508.03888},
+      @ARTICLE{2025OJAp....8E.152L,
+            author = {{Lovell}, Christopher C. and {Roper}, William J. and {Vijayan}, Aswin P. and {Wilkins}, Stephen M. and {Newman}, Sophie and {Seeyave}, Louise},
+            title = "{Synthesizer: a Software Package for Synthetic Astronomical Observables}",
+            journal = {The Open Journal of Astrophysics},
+      keywords = {Instrumentation and Methods for Astrophysics, Cosmology and Nongalactic Astrophysics, Astrophysics of Galaxies},
+            year = 2025,
+            month = oct,
+            volume = {8},
+            eid = {152},
+            pages = {152},
+            doi = {10.33232/001c.145766},
       archivePrefix = {arXiv},
-             eprint = {2508.03888},
-       primaryClass = {astro-ph.IM},
-             adsurl = {https://ui.adsabs.harvard.edu/abs/2025arXiv250803888L},
+            eprint = {2508.03888},
+      primaryClass = {astro-ph.IM},
+            adsurl = {https://ui.adsabs.harvard.edu/abs/2025OJAp....8E.152L},
             adsnote = {Provided by the SAO/NASA Astrophysics Data System}
       }
 
