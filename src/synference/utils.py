@@ -825,7 +825,7 @@ def save_emission_model(model):
 
     dust_attenuation_keys = {}
     if "attenuated" in model._models.keys():
-        dust_law = model._models["attenuated"]
+        dust_law = model._models["attenuated"]._transformer
         dust_attenuation_keys.update(dust_law.__dict__)
         dust_attenuation_keys.pop("description", None)
         # drop any hidden keys (starting with _)
