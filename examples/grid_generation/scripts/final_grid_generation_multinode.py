@@ -45,6 +45,9 @@ from synference import (
     generate_sfh_basis,
     calculate_line_ew,
     calculate_line_flux,
+    calculate_xi_ion0,
+    calculate_burstiness,
+    calculate_Ndot_ion,
 )
 
 # Filters
@@ -153,7 +156,7 @@ from mpi4py import MPI
 
 av_to_tau_v = 1.086  # conversion factor from Av to tau_v for the dust attenuation curve
 overwrite = False  # whether to overwrite existing grids
-Nmodels = 25_000  # number of models to generate
+Nmodels = 100_000#25_000  # number of models to generate
 grid_name = "BPASS"  # name for the grid
 cat_type = "spectra"  # spectra or photometry
 redshift = (0.01, 14)
@@ -392,6 +395,7 @@ for sfh_name, sfh_params in sfhs.items():
         grid_dir=grid_dir,
         new_lam=new_wav,
     )
+    print(grid.available_lines)
     # Metallicity
     Z_dists = [
         ZDist.DeltaConstant(log10metallicity=log_z)
@@ -604,7 +608,6 @@ for sfh_name, sfh_params in sfhs.items():
 
     if sfh_type == SFH.DenseBasis:
         param_transforms_to_save["db_tuple"] = make_db_tuple
-
     basis.create_mock_cat(
         emission_model_key=emission_key,
         out_name=f"grid_{name}",
@@ -628,6 +631,9 @@ for sfh_name, sfh_params in sfhs.items():
         Ha_flux=(calculate_line_flux, emission_model, "Ha", emission_key, cosmo),  # Calculate flux of H-alpha line
         OIII_EW=(calculate_line_ew, emission_model, "O3", emission_key),  # Calculate EW of OIII doublet
         OIII_flux=(calculate_line_flux, emission_model, "O3", emission_key, cosmo),  # Calculate flux of OIII doublet
+        burstiness=calculate_burstiness,
+        xi_ion0=(calculate_xi_ion0, emission_model, emission_key),
+        Ndot_ion=(calculate_Ndot_ion, emission_key),
         n_proc=n_proc,
         verbose=False,
         batch_size=batch_size,
@@ -635,6 +641,8 @@ for sfh_name, sfh_params in sfhs.items():
         compile_grid=compile_grid,
         multi_node=multinode,
         cat_type=cat_type,
+        em_lines_to_save=["H 1 6562.80A", "O 3 5006.84A"],
+        spectra_to_save=['dust_emission'],
     )
 
 
