@@ -2754,23 +2754,27 @@ def interval_sharpness(
     if not true_values:
         return 0.0
 
-    n = len(true_values)
-    ci = 1 - alpha
-    l_alpha = 0.5 - ci / 2
-    u_alpha = 0.5 + ci / 2
-    delta_alpha = u_alpha - l_alpha
+    if not 0 < alpha < 1:
+        raise ValueError("alpha must be between 0 and 1.")
 
-    sharpness_sum = 0
+    z_score = stats.norm.ppf(1 - alpha / 2.0)
+
+    scores: List[float] = []
     for y_true, mu, sigma in zip(true_values, predicted_means, predicted_sigmas):
-        # Calculate y(i) as the CDF of the ground truth value
-        y_i = stats.norm.cdf(y_true, loc=mu, scale=sigma)
+        if sigma <= 0:
+            raise ValueError("predicted_sigmas must all be positive.")
 
-        term = -2 * alpha * delta_alpha
-        if y_i < l_alpha:
-            term += -4 * (l_alpha - y_i)
-        elif y_i > u_alpha:
-            term += -4 * (y_i - u_alpha)
+        lower = mu - z_score * sigma
+        upper = mu + z_score * sigma
+        width = upper - lower
 
-        sharpness_sum += term
+        penalty = 0.0
+        if y_true < lower:
+            penalty = lower - y_true
+        elif y_true > upper:
+            penalty = y_true - upper
 
-    return sharpness_sum / n
+        scores.append(width + (2.0 / alpha) * penalty)
+
+    # Return negative interval score so tighter intervals are closer to zero
+    return -float(np.mean(scores))
