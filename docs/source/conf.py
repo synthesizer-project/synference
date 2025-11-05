@@ -83,3 +83,18 @@ html_theme_options = {
 html_title = "synference"
 
 ignore_pattern = ["basic_model.py"]
+
+import urllib.request
+
+def fetch_remote_content(app, docname, source):
+    if docname == 'getting_started/contributing':
+        # Fetch the remote content
+        url = 'https://raw.githubusercontent.com/synthesizer-project/synthesizer/refs/heads/main/docs/source/getting_started/contributing.rst'
+        with urllib.request.urlopen(url) as response:
+            remote_content = response.read().decode('utf-8')
+        
+        # Append or prepend to your document
+        source[0] = source[0] + '\n\n' + remote_content
+
+def setup(app):
+    app.connect('source-read', fetch_remote_content)
