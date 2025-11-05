@@ -39,6 +39,7 @@ def check_hdf5(hfile, expected_keys, expected_attrs=None, check_size=False):
                 assert key in f.attrs, f"Attribute '{key}' not found in HDF5 file."
                 assert np.all(f.attrs[key] == attrs), (
                     f"Attribute '{key}' does not match expected value."
+                    f" Expected: {attrs}, Found: {f.attrs[key]}"
                 )
 
 
