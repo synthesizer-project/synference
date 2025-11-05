@@ -55,7 +55,7 @@ from .custom_runner import CustomIndependentUniform
 
 # astropy, scipy, matplotlib, tqdm, synthesizer, unyt, h5py, numpy,
 # ili, torch, sklearn, optuna, joblib, pandas, tarp, astropy.table
-from .grid import GalaxySimulator
+from .library import GalaxySimulator
 from .noise_models import (
     AsinhEmpiricalUncertaintyModel,
     EmpiricalUncertaintyModel,
@@ -77,7 +77,7 @@ from .utils import (
     detect_outliers_pyod,
     f_jy_err_to_asinh,
     f_jy_to_asinh,
-    load_grid_from_hdf5,
+    load_library_from_hdf5,
     make_serializable,
     move_to_device,
     optimize_sfh_xlimit,
@@ -145,8 +145,8 @@ class SBI_Fitter:
         The names of the features to use for fitting.
     feature_units: list
         The units of the features to use for fitting.
-    grid_path: str
-        The path to the grid file.
+    library_path: str
+        The path to the library file.
     supplementary_parameters: np.ndarray
         Any supplementary parameters to include in the fitting.
     supplementary_parameter_names: list
@@ -177,7 +177,7 @@ class SBI_Fitter:
         feature_array: np.ndarray = None,
         feature_names: list = None,
         feature_units: list = None,
-        grid_path: str = None,
+        library_path: str = None,
         supplementary_parameters: np.ndarray = None,
         supplementary_parameter_names: list = None,
         supplementary_parameter_units: list = None,
@@ -207,8 +207,8 @@ class SBI_Fitter:
             The names of the features to use for fitting.
         feature_units: list
             The units of the features to use for fitting.
-        grid_path: str
-            The path to the grid file.
+        library_path: str
+            The path to the library file.
         supplementary_parameters: np.ndarray
             Any supplementary parameters to include in the fitting.
         supplementary_parameter_names: list
@@ -274,7 +274,7 @@ class SBI_Fitter:
         self.supplementary_parameter_units = supplementary_parameter_units
 
         # Grid path
-        self.grid_path = grid_path
+        self.library_path = library_path
 
         self.has_features = (self.feature_array is not None) and (self.feature_names is not None)
 
@@ -336,14 +336,14 @@ class SBI_Fitter:
         # Training data if unnormalized and not setup as correct features yet.
 
         if not os.path.isfile(hdf5_path):
-            if os.path.exists(f"{code_path}/grids/{hdf5_path}"):
-                hdf5_path = f"{code_path}/grids/{hdf5_path}"
+            if os.path.exists(f"{code_path}/libraries/{hdf5_path}"):
+                hdf5_path = f"{code_path}/libraries/{hdf5_path}"
 
         try:
-            output = load_grid_from_hdf5(hdf5_path)
+            output = load_library_from_hdf5(hdf5_path)
         except Exception as e:
             logger.warn(
-                f"Error loading HDF5 file {hdf5_path}: {e}Won't be able to fit model without grid."
+                f"Error loading HDF5 file {hdf5_path}: {e}Won't be able to fit model without library."
             )
             return cls(
                 name=model_name,
@@ -356,7 +356,7 @@ class SBI_Fitter:
                 feature_array=None,
                 feature_names=None,
                 feature_units=None,
-                grid_path=hdf5_path,
+                library_path=hdf5_path,
                 **kwargs,
             )
 
@@ -398,7 +398,7 @@ class SBI_Fitter:
             feature_array=None,
             feature_names=None,
             feature_units=None,
-            grid_path=hdf5_path,
+            library_path=hdf5_path,
             supplementary_parameters=supplementary_parameters,
             supplementary_parameter_names=supplementary_parameter_names,
             supplementary_parameter_units=supplementary_parameter_units,
@@ -410,7 +410,7 @@ class SBI_Fitter:
     def load_saved_model(
         cls,
         model_file,
-        grid_path: Optional[str] = None,
+        library_path: Optional[str] = None,
         model_name: str = None,
         load_arrays: bool = True,
         **kwargs,
@@ -419,7 +419,7 @@ class SBI_Fitter:
 
         Args:
             model_file (str): Path to the saved model file.
-            grid_path (Optional[str], optional): Optional path to the grid file.
+            library_path (Optional[str], optional): Optional path to the library file.
                 If not provided, it will be loaded from the model
                 file parameters. Defaults to None.
             model_name (Optional[str], optional): Optional name of the model.
@@ -440,7 +440,7 @@ class SBI_Fitter:
             else:
                 raise ValueError(f"Model file {model_file} does not exist.")
 
-        if grid_path is None or model_name is None:
+        if library_path is None or model_name is None:
             level: int = logger.getEffectiveLevel()
             try:
                 logger.setLevel(logging.CRITICAL)
@@ -457,15 +457,15 @@ class SBI_Fitter:
             if model_name == "default_name":
                 logger.warning("Model name not found in file. Using default name 'default_name'.")
 
-            if grid_path is None:
-                grid_path = params.get("grid_path", None)
+            if library_path is None:
+                library_path = params.get("library_path", None)
 
-                if grid_path is None:
-                    raise ValueError("Grid path not found in model file. Please provide it.")
+                if library_path is None:
+                    raise ValueError("Library path not found in model file. Please provide it.")
 
         # Initialize the SBI_Fitter with the loaded parameters
         fitter = cls.init_from_hdf5(
-            model_name=model_name, hdf5_path=grid_path, return_output=False, **kwargs
+            model_name=model_name, hdf5_path=library_path, return_output=False, **kwargs
         )
 
         fitter.load_model_from_pkl(model_file, set_self=True, load_arrays=load_arrays)
@@ -715,7 +715,7 @@ class SBI_Fitter:
             "fitted_parameter_names": self.fitted_parameter_names,
             "timestamp": self._timestamp,
             "prior": self._prior,
-            "grid_path": self.grid_path,
+            "library_path": self.library_path,
             "name": self.name,
             "has_simulator": self.has_simulator,
         }
@@ -1067,11 +1067,11 @@ class SBI_Fitter:
         extra_features: list = None,
         **kwargs,
     ):
-        """Create a feature array from the raw observation grid.
+        """Create a feature array from the raw observation library.
 
         A simpler wrapper for
         `create_feature_array_from_raw_photometry` with default values.
-        This function will create a feature array from the raw observation grid
+        This function will create a feature array from the raw observation library
         with no noise, and all photometry in mock catalogue used.
         """
         if self.observation_type == "photometry":
@@ -1107,7 +1107,7 @@ class SBI_Fitter:
         min_flux_value: float = -np.inf,
         max_flux_value: float = np.inf,
     ):
-        """Create a feature array from the raw spectra grid.
+        """Create a feature array from the raw spectral library.
 
         Currently only support basic scaling and cropping
 
@@ -1159,7 +1159,7 @@ class SBI_Fitter:
             raise ValueError("This method is only for spectra models.")
 
         if self.raw_observation_grid is None:
-            raise ValueError("Raw observation grid is not set. Please provide a valid grid.")
+            raise ValueError("Raw observation library is not set. Please provide a valid library.")
 
         if extra_features is None:
             extra_features = []
@@ -3195,7 +3195,7 @@ class SBI_Fitter:
         output = {}
         if recover_SEDs:
             if not hasattr(self, "simulator"):
-                self.recreate_simulator_from_grid()
+                self.recreate_simulator_from_library()
 
             samples_sed = np.transpose(samples_quant, (1, 2, 0))
             for pos, (obs_i, samples_i) in tqdm(
@@ -4284,7 +4284,7 @@ class SBI_Fitter:
         simulator: Optional[Callable] = None,
         num_simulations: int = 1000,
         num_online_rounds: int = 5,
-        initial_training_from_grid: bool = False,
+        initial_training_from_library: bool = False,
         override_prior_ranges: dict = {},
         online_training_xobs: Optional[np.ndarray] = None,
         load_existing_model: bool = True,
@@ -4364,7 +4364,7 @@ class SBI_Fitter:
                 each call during 'online' learning. Defaults to 1000.
             num_online_rounds (int, optional): Number of rounds for 'online'
                 learning. Defaults to 5.
-            initial_training_from_grid (bool, optional): Whether to use the
+            initial_training_from_library (bool, optional): Whether to use the
                 initial training from the grid in 'online' learning.
                 WARNING: This is broken. Defaults to False.
             override_prior_ranges (dict, optional): Dictionary of prior ranges
@@ -4460,7 +4460,7 @@ class SBI_Fitter:
                 net_configs = [{"model": train_args["fixed_params"]["model_choice"]}]
 
         if not run:
-            if learning_type == "offline" or initial_training_from_grid:
+            if learning_type == "offline" or initial_training_from_library:
                 if not self.has_features:
                     raise ValueError(
                         "Feature array not created. Please create the feature array first."
@@ -4589,7 +4589,7 @@ class SBI_Fitter:
                 if not os.path.exists(f"{out_dir}/online/"):
                     os.makedirs(f"{out_dir}/online/")
 
-                if initial_training_from_grid:
+                if initial_training_from_library:
                     # Save already created data to .npy files
                     np.save(
                         f"{out_dir}/online/xobs.npy",
@@ -4634,8 +4634,8 @@ class SBI_Fitter:
                     thetafid_file="thetafid.npy" if online_training_xobs is None else None,
                     num_simulations=num_simulations,
                     save_simulated=True,
-                    x_file="x.npy",  # if initial_training_from_grid else None,
-                    theta_file="theta.npy",  # , if initial_training_from_grid else None,
+                    x_file="x.npy",  # if initial_training_from_library else None,
+                    theta_file="theta.npy",  # , if initial_training_from_library else None,
                     simulator=simulator,
                 )
 
@@ -4785,11 +4785,11 @@ class SBI_Fitter:
                 self._train_args = train_args
                 self._ensemble_model_types = ensemble_model_types
                 self._ensemble_model_args = ensemble_model_args
-                if learning_type == "online" or initial_training_from_grid:
+                if learning_type == "online" or initial_training_from_library:
                     self.simulator = simulator
                     self._num_simulations = num_simulations
                     self._num_online_rounds = num_online_rounds
-                    self._initial_training_from_grid = initial_training_from_grid
+                    self._initial_training_from_library = initial_training_from_library
                 else:
                     self._train_indices = train_indices
                     self._test_indices = test_indices
@@ -4832,11 +4832,11 @@ class SBI_Fitter:
                     "training_time": elapsed_time.total_seconds(),
                 }
 
-            if learning_type == "online" or initial_training_from_grid:
+            if learning_type == "online" or initial_training_from_library:
                 param_dict["simulator"] = simulator
                 param_dict["num_simulations"] = num_simulations
                 param_dict["num_online_rounds"] = num_online_rounds
-                param_dict["initial_training_from_grid"] = initial_training_from_grid
+                param_dict["initial_training_from_library"] = initial_training_from_library
                 param_dict["online_training_xobs"] = online_training_xobs
 
             if learning_type == "offline":
@@ -4848,7 +4848,7 @@ class SBI_Fitter:
                 out_dir=out_dir,
                 name_append=name_append,
                 save_method=save_method,
-                has_grid=learning_type == "offline" or initial_training_from_grid,
+                has_grid=learning_type == "offline" or initial_training_from_library,
                 **param_dict,
             )
 
@@ -5028,7 +5028,7 @@ class SBI_Fitter:
 
         """
         if not self.has_simulator and not interpolate_grid:
-            self.recreate_simulator_from_grid(set_self=True)
+            self.recreate_simulator_from_library(set_self=True)
 
             if not self.has_simulator:
                 raise ValueError("Simulator must be set to fit the observation.")
@@ -5415,12 +5415,12 @@ class SBI_Fitter:
         else:
             raise ValueError("Sampler must be either 'dynesty', 'ultranest' or 'nautilus'.")
 
-    def recreate_simulator_from_grid(
+    def recreate_simulator_from_library(
         self, set_self=True, overwrite=False, override_grid_path=None, **kwargs
     ):
-        """Recreate the simulator from the HDF5 grid.
+        """Recreate the simulator from the HDF5 library.
 
-        Simple grids (single SFH, ZDist, one basis)
+        Simple libraries (single SFH, ZDist, one basis)
         with pre-existing simple EmissionModels
         can be recreated as a simulator, allowing
         for SED recovery without manual
@@ -5436,9 +5436,9 @@ class SBI_Fitter:
         """
         # grid path
         if override_grid_path is not None:
-            grid_path = override_grid_path
+            library_path = override_grid_path
         else:
-            grid_path = self.grid_path
+            library_path = self.library_path
 
         if self.has_simulator and not overwrite:
             return self.simulator
@@ -5473,7 +5473,7 @@ class SBI_Fitter:
         default_kwargs.update(kwargs)
 
         try:
-            simulator = GalaxySimulator.from_grid(grid_path, **default_kwargs)
+            simulator = GalaxySimulator.from_library(library_path, **default_kwargs)
         except ValueError as e: 
             logger.error(
                 "Could not recreate simulator from grid. This model"
@@ -5495,7 +5495,7 @@ class SBI_Fitter:
         if set_self:
             self.simulator = simulator
             self.has_simulator = True
-            logger.info(f"Simulator recreated from grid at {grid_path}.")
+            logger.info(f"Simulator recreated from grid at {library_path}.")
 
         scales = {"log10": lambda x: 10**x, "sqrt": lambda x: x**2}
         for parameter in self.fitted_parameter_names:
@@ -5597,7 +5597,7 @@ class SBI_Fitter:
 
         if simulator is None:
             if not self.has_simulator:
-                self.recreate_simulator_from_grid(set_self=True)
+                self.recreate_simulator_from_library(set_self=True)
 
             if not hasattr(self, "simulator"):
                 raise ValueError("Simulator must be provided or set in the object.")
@@ -7441,7 +7441,7 @@ class SBI_Fitter:
 
                     self._num_simulations = params["num_simulations"]
                     self._num_online_rounds = params["num_online_rounds"]
-                    self._initial_training_from_grid = params["initial_training_from_grid"]
+                    self._initial_training_from_library = params["initial_training_from_library"]
 
                 self._train_args = params["train_args"]
                 self._prior = params["prior"]
@@ -7871,11 +7871,11 @@ class Simformer_Fitter(SBI_Fitter):
         )
 
     @classmethod
-    def load_saved_model(cls, model_name: str, grid_path: str, model_file: str, **kwargs):
+    def load_saved_model(cls, model_name: str, library_path: str, model_file: str, **kwargs):
         """Load a saved Simformer model from a file."""
         model = cls.init_from_hdf5(
             model_name=model_name,
-            hdf5_path=grid_path,
+            hdf5_path=library_path,
             return_output=False,
             **kwargs,
         )

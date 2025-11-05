@@ -48,7 +48,7 @@ jobs:
        - name: Download test data
         run: |
           # Download test grid data 
-          mkdir -p data/grids/
+          mkdir -p data/libraries/
           synthesizer-download --test-grids --dust-grid
           cd ../
       - name: Sphinx Build

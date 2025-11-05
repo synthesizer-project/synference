@@ -31,9 +31,9 @@ def test_dir():
 
 
 @pytest.fixture
-def grid_dir(test_dir):
+def library_dir(test_dir):
     """Fixture to get the grid directory path."""
-    return test_dir / "test_grids"
+    return test_dir / "test_libraries"
 
 
 @pytest.fixture
@@ -45,9 +45,9 @@ def synthesizer_grid_dir(test_dir):
 
 
 @pytest.fixture
-def test_sbi_grid(grid_dir):
+def test_sbi_library(library_dir):
     """Fixture to create a test SBI grid for testing synference."""
-    return f"{grid_dir}/sbi_test_grid.hdf5"
+    return f"{library_dir}/sbi_test_library.hdf5"
 
 
 @pytest.fixture
@@ -109,8 +109,8 @@ def simple_zdist():
 
 
 @pytest.fixture
-def grid_basis_params(test_grid, mock_emission_model, mock_instrument, simple_sfh, simple_zdist):
-    """Fixture to create parameters for GalaxyBasis with a grid."""
+def library_basis_params(test_grid, mock_emission_model, mock_instrument, simple_sfh, simple_zdist):
+    """Fixture to create parameters for GalaxyBasis with a library."""
     return {
         "model_name": "test_basis",
         "redshifts": np.array([6.0, 7.0, 8.0]),
@@ -122,7 +122,7 @@ def grid_basis_params(test_grid, mock_emission_model, mock_instrument, simple_sf
         "galaxy_params": {"tau_v": [0.2, 0.3, 0.4]},
         "instrument": mock_instrument,
         "redshift_dependent_sfh": False,
-        "build_grid": True,
+        "build_library": True,
     }
 
 
@@ -196,7 +196,7 @@ def lhc_basis_params(
         "instrument": mock_instrument,
         "galaxy_params": {"tau_v": all_param_dict["tau_v"]},
         "redshift_dependent_sfh": True,
-        "build_grid": False,
+        "build_library": False,
         "sfhs": sfh_models,
     }
 
