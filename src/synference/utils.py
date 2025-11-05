@@ -30,7 +30,7 @@ except ImportError:
     plo = None
 
 
-def load_grid_from_hdf5(
+def load_library_from_hdf5(
     hdf5_path: str,
     photometry_key: str = "Grid/Photometry",
     parameters_key: str = "Grid/Parameters",

@@ -3,7 +3,7 @@ import numpy as np
 
 fitter = SBI_Fitter.init_from_hdf5(
     "SPHINX_inference",
-    "/cosma/apps/dp276/dc-harv3/synference/grids/grid_SPHINX20.hdf5",
+    "/cosma/apps/dp276/dc-harv3/synference/libraries/grid_SPHINX20.hdf5",
 )
 
 def log10floor(x, floor=-2):
