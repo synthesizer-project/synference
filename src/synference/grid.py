@@ -5287,7 +5287,7 @@ class GalaxySimulator(object):
 
                     if dust_model is None:
                         raise ValueError(
-                            f"Dust model {dust_model_name} not found in synthesizer.emission_models.dust. Cannot create GalaxySimulator."  # noqa: E501
+                            f"Dust model {dust_model_name} not found in {dm}. Cannot create GalaxySimulator."  # noqa: E501
                         )
 
                     dust_model_params = {}
