@@ -13,17 +13,17 @@ from synference import GalaxyBasis, SBI_Fitter
 class TestSBIFitter:
     """Test suite for the SBI_Fitter class."""
 
-    def test_init_sbifitter_from_grid(self, test_sbi_grid):
-        """Test that synference initializes correctly with a valid grid."""
-        fitter = SBI_Fitter.init_from_hdf5(model_name="test_sbi", hdf5_path=test_sbi_grid)
+    def test_init_sbifitter_from_library(self, test_sbi_library):
+        """Test that synference initializes correctly with a valid library."""
+        fitter = SBI_Fitter.init_from_hdf5(model_name="test_sbi", hdf5_path=test_sbi_library)
 
-        assert fitter.grid_path == test_sbi_grid, (
-            "synference did not initialize with the correct grid file."
+        assert fitter.library_path == test_sbi_library, (
+            "synference did not initialize with the correct library file."
         )
 
-    def test_sbifitter_feature_array_creation(self, test_sbi_grid):
-        """Test that synference can create a basic feature array from the grid."""
-        fitter = SBI_Fitter.init_from_hdf5(model_name="test_sbi", hdf5_path=test_sbi_grid)
+    def test_sbifitter_feature_array_creation(self, test_sbi_library):
+        """Test that synference can create a basic feature array from the library."""
+        fitter = SBI_Fitter.init_from_hdf5(model_name="test_sbi", hdf5_path=test_sbi_library)
 
         fitter.create_feature_array_from_raw_photometry()
 
@@ -128,10 +128,10 @@ class TestSBIFitter:
 
 
 class TestFullPipeline:
-    """Test suite for full runthrough of grids and synference."""
+    """Test suite for full runthrough of libraries and synference."""
 
     def test_full_lhc(self, lhc_basis_params, test_dir):
-        """Test the full runthrough of LHC grid creation and synference."""
+        """Test the full runthrough of LHC library creation and synference."""
         # Create the GalaxyBasis with LHC parameters
         basis = GalaxyBasis(**lhc_basis_params)
 
@@ -146,7 +146,7 @@ class TestFullPipeline:
             overwrite=True,
         )
 
-        # Initialize synference from the created grid
+        # Initialize synference from the created library
         fitter = SBI_Fitter.init_from_hdf5(
             model_name="test_sbi_lhc",
             hdf5_path=f"{test_dir}/test_output/test_full_simple.hdf5",

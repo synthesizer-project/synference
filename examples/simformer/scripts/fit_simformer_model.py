@@ -6,7 +6,7 @@ from synference import Simformer_Fitter
 
 fitter = Simformer_Fitter.load_saved_model(
     model_name="simformer_v2_initial",
-    grid_path="/cosma/apps/dp276/dc-harv3/synference/grids/grid_BPASS_Chab_DenseBasis_SFH_0.01_z_12_logN_5.0_CF00_v2.hdf5",
+    grid_path="/cosma/apps/dp276/dc-harv3/synference/libraries/grid_BPASS_Chab_DenseBasis_SFH_0.01_z_12_logN_5.0_CF00_v2.hdf5",
     model_file="/cosma/apps/dp276/dc-harv3/synference/models/simformer_v2",
 )
 
