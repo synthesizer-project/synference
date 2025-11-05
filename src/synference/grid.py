@@ -5200,7 +5200,8 @@ class GalaxySimulator(object):
                     # Check for SYNTHESIZER_GRID_DIR environment variable
                     grid_dir = os.getenv("SYNTHESIZER_GRID_DIR", None)
                     if grid_dir is None:
-                        raise ValueError("SYNTHESIZER_GRID_DIR environment variable not set.")
+                        from synthesizer import get_grids_dir
+                        grid_dir = str(get_grids_dir())
 
             if grid_dir.endswith(".hdf5") or grid_dir.endswith(".h5"):
                 print("Overriding internal grid name to grid passed in directory path.")
@@ -5524,7 +5525,6 @@ class GalaxySimulator(object):
                     f"""Missing required parameter {key} for SFH or ZDist.
                     Cannot create photometry."""
                 )
-
         sfh = self.sfh_model(
             **{i: params[i] for i in self.sfh_params},
             **{i: params[i] for i in self.optional_sfh_params if i in params},
