@@ -34,10 +34,13 @@ Alternatively, you can clone the repository and install it manually:
 
    git clone https://github.com/synthesizer-project/synference.git
    cd Synference
-   pip install -e .
+   pip install .
 
-This will install Synference in editable mode, allowing you to make changes to the code if needed.
+To install in editable mode, allowing you to make changes to the code if needed, use the following pip command:
 
+.. code-block:: bash
+
+    pip install -e .
 
 
 Optional Dependencies
@@ -67,10 +70,10 @@ For example, to install with development dependencies, run:
 
 .. code-block:: bash
 
-    pip install cosmos-synference[dev]
+    pip install synference[dev]
 
 Multiple optional dependency groups can be installed in one command. For instance, to install both the testing and documentation dependencies, run:
 
 .. code-block:: bash
 
-    pip install cosmos-synference[test,docs]
+    pip install synference[test,docs]

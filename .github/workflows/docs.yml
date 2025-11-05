@@ -45,6 +45,12 @@ jobs:
           pip install .[test,docs]
           pip install "dense_basis@git+https://github.com/kartheikiyer/dense_basis"
           pip install pytest-xdist  # enable parallel pytest execution
+       - name: Download test data
+        run: |
+          # Download test grid data 
+          mkdir -p data/grids/
+          synthesizer-download --test-grids --dust-grid
+          cd ../
       - name: Sphinx Build
         run: |
           # Test sphinx build (runs all notebooks)

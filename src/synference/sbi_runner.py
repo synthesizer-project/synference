@@ -357,7 +357,6 @@ class SBI_Fitter:
                 feature_names=None,
                 feature_units=None,
                 grid_path=hdf5_path,
-                observation_type=None,
                 **kwargs,
             )
 
