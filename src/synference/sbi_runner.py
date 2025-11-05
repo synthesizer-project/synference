@@ -2632,15 +2632,40 @@ class SBI_Fitter:
         training_flux_units = feature_array_flags["normed_flux_units"]
 
         if feature_array_flags["empirical_noise_models"] is not None:
-            for model_name, key in feature_array_flags["empirical_noise_models"].items():
-                if isinstance(key, tuple):
-                    logger.info("Loading noise models from HDF5.")
-                    empirical_model = load_unc_model_from_hdf5(filepath=key, group=model_name)
-                elif isinstance(key, UncertaintyModel):
-                    empirical_model = key
+            for pos, (model_name, val) in enumerate(
+                feature_array_flags["empirical_noise_models"].items()
+            ):
+                if isinstance(val, str):
+                    if pos == 0:
+                        logger.info("Loading noise models from HDF5.")
+                    try:
+                        empirical_model = load_unc_model_from_hdf5(
+                            filepath=val, group_name=model_name
+                        )
+                    except (FileNotFoundError, KeyError, TypeError):
+                        # If we've moved computer, the path will be wrong, but we may still
+                        # be able to find the correct path.
+                        filename = os.path.basename(val)
+                        new_path = f"{code_path}/models/{self.name}/{filename}"
+                        empirical_model = None
+                        if os.path.exists(new_path):
+                            try:
+                                empirical_model = load_unc_model_from_hdf5(
+                                    filepath=new_path, group_name=model_name
+                                )
+                            except Exception as e2:
+                                empirical_model = None
+                        if empirical_model is None:
+                            logger.warning(
+                                f"Could not load noise model '{model_name}' from {val} "
+                                f"(fallback tried: {new_path}). Skipping. Error: {e}"
+                            )
+                            continue
+                elif isinstance(val, UncertaintyModel):
+                    empirical_model = val
                 else:
                     raise TypeError(
-                        f"Invalid empirical noise model type: {type(key)}. "
+                        f"Invalid empirical noise model type: {type(val)}. "
                         "Expected tuple or EmpiricalNoiseModel instance."
                     )
 
@@ -2651,12 +2676,18 @@ class SBI_Fitter:
                     # Apply the empirical noise model to the feature array
                     index = self.feature_names.index(model_name)
                     flux_column = feature_array[index, :]
+                    # Resolve matching error column robustly
+                    eindex = None
+                    fname = model_name.split(".")[-1]
                     for ecol in feature_array_flags["error_names"]:
-                        fname = model_name.split(".")[
-                            -1
-                        ]  # Counting on filters looking like 'HST.ACS_WFC.F606W'
-                        if ecol.startswith("unc_") and ecol.endswith(fname):
+                        if ecol == f"unc_{model_name}" or (ecol.startswith("unc_") and ecol.endswith(fname)):
                             eindex = self.feature_names.index(ecol)
+                            break
+                    if eindex is None:
+                        logger.warning(
+                            f"No matching error column for '{model_name}'. Skipping empirical scaling."
+                        )
+                        continue
                     error_column = feature_array[eindex, :]
                     new_flux, new_error = empirical_model.apply_scalings(
                         flux_column,
@@ -6264,6 +6295,13 @@ class SBI_Fitter:
 
         return samples
 
+    @property
+    def likelihood_func(self):
+        if hasattr(self, "posteriors") and self.posteriors is not None:
+            likelihood = self.posteriors.potential_fn.potential_fns[0].likelihood_estimator
+            return likelihood
+        return None
+
     def evaluate_model(
         self,
         posteriors: list = None,
@@ -7355,6 +7393,12 @@ class SBI_Fitter:
                 if "feature_array_flags" in params:
                     self.feature_array_flags = params["feature_array_flags"]
                     self.has_features = True
+
+                if "empirical_noise_models" in params:
+                    if "empirical_noise_models" not in self.feature_array_flags:
+                        self.feature_array_flags["empirical_noise_models"] = params[
+                            "empirical_noise_models"
+                        ]
 
                 if learning_type == "offline":
                     self.feature_names = params["feature_names"]
