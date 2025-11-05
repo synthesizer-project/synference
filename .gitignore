@@ -53,6 +53,8 @@ tests/test_output/*
 tests/test_grids/*
 !tests/test_grids/sbi_test_grid.hdf5
 !tests/test_grids/sps_test_grid.hdf5
-!docs/build/gfx
+!docs/source/advanced_topics/bpass_nested_samples.csv
+!docs/source/advanced_topics/fsps_nested_samples.csv
+!docs/source/gfx
 !docs/source/example_models/bpass_db_v4/*
 !docs/source/example_grids/*
