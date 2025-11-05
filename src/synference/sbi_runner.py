@@ -2642,18 +2642,25 @@ class SBI_Fitter:
                         empirical_model = load_unc_model_from_hdf5(
                             filepath=val, group_name=model_name
                         )
-                    except FileNotFoundError:
+                    except (FileNotFoundError, KeyError, TypeError):
                         # If we've moved computer, the path will be wrong, but we may still
                         # be able to find the correct path.
                         filename = os.path.basename(val)
                         new_path = f"{code_path}/models/{self.name}/{filename}"
+                        empirical_model = None
                         if os.path.exists(new_path):
-                            empirical_model = load_unc_model_from_hdf5(
-                                filepath=new_path, group_name=model_name
+                            try:
+                                empirical_model = load_unc_model_from_hdf5(
+                                    filepath=new_path, group_name=model_name
+                                )
+                            except Exception as e2:
+                                empirical_model = None
+                        if empirical_model is None:
+                            logger.warning(
+                                f"Could not load noise model '{model_name}' from {val} "
+                                f"(fallback tried: {new_path}). Skipping. Error: {e}"
                             )
-                        else:
-                            logger.warning(f"Could not load noise model from {val}")
-
+                            continue
                 elif isinstance(val, UncertaintyModel):
                     empirical_model = val
                 else:
@@ -2669,12 +2676,18 @@ class SBI_Fitter:
                     # Apply the empirical noise model to the feature array
                     index = self.feature_names.index(model_name)
                     flux_column = feature_array[index, :]
+                    # Resolve matching error column robustly
+                    eindex = None
+                    fname = model_name.split(".")[-1]
                     for ecol in feature_array_flags["error_names"]:
-                        fname = model_name.split(".")[
-                            -1
-                        ]  # Counting on filters looking like 'HST.ACS_WFC.F606W'
-                        if ecol.startswith("unc_") and ecol.endswith(fname):
+                        if ecol == f"unc_{model_name}" or (ecol.startswith("unc_") and ecol.endswith(fname)):
                             eindex = self.feature_names.index(ecol)
+                            break
+                    if eindex is None:
+                        logger.warning(
+                            f"No matching error column for '{model_name}'. Skipping empirical scaling."
+                        )
+                        continue
                     error_column = feature_array[eindex, :]
                     new_flux, new_error = empirical_model.apply_scalings(
                         flux_column,
