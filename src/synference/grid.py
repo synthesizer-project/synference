@@ -420,6 +420,12 @@ def calculate_line_ew(galaxy: Galaxy, emission_model, line="Ha", emission_model_
 
     return line.equivalent_width[0]
 
+def calculate_burstiness(galaxy: Galaxy):
+    ''' SFR_10/SFR_100 '''
+    sfr_10=galaxy.stars.calculate_average_sfr((0, 1e7))
+    sfr_100=galaxy.stars.calculate_average_sfr((0, 1e8))
+
+    return (sfr_10/sfr_100).to_value('dimensionless')
 
 def calculate_line_luminosity(
     galaxy: Galaxy, emission_model, line="Ha", emission_model_key="total"
@@ -536,13 +542,12 @@ def calculate_xi_ion0(galaxy, emission_model, emission_model_key="total"):
 
 
 def calculate_Ndot_ion(
-    galaxy, emission_model, emission_model_key="total", ionisation_energy=13.6 * eV, limit=100
+    galaxy, emission_model_key="total", ionisation_energy=13.6 * eV, limit=100
 ):
     """Calculate the ionizing photon production rate (Ndot_ion) of a galaxy.
 
     Args:
         galaxy: An instance of a synthesizer.parametric.Galaxy object.
-        emission_model: An instance of a synthesizer.emission_models.EmissionModel.
         emission_model_key: The key for the emission model to use (default is 'total').
         ionisation_energy: The ionisation energy threshold (default is 13.6 eV).
         limit: An upper bound on the number of subintervals
@@ -552,7 +557,9 @@ def calculate_Ndot_ion(
         The ionizing photon production rate (Ndot_ion) as a unyt_quantity in s^-1.
 
     """
-    return galaxy.spectra[emission_model].calculate_ionising_photon_production_rate(
+    sed = locate_sed(galaxy, emission_model_key)
+
+    return sed.calculate_ionising_photon_production_rate(
         ionisation_energy=ionisation_energy,
         limit=limit,
     )
@@ -615,6 +622,9 @@ def calculate_agn_fraction(
     )
     return agn_fraction
 
+def calculate_ml(galaxy, emission_model_key):
+    """Calculate M/L ratio (in solar units)"""
+    raise NotImplementedError
 
 class SUPP_FUNCTIONS:
     """A class to hold supplementary functions for galaxy analysis."""
@@ -636,6 +646,7 @@ class SUPP_FUNCTIONS:
     calculate_xi_ion0 = calculate_xi_ion0
     calculate_Ndot_ion = calculate_Ndot_ion
     calculate_agn_fraction = calculate_agn_fraction
+    calculate_burstiness = calculate_burstiness
 
     def __repr__(self) -> str:
         """Provides a nicely formatted string of available functions."""
