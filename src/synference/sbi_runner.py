@@ -5461,7 +5461,7 @@ class SBI_Fitter:
 
         try:
             simulator = GalaxySimulator.from_grid(grid_path, **default_kwargs)
-        except ValueError as e:
+        except ValueError as e: 
             logger.error(
                 "Could not recreate simulator from grid. This model"
                 " may not be compatible. A GalaxySimulator object can"
