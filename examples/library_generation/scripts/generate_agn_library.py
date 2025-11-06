@@ -85,7 +85,7 @@ emission_key = "total"
 overwrite = False
 cat_type = "spectra"  # or spectra
 
-name = f"AGN_test_grid_{cat_type}_v1"
+name = f"AGN_test_library_{cat_type}_v1"
 
 
 # BH Parameters
@@ -271,7 +271,7 @@ basis = GalaxyBasis(
 
 basis.create_mock_cat(
     emission_model_key=emission_key,
-    out_name=f"grid_{name}",
+    out_name=f"library_{name}",
     out_dir=out_dir,
     overwrite=overwrite,
     mUV=(calculate_muv, cosmo),  # Calculate mUV using the provided cosmology

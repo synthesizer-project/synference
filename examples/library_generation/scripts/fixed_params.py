@@ -227,7 +227,7 @@ for i in range(0, 1000, 50):
     )
 
 basis.create_mock_cat(
-    out_name=f"grid_{name}",
+    out_name=f"library_{name}",
     out_dir=out_dir,
     overwrite=False,
     n_proc=n_proc,

@@ -30,6 +30,7 @@ How do I load a previously trained model for inference?
 -------------------------------------------------------
 
 A: You can load a previously trained model using the `SBI_Fitter.load_saved_model` method. Here is an example:
+
 .. code-block:: python
 
     from synference import SBI_Fitter

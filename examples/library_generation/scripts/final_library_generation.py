@@ -127,7 +127,7 @@ grid_dir = os.environ["SYNTHESIZER_GRID_DIR"]
 # path for this file
 
 dir_path = os.path.dirname(os.path.abspath(__file__))
-out_dir = os.path.join(os.path.dirname(os.path.dirname(dir_path)), "grids/")
+out_dir = os.path.join(os.path.dirname(os.path.dirname(dir_path)), "libraries/")
 
 try:
     n_proc = int(sys.argv[1])
@@ -304,9 +304,9 @@ for sfh_name, sfh_params in sfhs.items():
     sfh_name = str(sfh_type).split(".")[-1].split("'")[0]
 
     name = f"BPASS_Chab_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_Calzetti_v3"  # noqa: E501
-    print(f"{out_dir}/grid_{name}.hdf5")
-    if os.path.exists(f"{out_dir}/v2/grid_{name}.hdf5") and not overwrite:
-        print(f"Grid {name} already exists, skipping.")
+    print(f"{out_dir}/library_{name}.hdf5")
+    if os.path.exists(f"{out_dir}/v2/library_{name}.hdf5") and not overwrite:
+        print(f"Library {name} already exists, skipping.")
         continue
 
     for param_name in sfh_param_names:
@@ -516,7 +516,7 @@ for sfh_name, sfh_params in sfhs.items():
 
     basis.create_mock_cat(
         emission_model_key=emission_key,
-        out_name=f"grid_{name}",
+        out_name=f"library_{name}",
         out_dir=out_dir,
         overwrite=overwrite,
         mUV=(calculate_muv, cosmo),  # Calculate mUV using the provided cosmology

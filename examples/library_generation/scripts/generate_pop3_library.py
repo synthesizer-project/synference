@@ -206,8 +206,8 @@ for grid_name in popIII_grids:
     )
     # name = "test_sbi"
 
-    if os.path.exists(f"{out_dir}/grid_{name}.hdf5") and not overwrite:
-        print(f"Grid {name} already exists. Skipping...")
+    if os.path.exists(f"{out_dir}/library_{name}.hdf5") and not overwrite:
+        print(f"Library {name} already exists. Skipping...")
         continue
 
     basis = GalaxyBasis(
