@@ -464,4 +464,6 @@ for sfh_name, sfh_params in sfhs.items():
     )
 
     # Create grid - kinda overkill for a single case, but it does work.
-    combined_basis.create_spectral_grid(overwrite=True, overload_out_name=f"spectral_library_{name}")
+    combined_basis.create_spectral_grid(
+        overwrite=True, overload_out_name=f"spectral_library_{name}"
+    )

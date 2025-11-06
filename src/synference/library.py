@@ -423,12 +423,14 @@ def calculate_line_ew(galaxy: Galaxy, emission_model, line="Ha", emission_model_
 
     return line.equivalent_width[0]
 
-def calculate_burstiness(galaxy: Galaxy):
-    ''' SFR_10/SFR_100 '''
-    sfr_10=galaxy.stars.calculate_average_sfr((0, 1e7))
-    sfr_100=galaxy.stars.calculate_average_sfr((0, 1e8))
 
-    return (sfr_10/sfr_100).to_value('dimensionless')
+def calculate_burstiness(galaxy: Galaxy):
+    """SFR_10/SFR_100"""
+    sfr_10 = galaxy.stars.calculate_average_sfr((0, 1e7))
+    sfr_100 = galaxy.stars.calculate_average_sfr((0, 1e8))
+
+    return (sfr_10 / sfr_100).to_value("dimensionless")
+
 
 def calculate_line_luminosity(
     galaxy: Galaxy, emission_model, line="Ha", emission_model_key="total"
@@ -544,9 +546,7 @@ def calculate_xi_ion0(galaxy, emission_model, emission_model_key="total"):
     return xi_ion0.to("Hz/erg")
 
 
-def calculate_Ndot_ion(
-    galaxy, emission_model_key="total", ionisation_energy=13.6 * eV, limit=100
-):
+def calculate_Ndot_ion(galaxy, emission_model_key="total", ionisation_energy=13.6 * eV, limit=100):
     """Calculate the ionizing photon production rate (Ndot_ion) of a galaxy.
 
     Args:
@@ -625,9 +625,11 @@ def calculate_agn_fraction(
     )
     return agn_fraction
 
+
 def calculate_ml(galaxy, emission_model_key):
     """Calculate M/L ratio (in solar units)"""
     raise NotImplementedError
+
 
 class SUPP_FUNCTIONS:
     """A class to hold supplementary functions for galaxy analysis."""
@@ -2532,10 +2534,12 @@ class GalaxyBasis:
                     logger.info("Running in single-node mode.")
 
                 from synthesizer.extensions.openmp_check import check_openmp
+
                 if not check_openmp() and n_proc > 1:
                     logger.warning(
                         "Synthesizer not installed with OpenMP support. "
-                        "Pipeline will run on a single core")
+                        "Pipeline will run on a single core"
+                    )
                     n_proc = 1
 
                 pipeline = Pipeline(
@@ -4052,7 +4056,9 @@ class CombinedBasis:
                     "Photometry", data=library_dict["photometry"], compression="gzip"
                 )
             if "spectra" in library_dict:
-                library_group.create_dataset("Spectra", data=library_dict["spectra"], compression="gzip")
+                library_group.create_dataset(
+                    "Spectra", data=library_dict["spectra"], compression="gzip"
+                )
 
             library_group.create_dataset(
                 "Parameters", data=library_dict["parameters"], compression="gzip"
@@ -4079,8 +4085,12 @@ class CombinedBasis:
                 )
                 f.attrs["FilterCodes"] = "/Grid/FilterCodes/"
             if "supplementary_parameters" in library_dict:
-                f.attrs["SupplementaryParameterNames"] = library_dict["supplementary_parameter_names"]
-                f.attrs["SupplementaryParameterUnits"] = library_dict["supplementary_parameter_units"]
+                f.attrs["SupplementaryParameterNames"] = library_dict[
+                    "supplementary_parameter_names"
+                ]
+                f.attrs["SupplementaryParameterUnits"] = library_dict[
+                    "supplementary_parameter_units"
+                ]
             f.attrs["PhotometryUnits"] = "nJy"
 
             if "parameter_units" in library_dict:
@@ -4330,11 +4340,12 @@ class CombinedBasis:
             Dictionary containing the grid data.
         """
         with h5py.File(file_path, "r") as f:
-            if isinstance(f.attrs["FilterCodes"], (bytes, str)) and \
-            str(f.attrs["FilterCodes"]).startswith("/Grid/FilterCodes"):
+            if isinstance(f.attrs["FilterCodes"], (bytes, str)) and str(
+                f.attrs["FilterCodes"]
+            ).startswith("/Grid/FilterCodes"):
                 fcodes = f["Grid/FilterCodes"][()].astype(str)
             else:
-                fcodes= f.attrs["FilterCodes"]
+                fcodes = f.attrs["FilterCodes"]
             library_data = {
                 "parameters": f["Grid"]["Parameters"][()],
                 "parameter_names": f.attrs["ParameterNames"],
@@ -4911,8 +4922,8 @@ class GalaxySimulator(object):
         photometry_to_remove=None,
         ignore_params: list = None,
         ignore_scatter: bool = False,
-        return_type='array',
-        device: str = 'cpu',
+        return_type="array",
+        device: str = "cpu",
     ) -> None:
         """Parameters
 
@@ -5230,22 +5241,30 @@ class GalaxySimulator(object):
             grid_dir = model_group.attrs.get("grid_dir", None)
             if override_synthesizer_grid_dir is not None and not os.path.exists(grid_dir):
                 if isinstance(override_synthesizer_grid_dir, str) and os.path.exists(
-                    override_synthesizer_grid_dir):
+                    override_synthesizer_grid_dir
+                ):
                     grid_dir = override_synthesizer_grid_dir
                 else:
                     # Check for synthesizer_grid_DIR environment variable
                     grid_dir = os.getenv("SYNTHESIZER_GRID_DIR", None)
                     if grid_dir is None:
                         from synthesizer import get_grids_dir
+
                         grid_dir = str(get_grids_dir())
                         if isinstance(override_synthesizer_grid_dir, str) and (
                             override_synthesizer_grid_dir.endswith(".hdf5")
                             or override_synthesizer_grid_dir.endswith(".h5")
                         ):
                             logger.info("Overriding internal library name from provided file path.")
-                            grid_name = os.path.basename(override_synthesizer_grid_dir).replace(".hdf5", "").replace(".h5", "")
+                            grid_name = (
+                                os.path.basename(override_synthesizer_grid_dir)
+                                .replace(".hdf5", "")
+                                .replace(".h5", "")
+                            )
 
-            if isinstance(grid_dir, str) and (grid_dir.endswith(".hdf5") or grid_dir.endswith(".h5")):
+            if isinstance(grid_dir, str) and (
+                grid_dir.endswith(".hdf5") or grid_dir.endswith(".h5")
+            ):
                 logger.info("Overriding internal library name from provided file path.")
                 grid_name = os.path.basename(grid_dir).replace(".hdf5", "").replace(".h5", "")
                 grid_dir = os.path.dirname(grid_dir)
@@ -5770,7 +5789,7 @@ class GalaxySimulator(object):
         if self.include_phot_errors:
             fluxes = np.concatenate((fluxes, errors))
 
-        if self.return_type == 'tensor':
+        if self.return_type == "tensor":
             fluxes = torch.tensor(fluxes.atleast_2d(), device=self.device)
 
         return fluxes
@@ -5924,7 +5943,6 @@ class GalaxySimulator(object):
     def __str__(self):
         """String representation of the GalaxySimulator."""
         return self.__repr__()
-
 
 
 def test_out_of_distribution(
@@ -6158,7 +6176,10 @@ class LibraryCreator:
         if not os.path.exists(out_folder):
             os.makedirs(out_folder)
 
-        if os.path.exists(os.path.join(out_folder, f"library_{self.model_name}.h5")) and not overwrite:
+        if (
+            os.path.exists(os.path.join(out_folder, f"library_{self.model_name}.h5"))
+            and not overwrite
+        ):
             raise FileExistsError(
                 f"Library file library_{self.model_name}.h5 already exists "
                 f"in {out_folder}. Use overwrite=True to overwrite."
