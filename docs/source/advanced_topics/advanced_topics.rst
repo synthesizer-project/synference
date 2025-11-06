@@ -7,4 +7,5 @@ In this section, we cover some advanced topics and features of Synference that g
    :maxdepth: 1
 
    nle
+   custom_loop
    simformer
