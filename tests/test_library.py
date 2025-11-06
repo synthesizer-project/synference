@@ -245,7 +245,7 @@ class TestGalaxyBasis:
         expected_keys = [f"Galaxies/{i}" for i in expected_keys]
 
         check_hdf5(
-            hfile=f"{test_dir}/test_output/test_output_library.hdf5",
+            hfile=f"{test_dir}/test_output/test_output_lhc.hdf5",
             expected_keys=expected_keys,
         )
 

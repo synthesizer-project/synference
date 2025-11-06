@@ -2805,7 +2805,7 @@ class SBI_Fitter:
         else:
             raise TypeError("Flux units must be a string or unyt_quantity.")
 
-        print(f"Number of NANs in feature array: {np.sum(~np.isfinite(feature_array))}")
+        logger.debug(f"Number of NANs in feature array: {np.sum(~np.isfinite(feature_array))}")
 
         # Cast negative or positive inf to NANs
         feature_array[~np.isfinite(feature_array)] = np.nan
@@ -4600,7 +4600,7 @@ class SBI_Fitter:
                     )
                     np.save(
                         f"{out_dir}/online/theta.npy",
-                        self.fitted_parameter_array[test_indices],
+                        self.fitted_parameter_array[train_indices],
                     )
                 else:
                     if online_training_xobs is not None:

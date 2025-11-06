@@ -35,7 +35,7 @@ try:
     from synthesizer.pipeline import Pipeline
 
     synthesizer_available = True
-except FileExistsError as e:
+except ImportError as e:
     print(e)
     logger.warning(
         "Synthesizer dependencies not installed. Only the SBI functions will be available."
@@ -182,7 +182,7 @@ def calculate_muv(galaxy, cosmo=Planck18):
     Returns:
     -------
     dict
-        Dictionary containing the MUV malogginggnitude for each stellar spectrum in the galaxy.
+        Dictionary containing the MUV magnitude for each stellar spectrum in the galaxy.
     """
     z = galaxy.redshift
 
@@ -361,7 +361,7 @@ def calculate_beta(galaxy: Galaxy, emission_model_key: str = "total") -> float:
 
 
 def calculate_balmer_decrement(galaxy: Galaxy, emission_model_key: str = "total") -> float:
-    """Measures the Balmer decrement oemission_modelf a galaxy.
+    """Measures the Balmer decrement a galaxy.
 
     Args:
         galaxy: An instance of a synthesizer.parametric.Galaxy object.
@@ -996,6 +996,8 @@ def generate_emission_models(
             out_params[key].append(emission_params[key])
 
         # store value of varying parameter(s) in dictionary for this emission model
+        if fixed_params is None:
+            fixed_params = {}
 
         emission_params.update(fixed_params)
 
@@ -1375,7 +1377,7 @@ def create_galaxy(
             log10ages=np.log10(param_stars.ages),
             log10metallicities=np.log10(param_stars.metallicities),
             nstar=n,
-            current_masses=10**log_stellar_masses * Msun,
+            current_masses=np.power(10.0, np.asarray(log_stellar_masses, dtype=float)) * Msun,
             redshift=redshift,
             coordinates=np.random.normal(0, 0.01, (n, 3)) * Mpc,
             centre=np.zeros(3) * Mpc,
@@ -1884,8 +1886,18 @@ class GalaxyBasis:
                 )
             accept = False
 
-        if type(self.sfhs[0]).__name__ not in SFH.parametrisations and not isinstance(
-            self.sfhs[0], (unyt_quantity, float, int)
+        # Flatten SFHs regardless of storage (list or {z: [sfh,...]})
+        if isinstance(self.sfhs, dict):
+            _sfh_list = []
+            for v in self.sfhs.values():
+                _sfh_list.extend(v if isinstance(v, (list, tuple)) else [v])
+        else:
+            _sfh_list = self.sfhs
+        sfh_classes = set(type(sfh) for sfh in _sfh_list)
+
+        _sfh0 = _sfh_list[0]
+        if type(_sfh0).__name__ not in SFH.parametrisations and not isinstance(
+            _sfh0, (unyt_quantity, float, int)
         ):
             if verbose:
                 logger.warning(
@@ -4133,6 +4145,7 @@ class CombinedBasis:
         index: int,
         show: bool = True,
         save: bool = False,
+        override_filter_codes=[],
     ):
         """Plot a galaxy at a grid index.
 
@@ -4158,7 +4171,10 @@ class CombinedBasis:
         photometry = self.library_photometry[:, index]
 
         # Get the filter codes
-        filter_codes = [f"JWST/{i}" for i in self.library_filter_codes]
+        if len(override_filter_codes) > 0:
+            filter_codes = override_filter_codes
+        else:
+            filter_codes = self.library_filter_codes
         filterset = FilterCollection(filter_codes, verbose=False)
 
         # For each basis, look at which parameters for that basis and match to spectra.
@@ -4219,11 +4235,12 @@ class CombinedBasis:
             ), f"""Wavelengths for base {i} do not match base 0.
                 {wavs} != {total_wavelengths[0]}"""
 
-        weight_pos = "weight_fraction" == self.library_parameter_names
-        weights = params[weight_pos]
-
-        # Only works for combining 2 bases at the moment
-        weights = np.array((weights[0], 1 - weights[0]))
+        if "weight_fraction" in self.library_parameter_names:
+            w_idx = self.library_parameter_names.index("weight_fraction")
+            w = float(params[w_idx])
+            weights = np.array((w, 1 - w))
+        else:
+            weights = np.array((1.0, 0.0))
 
         # Stack the spectra according to the combination weights.
         # Spectra has shape (wav, n_bases)
@@ -5790,7 +5807,7 @@ class GalaxySimulator(object):
             fluxes = np.concatenate((fluxes, errors))
 
         if self.return_type == "tensor":
-            fluxes = torch.tensor(fluxes.atleast_2d(), device=self.device)
+            fluxes = torch.tensor(np.atleast_2d(fluxes), device=self.device)
 
         return fluxes
 
@@ -6226,7 +6243,7 @@ class LibraryCreator:
             f.attrs["PhotometryUnits"] = self.observation_units
 
             f.attrs["CreationDT"] = datetime.now().strftime("%Y%m%d_%H%M%S")
-        print(f"Library saved to {library_path}")
+        logger.info(f"Library saved to {library_path}")
 
 
 if __name__ == "__main__":
