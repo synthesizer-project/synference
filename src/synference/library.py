@@ -67,7 +67,7 @@ from .noise_models import (
 from .utils import check_log_scaling, check_scaling, list_parameters, save_emission_model
 
 file_path = os.path.dirname(os.path.realpath(__file__))
-library_folder = os.path.join(os.path.dirname(os.path.dirname(file_path)), "grids")
+library_folder = os.path.join(os.path.dirname(os.path.dirname(file_path)), "libraries")
 # Global variables for thread-shared data (initialized once per process)
 _thread_local = threading.local()
 
@@ -1554,7 +1554,7 @@ class GalaxyBasis:
             E.g. max_age may be dependent on redshift, so we don't want to include it
                 in the varying parameters as the model can learn this.
         build_library : bool, optional
-            If True, build the grid of galaxies, by default True.
+            If True, build the grid of galaxies, by default False.
             If False, assume all dimensions of parameters are the same size and
             build the grid from the parameters. I.e don't generate combinations of
             parameters, just use the parameters as they are.
@@ -2642,8 +2642,8 @@ class GalaxyBasis:
 
                         # Write some metadata about the model
                         f.attrs["model_name"] = self.model_name
-                        f.attrs["library_name"] = self.grid.grid_name
-                        f.attrs["library_dir"] = self.grid.grid_dir
+                        f.attrs["grid_name"] = self.grid.grid_name
+                        f.attrs["grid_dir"] = self.grid.grid_dir
 
                         f.attrs["date_created"] = str(datetime.now())
                         f.attrs["pipeline_time"] = str(elapsed)
@@ -4330,10 +4330,15 @@ class CombinedBasis:
             Dictionary containing the grid data.
         """
         with h5py.File(file_path, "r") as f:
+            if isinstance(f.attrs["FilterCodes"], (bytes, str)) and \
+            str(f.attrs["FilterCodes"]).startswith("/Grid/FilterCodes"):
+                fcodes = f["Grid/FilterCodes"][()].astype(str)
+            else:
+                fcodes= f.attrs["FilterCodes"]
             library_data = {
                 "parameters": f["Grid"]["Parameters"][()],
                 "parameter_names": f.attrs["ParameterNames"],
-                "filter_codes": f.attrs["FilterCodes"],
+                "filter_codes": fcodes,
             }
 
             if "Photometry" in f["Grid"]:
@@ -4811,7 +4816,9 @@ class CombinedBasis:
             out["spectra"] = combined_outputs
             self.library_spectra = combined_outputs
             # 'Grid filter codes' can just be the wavelength array here
-            self.library_filter_codes = model_output["wavelengths"].to("um").value
+            self.library_filter_codes = (
+                pipeline_outputs[self.bases[0].model_name]["wavelengths"].to("um").value
+            )
             out["filter_codes"] = self.library_filter_codes
         else:
             out["photometry"] = combined_outputs
@@ -5231,13 +5238,15 @@ class GalaxySimulator(object):
                     if grid_dir is None:
                         from synthesizer import get_grids_dir
                         grid_dir = str(get_grids_dir())
-                        if override_synthesizer_grid_dir.endswith(".hdf5") \
-                            or override_synthesizer_grid_dir.endswith(".h5"):
-                            print("Overriding internal library name to library passed in directory path.")
-                            grid_name = override_synthesizer_grid_dir
+                        if isinstance(override_synthesizer_grid_dir, str) and (
+                            override_synthesizer_grid_dir.endswith(".hdf5")
+                            or override_synthesizer_grid_dir.endswith(".h5")
+                        ):
+                            logger.info("Overriding internal library name from provided file path.")
+                            grid_name = os.path.basename(override_synthesizer_grid_dir).replace(".hdf5", "").replace(".h5", "")
 
-            if grid_dir.endswith(".hdf5") or grid_dir.endswith(".h5"):
-                print("Overriding internal library name to library passed in directory path.")
+            if isinstance(grid_dir, str) and (grid_dir.endswith(".hdf5") or grid_dir.endswith(".h5")):
+                logger.info("Overriding internal library name from provided file path.")
                 grid_name = os.path.basename(grid_dir).replace(".hdf5", "").replace(".h5", "")
                 grid_dir = os.path.dirname(grid_dir)
 
@@ -6151,7 +6160,7 @@ class LibraryCreator:
 
         if os.path.exists(os.path.join(out_folder, f"library_{self.model_name}.h5")) and not overwrite:
             raise FileExistsError(
-                f"Library file {self.model_name}_grid.h5 already exists "
+                f"Library file library_{self.model_name}.h5 already exists "
                 f"in {out_folder}. Use overwrite=True to overwrite."
             )
 
