@@ -23,6 +23,7 @@ htmlcov/
 *.db
 *.pt
 *.csv
+*.fits
 
 sbi-logs/
 plots/
