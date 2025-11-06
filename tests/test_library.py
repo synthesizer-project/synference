@@ -509,7 +509,7 @@ class TestSBIFitter:
 
 
 class TestFullPipeline:
-    """Test suite for full runthrough of librarys and synference."""
+    """Test suite for full runthrough of libraries and synference."""
 
     def test_full_lhc(self, lhc_basis_params, test_dir):
         """Test the full runthrough of LHC library creation and synference."""
