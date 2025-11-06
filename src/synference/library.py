@@ -2991,7 +2991,7 @@ $\\log_{{10}}(M_\\star/M_\\odot)$: {np.log10(mass):.1f}"""
             **extra_analysis_functions,
         )
 
-    def create_mock_cat(
+    def create_mock_library(
         self,
         out_name,
         log_stellar_masses: np.ndarray = None,

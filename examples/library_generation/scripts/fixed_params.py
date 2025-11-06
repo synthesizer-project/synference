@@ -226,7 +226,7 @@ for i in range(0, 1000, 50):
         out_dir=out_dir,
     )
 
-basis.create_mock_cat(
+basis.create_mock_library(
     out_name=f"library_{name}",
     out_dir=out_dir,
     overwrite=False,

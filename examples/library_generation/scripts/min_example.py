@@ -146,7 +146,7 @@ basis = GalaxyBasis(
 )
 
 # Create our mock training catalogue!
-basis.create_mock_cat(
+basis.create_mock_library(
     out_name=f"cat_{name}",
     log_stellar_masses=all_param_dict["log_masses"],
     emission_model_key="total",

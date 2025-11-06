@@ -514,7 +514,7 @@ for sfh_name, sfh_params in sfhs.items():
             print(f"Error plotting galaxy {i}: {e}")
             continue"""
 
-    basis.create_mock_cat(
+    basis.create_mock_library(
         emission_model_key=emission_key,
         out_name=f"library_{name}",
         out_dir=out_dir,
