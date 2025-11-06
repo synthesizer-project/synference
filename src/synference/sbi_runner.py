@@ -342,8 +342,9 @@ class SBI_Fitter:
         try:
             output = load_library_from_hdf5(hdf5_path)
         except Exception as e:
-            logger.warn(
-                f"Error loading HDF5 file {hdf5_path}: {e}Won't be able to fit model without library."
+            logger.warning(
+                f"Error loading HDF5 file {hdf5_path}: {e} "
+                "Won't be able to fit model without library."
             )
             return cls(
                 name=model_name,
@@ -760,7 +761,6 @@ class SBI_Fitter:
             param_dict["stats"].pop()
 
         # convert any torch tensors to numpy arrays on the cpu for compatibility
-        print(param_dict)
         param_dict = make_serializable(param_dict, allowed_types=[np.ndarray, UncertaintyModel])
 
         if save_method == "torch":
@@ -1329,7 +1329,7 @@ class SBI_Fitter:
         max_rows: int = -1,
         parameter_transformations: Optional[Dict[str, Callable]] = None,
     ) -> np.ndarray:
-        """Create a feature array from the raw observation grid.
+        """Create a feature array from the raw observation library.
 
         Args:
             normalize_method (str, optional): Method to normalize photometry (e.g.,
@@ -1337,7 +1337,7 @@ class SBI_Fitter:
                 Defaults to None.
             extra_features (list, optional): Extra features to add. Can be
                 functions of filter codes (e.g., ['F090W - F115W']) or
-                parameters from the grid (e.g., redshift). Defaults to None.
+                parameters from the library (e.g., redshift). Defaults to None.
             normed_flux_units (str, optional): Target units for normalized flux
                 (e.g., "AB", "asinh", "nJy"). Fluxes will be relative to the
                 normalization filter in these units. Defaults to "AB".
@@ -1433,7 +1433,7 @@ class SBI_Fitter:
             "photometry_to_remove must be a list of filter names to remove."
         )
         if len(photometry_to_remove) > 0:
-            # Remove the photometry from the grid
+            # Remove the photometry from the library
             photometry_to_remove = np.array(photometry_to_remove)
             remove_indices = [
                 i
@@ -2901,7 +2901,7 @@ class SBI_Fitter:
             distribution. If False, no check is performed.
         simulator : Optional[GalaxySimulator]
             simulator: A GalaxySimulator object to use for generating the SED. Optional.
-            Will attempt to create one from the grid if not provided, or use the existing one.
+            Will attempt to create one from the library if not provided, or use the existing one.
         outlier_methods : list
             List of outlier detection methods to use from PyOD.
             See PyOD documentation for available methods.
@@ -4366,7 +4366,7 @@ class SBI_Fitter:
             num_online_rounds (int, optional): Number of rounds for 'online'
                 learning. Defaults to 5.
             initial_training_from_library (bool, optional): Whether to use the
-                initial training from the grid in 'online' learning.
+                initial training from the library in 'online' learning.
                 WARNING: This is broken. Defaults to False.
             override_prior_ranges (dict, optional): Dictionary of prior ranges
                 to override the defaults. Defaults to {}.
@@ -5530,7 +5530,7 @@ class SBI_Fitter:
         if set_self:
             self.simulator = simulator
             self.has_simulator = True
-            logger.info(f"Simulator recreated from grid at {library_path}.")
+            logger.info(f"Simulator recreated from library at {library_path}.")
 
         scales = {"log10": lambda x: 10**x, "sqrt": lambda x: x**2}
         for parameter in self.fitted_parameter_names:
