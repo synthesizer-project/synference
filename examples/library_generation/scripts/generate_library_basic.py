@@ -240,7 +240,7 @@ def z_to_max_age(params, max_redshift=20):
 # This is the simple way-
 # it runs the following three steps for you.
 
-basis.create_mock_cat(
+basis.create_mock_library(
     out_name=f"library_{name}",
     out_dir=out_dir,
     overwrite=overwrite,

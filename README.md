@@ -127,7 +127,7 @@ basis = GalaxyBasis(
     metal_dists=Z_dists,
 )
 
-basis.create_mock_cat(out_name=f'library_test', emission_model_key='intrinsic', overwrite=True, out_dir="./")
+basis.create_mock_library(out_name=f'library_test', emission_model_key='intrinsic', overwrite=True, out_dir="./")
 ```
 
 Finally we can train a model using the `SBI_Fitter` class, which will automatically create the feature array and run the training. We have full control over the model architecture and training parameters, and can easily switch between different model types (e.g. MAF, NSF, MDN) from the lampe and sbi backends.
