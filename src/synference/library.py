@@ -4159,7 +4159,7 @@ class CombinedBasis:
             If True, saves the plot. Defaults to False.
         """
         if self.library_photometry is None:
-            raise ValueError("Grid photometry not created. Run create_library() first.")
+            raise ValueError("Library photometry not created. Run create_library() first.")
 
         if not hasattr(self, "pipeline_outputs"):
             self.load_bases()
