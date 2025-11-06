@@ -2007,8 +2007,8 @@ class GalaxyBasis:
             base = f.create_group(group)
 
             # store library_name and library_dir
-            base.attrs["library_name"] = self.grid.grid_name
-            base.attrs["library_dir"] = self.grid.grid_dir
+            base.attrs["grid_name"] = self.grid.grid_name
+            base.attrs["grid_dir"] = self.grid.grid_dir
 
             # store emission model class name
             em_group = base.create_group("EmissionModel")
@@ -2519,6 +2519,13 @@ class GalaxyBasis:
                     # logger.debug(f"SIZE: {size}, RANK: {rank}")
                 else:
                     logger.info("Running in single-node mode.")
+
+                from synthesizer.extensions.openmp_check import check_openmp
+                if not check_openmp() and n_proc > 1:
+                    logger.warning(
+                        "Synthesizer not installed with OpenMP support. "
+                        "Pipeline will run on a single core")
+                    n_proc = 1
 
                 pipeline = Pipeline(
                     emission_model=self.emission_model,
@@ -3226,8 +3233,8 @@ class CombinedBasis:
                 "fixed_param_values",
                 "fixed_param_units",
                 "model_name",
-                "library_name",
-                "library_dir",
+                "grid_name",
+                "grid_dir",
                 "date_created",
                 "pipeline_time",
             ]
@@ -4886,6 +4893,8 @@ class GalaxySimulator(object):
         photometry_to_remove=None,
         ignore_params: list = None,
         ignore_scatter: bool = False,
+        return_type='array',
+        device: str = 'cpu',
     ) -> None:
         """Parameters
 
@@ -4965,6 +4974,12 @@ class GalaxySimulator(object):
             List of parameters which are sampled which won't be checked for use against the model.
         ignore_scatter : bool
             If True, ignore scatter in the empirical uncertainty model. Default is False.
+        return_type : str
+            Return type of the simulate function. Default is 'array'.
+            Can be 'array' or 'tensor'.
+        device : str
+            Device to use for tensor calculations. Default is 'cpu'.
+            Can be 'cpu' or 'cuda'. Only used if return_type is 'tensor'.
 
         """
         if fixed_params is None:
@@ -5009,6 +5024,8 @@ class GalaxySimulator(object):
         self.depths = depths
         self.ignore_params = ignore_params
         self.ignore_scatter = ignore_scatter
+        self.return_type = return_type
+        self.device = device
 
         self.unused_params = []
         self.reported_unused = False
@@ -5141,7 +5158,7 @@ class GalaxySimulator(object):
         override_emission_model: Union[None, EmissionModel] = None,
         **kwargs,
     ):
-        """Create a GalaxySimulator from a grid file.
+        """Create a GalaxySimulator from a library file.
 
         This method reads a grid file in HDF5 format, extracts the necessary
         components such as the grid, instrument, cosmology, SFH model,
@@ -5191,24 +5208,29 @@ class GalaxySimulator(object):
                 model_group["Instrument/Filters/Header/Wavelengths"][:], units=Angstrom
             )
 
-            library_name = model_group.attrs["library_name"]
-            library_dir = model_group.attrs.get("library_dir", None)
-            if override_synthesizer_grid_dir is not None and not os.path.exists(library_dir):
-                if isinstance(override_synthesizer_grid_dir, str):
-                    library_dir = override_synthesizer_grid_dir
-                elif override_synthesizer_grid_dir is True:
+            grid_name = model_group.attrs.get("grid_name", None)
+            grid_dir = model_group.attrs.get("grid_dir", None)
+            if override_synthesizer_grid_dir is not None and not os.path.exists(grid_dir):
+                if isinstance(override_synthesizer_grid_dir, str) and os.path.exists(
+                    override_synthesizer_grid_dir):
+                    grid_dir = override_synthesizer_grid_dir
+                else:
                     # Check for synthesizer_grid_DIR environment variable
-                    library_dir = os.getenv("synthesizer_grid_DIR", None)
-                    if library_dir is None:
+                    grid_dir = os.getenv("SYNTHESIZER_GRID_DIR", None)
+                    if grid_dir is None:
                         from synthesizer import get_grids_dir
-                        library_dir = str(get_grids_dir())
+                        grid_dir = str(get_grids_dir())
+                        if override_synthesizer_grid_dir.endswith(".hdf5") \
+                            or override_synthesizer_grid_dir.endswith(".h5"):
+                            print("Overriding internal library name to library passed in directory path.")
+                            grid_name = override_synthesizer_grid_dir
 
-            if library_dir.endswith(".hdf5") or library_dir.endswith(".h5"):
-                print("Overriding internal grid name to grid passed in directory path.")
-                library_name = os.path.basename(library_dir).replace(".hdf5", "").replace(".h5", "")
-                library_dir = os.path.dirname(library_dir)
+            if grid_dir.endswith(".hdf5") or grid_dir.endswith(".h5"):
+                print("Overriding internal library name to library passed in directory path.")
+                grid_name = os.path.basename(grid_dir).replace(".hdf5", "").replace(".h5", "")
+                grid_dir = os.path.dirname(grid_dir)
 
-            grid = Grid(library_name, library_dir)  # new_lam=lam)
+            grid = Grid(grid_name, grid_dir)  # new_lam=lam)
 
             # Step 2. Make instrument
             instrument = Instrument._from_hdf5(model_group["Instrument"])
@@ -5728,6 +5750,9 @@ class GalaxySimulator(object):
         if self.include_phot_errors:
             fluxes = np.concatenate((fluxes, errors))
 
+        if self.return_type == 'tensor':
+            fluxes = torch.tensor(fluxes.atleast_2d(), device=self.device)
+
         return fluxes
 
     def _normalize(self, fluxes, method=None, norm_unit="AB", add_norm_pos=-1):
@@ -6069,8 +6094,8 @@ class LibraryCreator:
 
         print(f"Number of parameters: {nparams}")
         print(f"Number of observations: {nobs}")
-        print(f"Num rows in parameter grid: {self.parameter_grid.shape[1]}")
-        print(f"Num rows in observation grid: {self.observation_grid.shape[1]}")
+        print(f"Num rows in parameter library: {self.parameter_grid.shape[1]}")
+        print(f"Num rows in observation library: {self.observation_grid.shape[1]}")
 
         assert self.parameter_grid.shape[0] == len(self.parameter_names), (
             "Number of rows in parameter_grid must match length of parameter_names."
@@ -6160,7 +6185,7 @@ class LibraryCreator:
             f.attrs["PhotometryUnits"] = self.observation_units
 
             f.attrs["CreationDT"] = datetime.now().strftime("%Y%m%d_%H%M%S")
-        print(f"Grid saved to {library_path}")
+        print(f"Library saved to {library_path}")
 
 
 if __name__ == "__main__":

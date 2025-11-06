@@ -458,7 +458,7 @@ class SBI_Fitter:
                 logger.warning("Model name not found in file. Using default name 'default_name'.")
 
             if library_path is None:
-                library_path = params.get("library_path", None)
+                library_path = params.get("library_path", params.get("grid_path", None))
 
                 if library_path is None:
                     raise ValueError("Library path not found in model file. Please provide it.")
@@ -760,6 +760,7 @@ class SBI_Fitter:
             param_dict["stats"].pop()
 
         # convert any torch tensors to numpy arrays on the cpu for compatibility
+        print(param_dict)
         param_dict = make_serializable(param_dict, allowed_types=[np.ndarray, UncertaintyModel])
 
         if save_method == "torch":
@@ -4627,7 +4628,27 @@ class SBI_Fitter:
                         np.save(f"{out_dir}/online/thetafid.npy", theta)
 
                 # Need to have option for intial training using saved data.
-
+                if isinstance(simulator, GalaxySimulator):
+                    # Create a simulator function
+                    print("Wrapping GalaxySimulator for SBI...")
+                    def run_simulator(params, return_type="tensor"):
+                        if isinstance(params, torch.Tensor):
+                            params = params.cpu().numpy()
+                        if isinstance(params, dict):
+                            params = {i: params[i] for i in self.fitted_parameter_names}
+                        elif isinstance(params, (list, tuple, np.ndarray)):
+                            params = np.squeeze(np.array(params))
+                            params = {self.fitted_parameter_names[i]: params[i]
+                                        for i in range(len(self.fitted_parameter_names))}
+                        phot = simulator(params)
+                        if return_type == "tensor": #
+                            x = torch.tensor(phot[np.newaxis, :], dtype=torch.float32).to(self.device)
+                            return x
+                        else:
+                            return phot
+                    use_sim = run_simulator
+                else:
+                    use_sim = simulator
                 loader = SBISimulator(
                     in_dir=f"{out_dir}/online/",
                     xobs_file="xobs.npy",
@@ -4636,7 +4657,7 @@ class SBI_Fitter:
                     save_simulated=True,
                     x_file="x.npy",  # if initial_training_from_library else None,
                     theta_file="theta.npy",  # , if initial_training_from_library else None,
-                    simulator=simulator,
+                    simulator=use_sim,
                 )
 
             nets = []
@@ -4833,7 +4854,7 @@ class SBI_Fitter:
                 }
 
             if learning_type == "online" or initial_training_from_library:
-                param_dict["simulator"] = simulator
+                #param_dict["simulator"] = simulator # don't serailize this.
                 param_dict["num_simulations"] = num_simulations
                 param_dict["num_online_rounds"] = num_online_rounds
                 param_dict["initial_training_from_library"] = initial_training_from_library
@@ -4853,12 +4874,12 @@ class SBI_Fitter:
             )
 
         if plot:
+            if engine in ["NLE"]:
+                sample_method = "emcee"
+            else:
+                sample_method = "direct"
             if learning_type == "offline":
                 # Deal with the sampling method.
-                if engine in ["NLE"]:
-                    sample_method = "emcee"
-                else:
-                    sample_method = "direct"
                 self.plot_diagnostics(
                     X_train=X_scaled,
                     y_train=y_scaled,
@@ -5416,7 +5437,10 @@ class SBI_Fitter:
             raise ValueError("Sampler must be either 'dynesty', 'ultranest' or 'nautilus'.")
 
     def recreate_simulator_from_library(
-        self, set_self=True, overwrite=False, override_grid_path=None, **kwargs
+        self, set_self=True, overwrite=False,
+        override_library_path=None,
+        override_grid_path=None,
+         **kwargs
     ):
         """Recreate the simulator from the HDF5 library.
 
@@ -5433,10 +5457,19 @@ class SBI_Fitter:
         which case we aren't concerned about
         depths, noise models, etc.
 
+        Parameters:
+            set_self: Whether to set the simulator attribute.
+            overwrite: Whether to overwrite an existing simulator.
+            override_library_path: Path to the library to use.
+            override_grid_path: Path to the synthesizer grid directory to use.
+            **kwargs: Additional keyword arguments to pass to the GalaxySimulator.
+
+        Returns:
+            The recreated GalaxySimulator object.
         """
         # grid path
-        if override_grid_path is not None:
-            library_path = override_grid_path
+        if override_library_path is not None:
+            library_path = override_library_path
         else:
             library_path = self.library_path
 
@@ -5473,8 +5506,10 @@ class SBI_Fitter:
         default_kwargs.update(kwargs)
 
         try:
-            simulator = GalaxySimulator.from_library(library_path, **default_kwargs)
-        except ValueError as e: 
+            simulator = GalaxySimulator.from_library(library_path,
+            override_synthesizer_grid_dir=override_grid_path,
+            **default_kwargs)
+        except ValueError as e:
             logger.error(
                 "Could not recreate simulator from grid. This model"
                 " may not be compatible. A GalaxySimulator object can"
@@ -7478,14 +7513,20 @@ class SBI_Fitter:
 
         phot = []
         for i in range(len(samples)):
-            p = self.simulator(samples[i]).cpu().numpy()
+            p = self.simulator(samples[i])
+            if isinstance(p, torch.Tensor):
+                p = p.cpu().numpy()
+
             phot.append(p)
         phot = np.array(phot)
         phot = np.squeeze(phot)
 
+        if isinstance(samples, torch.Tensor):
+            samples = samples.cpu().numpy()
+
         # shape phot to be (num_simulations, num_features)
         # X, y
-        return phot, samples.cpu().numpy()
+        return phot, samples
 
 
 class MissingPhotometryHandler:
