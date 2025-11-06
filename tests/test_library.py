@@ -268,7 +268,7 @@ class TestGalaxyBasis:
         """Test that full_single_cat_creation creates a single catalog."""
         basis = GalaxyBasis(**lhc_basis_params)
 
-        combined = basis.create_mock_cat(
+        combined = basis.create_mock_library(
             log_stellar_masses=[9] * len(lhc_basis_params["redshifts"]),
             emission_model_key="emergent",
             out_name="test_combined_simple",
@@ -518,7 +518,7 @@ class TestFullPipeline:
 
         stellar_masses = np.random.uniform(7, 11, size=len(lhc_basis_params["redshifts"]))
 
-        basis.create_mock_cat(
+        basis.create_mock_library(
             log_stellar_masses=stellar_masses,
             emission_model_key="emergent",
             out_name="test_full_simple",
