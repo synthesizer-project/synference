@@ -156,7 +156,7 @@ from mpi4py import MPI
 
 av_to_tau_v = 1.086  # conversion factor from Av to tau_v for the dust attenuation curve
 overwrite = False  # whether to overwrite existing grids
-Nmodels = 100_000#25_000  # number of models to generate
+Nmodels = 100_000  # 25_000  # number of models to generate
 grid_name = "BPASS"  # name for the grid
 cat_type = "spectra"  # spectra or photometry
 redshift = (0.01, 14)
@@ -493,7 +493,7 @@ for sfh_name, sfh_params in sfhs.items():
     emission_model = PacmanEmission(
         grid=grid,
         tau_v="tau_v",
-        dust_curve=Calzetti2000(slope="slope", ampl='dust_bump_amplitude'),
+        dust_curve=Calzetti2000(slope="slope", ampl="dust_bump_amplitude"),
         dust_emission=dust_emission,
         fesc=0.0,  # escape fraction of ionizing photons
         fesc_ly_alpha="fesc_lya",  # escape fraction of Lyman-alpha photons
@@ -627,10 +627,32 @@ for sfh_name, sfh_params in sfhs.items():
         log_surviving_mass=(calculate_surviving_mass, grid),  # Calculate surviving mass
         d4000=(calculate_d4000, emission_key),  # Calculate D4000 using the emission model
         beta=(calculate_beta, emission_key),  # Calculate beta using the qinstrument
-        Ha_EW=(calculate_line_ew, emission_model, "Ha", emission_key),  # Calculate EW of H-alpha line
-        Ha_flux=(calculate_line_flux, emission_model, "Ha", emission_key, cosmo),  # Calculate flux of H-alpha line
-        OIII_EW=(calculate_line_ew, emission_model, "O3", emission_key),  # Calculate EW of OIII doublet
-        OIII_flux=(calculate_line_flux, emission_model, "O3", emission_key, cosmo),  # Calculate flux of OIII doublet
+        Ha_EW=(
+            calculate_line_ew,
+            emission_model,
+            "Ha",
+            emission_key,
+        ),  # Calculate EW of H-alpha line
+        Ha_flux=(
+            calculate_line_flux,
+            emission_model,
+            "Ha",
+            emission_key,
+            cosmo,
+        ),  # Calculate flux of H-alpha line
+        OIII_EW=(
+            calculate_line_ew,
+            emission_model,
+            "O3",
+            emission_key,
+        ),  # Calculate EW of OIII doublet
+        OIII_flux=(
+            calculate_line_flux,
+            emission_model,
+            "O3",
+            emission_key,
+            cosmo,
+        ),  # Calculate flux of OIII doublet
         burstiness=calculate_burstiness,
         xi_ion0=(calculate_xi_ion0, emission_model, emission_key),
         Ndot_ion=(calculate_Ndot_ion, emission_key),
@@ -642,7 +664,7 @@ for sfh_name, sfh_params in sfhs.items():
         multi_node=multinode,
         cat_type=cat_type,
         em_lines_to_save=["H 1 6562.80A", "O 3 5006.84A"],
-        spectra_to_save=['dust_emission'],
+        spectra_to_save=["dust_emission"],
     )
 
 

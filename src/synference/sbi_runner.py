@@ -2681,7 +2681,9 @@ class SBI_Fitter:
                     eindex = None
                     fname = model_name.split(".")[-1]
                     for ecol in feature_array_flags["error_names"]:
-                        if ecol == f"unc_{model_name}" or (ecol.startswith("unc_") and ecol.endswith(fname)):
+                        if ecol == f"unc_{model_name}" or (
+                            ecol.startswith("unc_") and ecol.endswith(fname)
+                        ):
                             eindex = self.feature_names.index(ecol)
                             break
                     if eindex is None:
@@ -4631,6 +4633,7 @@ class SBI_Fitter:
                 if isinstance(simulator, GalaxySimulator):
                     # Create a simulator function
                     print("Wrapping GalaxySimulator for SBI...")
+
                     def run_simulator(params, return_type="tensor"):
                         if isinstance(params, torch.Tensor):
                             params = params.cpu().numpy()
@@ -4638,14 +4641,19 @@ class SBI_Fitter:
                             params = {i: params[i] for i in self.fitted_parameter_names}
                         elif isinstance(params, (list, tuple, np.ndarray)):
                             params = np.squeeze(np.array(params))
-                            params = {self.fitted_parameter_names[i]: params[i]
-                                        for i in range(len(self.fitted_parameter_names))}
+                            params = {
+                                self.fitted_parameter_names[i]: params[i]
+                                for i in range(len(self.fitted_parameter_names))
+                            }
                         phot = simulator(params)
-                        if return_type == "tensor": #
-                            x = torch.tensor(phot[np.newaxis, :], dtype=torch.float32).to(self.device)
+                        if return_type == "tensor":  #
+                            x = torch.tensor(phot[np.newaxis, :], dtype=torch.float32).to(
+                                self.device
+                            )
                             return x
                         else:
                             return phot
+
                     use_sim = run_simulator
                 else:
                     use_sim = simulator
@@ -4854,7 +4862,7 @@ class SBI_Fitter:
                 }
 
             if learning_type == "online" or initial_training_from_library:
-                #param_dict["simulator"] = simulator # don't serailize this.
+                # param_dict["simulator"] = simulator # don't serailize this.
                 param_dict["num_simulations"] = num_simulations
                 param_dict["num_online_rounds"] = num_online_rounds
                 param_dict["initial_training_from_library"] = initial_training_from_library
@@ -5437,10 +5445,12 @@ class SBI_Fitter:
             raise ValueError("Sampler must be either 'dynesty', 'ultranest' or 'nautilus'.")
 
     def recreate_simulator_from_library(
-        self, set_self=True, overwrite=False,
+        self,
+        set_self=True,
+        overwrite=False,
         override_library_path=None,
         override_grid_path=None,
-         **kwargs
+        **kwargs,
     ):
         """Recreate the simulator from the HDF5 library.
 
@@ -5506,9 +5516,9 @@ class SBI_Fitter:
         default_kwargs.update(kwargs)
 
         try:
-            simulator = GalaxySimulator.from_library(library_path,
-            override_synthesizer_grid_dir=override_grid_path,
-            **default_kwargs)
+            simulator = GalaxySimulator.from_library(
+                library_path, override_synthesizer_grid_dir=override_grid_path, **default_kwargs
+            )
         except ValueError as e:
             logger.error(
                 "Could not recreate simulator from grid. This model"
