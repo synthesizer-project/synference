@@ -2031,7 +2031,7 @@ class GalaxyBasis:
 
             base = f.create_group(group)
 
-            # store library_name and library_dir
+            # store grid_name and grid_dir
             base.attrs["grid_name"] = self.grid.grid_name
             base.attrs["grid_dir"] = self.grid.grid_dir
 
@@ -4235,12 +4235,16 @@ class CombinedBasis:
             ), f"""Wavelengths for base {i} do not match base 0.
                 {wavs} != {total_wavelengths[0]}"""
 
-        if "weight_fraction" in self.library_parameter_names:
+
+        if len(self.bases) == 1:
+            weights = np.array((1.0,))
+        elif "weight_fraction" in self.library_parameter_names:
             w_idx = self.library_parameter_names.index("weight_fraction")
             w = float(params[w_idx])
             weights = np.array((w, 1 - w))
         else:
-            weights = np.array((1.0, 0.0))
+            # Fallback: equal weights across bases if not encoded
+            weights = np.ones(len(self.bases)) / len(self.bases)
 
         # Stack the spectra according to the combination weights.
         # Spectra has shape (wav, n_bases)
