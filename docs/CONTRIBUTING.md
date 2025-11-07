@@ -115,7 +115,7 @@ To add Jupyter notebooks to the documentation:
              pytest
              pytest --nbmake docs/source/*.ipynb
              pytest --nbmake docs/source/cosmo/*.ipynb
-             pytest --nbmake docs/source/grids/*.ipynb
+             pytest --nbmake docs/source/libraries/*.ipynb
              pytest --nbmake docs/source/imaging/*.ipynb
              pytest --nbmake docs/source/parametric/*.ipynb
              pytest --nbmake docs/source/your_new_directory/*.ipynb
@@ -132,7 +132,7 @@ Example toctree:
        cosmo/cosmo
        imaging/imaging
        filters
-       grid_generation
+       library_generation
 
 ### Adding example scripts
 

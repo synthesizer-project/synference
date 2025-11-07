@@ -25,9 +25,9 @@ device = "cpu"
 
 grid_dir = os.environ["SYNTHESIZER_GRID_DIR"]
 dir_path = os.path.dirname(os.path.abspath(__file__))
-out_dir = os.path.join(os.path.dirname(os.path.dirname(dir_path)), "grids/")
+out_dir = os.path.join(os.path.dirname(os.path.dirname(dir_path)), "libraries/")
 
-grid_name = "bpass-2.2.1-bin_chabrier03-0.1,300.0_cloudy-c23.01-sps.hdf5"
+grid_name = "test_grid"
 
 grid = Grid(
     grid_name,

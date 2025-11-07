@@ -30,7 +30,7 @@ except ImportError:
     plo = None
 
 
-def load_grid_from_hdf5(
+def load_library_from_hdf5(
     hdf5_path: str,
     photometry_key: str = "Grid/Photometry",
     parameters_key: str = "Grid/Parameters",
@@ -51,6 +51,7 @@ def load_grid_from_hdf5(
         parameters_key: Key for the parameters dataset in the HDF5 file.
         filter_codes_attr: Attribute name for filter codes in the HDF5 file.
         parameters_attr: Attribute name for parameter names in the HDF5 file.
+        parameters_units_attr: Attribute name for parameter units in HDF5 file.
         supp_key: Key for supplementary parameters in the HDF5 file.
         supp_attr: Attribute name for supplementary parameter names in the HDF5 file.
         supp_units_attr: Attribute name for supplementary parameter units in HDF5 file.

@@ -85,7 +85,7 @@ emission_key = "total"
 overwrite = False
 cat_type = "spectra"  # or spectra
 
-name = f"AGN_test_grid_{cat_type}_v1"
+name = f"AGN_test_library_{cat_type}_v1"
 
 
 # BH Parameters
@@ -123,7 +123,7 @@ def torus_vdisp_from_mbh(mbh):
 
 instrument = "HST+JWST"
 
-path = f"/home/tharvey/work/synference/examples/grid_generation/filters/{instrument}.hdf5"
+path = f"/home/tharvey/work/synference/examples/library_generation/filters/{instrument}.hdf5"
 filterset = FilterCollection(path=path)
 instrument = Instrument(instrument, filters=filterset)
 
@@ -269,9 +269,9 @@ basis = GalaxyBasis(
     params_to_ignore=["max_age"],
 )
 
-basis.create_mock_cat(
+basis.create_mock_library(
     emission_model_key=emission_key,
-    out_name=f"grid_{name}",
+    out_name=f"library_{name}",
     out_dir=out_dir,
     overwrite=overwrite,
     mUV=(calculate_muv, cosmo),  # Calculate mUV using the provided cosmology

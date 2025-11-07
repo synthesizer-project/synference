@@ -1,4 +1,4 @@
-"""This module contains fixtures and tests for the grid generation classes."""
+"""This module contains fixtures and tests for the library generation classes."""
 
 import os
 
@@ -39,30 +39,31 @@ def check_hdf5(hfile, expected_keys, expected_attrs=None, check_size=False):
                 assert key in f.attrs, f"Attribute '{key}' not found in HDF5 file."
                 assert np.all(f.attrs[key] == attrs), (
                     f"Attribute '{key}' does not match expected value."
+                    f" Expected: {attrs}, Found: {f.attrs[key]}"
                 )
 
 
 @pytest.fixture
-def combined_grid_basis_params(grid_basis_params, test_dir):
+def combined_library_basis_params(library_basis_params, test_dir):
     """Fixture to create parameters for CombinedBasis."""
-    basis1 = GalaxyBasis(**grid_basis_params)
-    basis2 = GalaxyBasis(**grid_basis_params)
+    basis1 = GalaxyBasis(**library_basis_params)
+    basis2 = GalaxyBasis(**library_basis_params)
 
     # Modify basis2 to have different emission model
     basis2.emission_model = TotalEmission(
-        grid=grid_basis_params["grid"],
+        grid=library_basis_params["grid"],
         fesc=0.2,
         fesc_ly_alpha=0.2,
         dust_curve=Calzetti2000(),
         dust_emission_model=None,
     )
-    basis1.model_name = "test_grid_basis1"
-    basis2.model_name = "test_grid_basis2"
+    basis1.model_name = "test_library_basis1"
+    basis2.model_name = "test_library_basis2"
 
     return {
         "bases": [basis1, basis2],
-        "log_stellar_masses": [9] * len(grid_basis_params["redshifts"]),
-        "redshifts": grid_basis_params["redshifts"],
+        "log_stellar_masses": [9] * len(library_basis_params["redshifts"]),
+        "redshifts": library_basis_params["redshifts"],
         "base_emission_model_keys": ["emergent", "emergent"],
         "combination_weights": np.array([np.array([i, 1 - i]) for i in np.arange(0, 1.1, 0.25)]),
         "out_name": "test_combined",
@@ -110,14 +111,14 @@ def combined_lhc_basis_params(lhc_basis_params, test_dir):
 class TestGalaxyBasis:
     """Test suite for the GalaxyBasis class."""
 
-    def test_init_grid(self, grid_basis_params):
+    def test_init_library(self, library_basis_params):
         """Test that GalaxyBasis initializes correctly with valid parameters."""
-        basis = GalaxyBasis(**grid_basis_params)
+        basis = GalaxyBasis(**library_basis_params)
 
         assert basis.model_name == "test_basis"
-        assert np.array_equal(basis.redshifts, grid_basis_params["redshifts"])
-        assert basis.grid == grid_basis_params["grid"]
-        assert basis.emission_model == grid_basis_params["emission_model"]
+        assert np.array_equal(basis.redshifts, library_basis_params["redshifts"])
+        assert basis.grid == library_basis_params["grid"]
+        assert basis.emission_model == library_basis_params["emission_model"]
         assert basis.per_particle is False
 
     def test_init_lhc(self, lhc_basis_params):
@@ -153,9 +154,9 @@ class TestGalaxyBasis:
         assert len(result) == 100
         assert all(0 <= x <= 1.0 for x in result)
 
-    def test_create_galaxy(self, grid_basis_params, simple_sfh, simple_zdist):
+    def test_create_galaxy(self, library_basis_params, simple_sfh, simple_zdist):
         """Test that create_galaxy correctly creates a Galaxy object."""
-        basis = GalaxyBasis(**grid_basis_params)
+        basis = GalaxyBasis(**library_basis_params)
 
         # Test with single mass
         galaxy = basis.create_galaxy(
@@ -173,9 +174,9 @@ class TestGalaxyBasis:
             f"Expected initial mass to be 1e9 Msun, got {galaxy.stars.initial_mass}"
         )
 
-    def test_create_galaxies_grid(self, grid_basis_params):
+    def test_create_galaxies_library(self, library_basis_params):
         """Test that create_galaxies correctly creates multiple galaxies."""
-        basis = GalaxyBasis(**grid_basis_params)
+        basis = GalaxyBasis(**library_basis_params)
 
         galaxies = basis._create_galaxies(log_base_masses=9)
 
@@ -198,9 +199,9 @@ class TestGalaxyBasis:
         assert hasattr(basis, "varying_param_names")
         assert hasattr(basis, "fixed_param_names")
 
-    def test_process_galaxies_grid(self, grid_basis_params, test_dir):
+    def test_process_galaxies_library(self, library_basis_params, test_dir):
         """Test that process_galaxies correctly processes galaxies."""
-        basis = GalaxyBasis(**grid_basis_params)
+        basis = GalaxyBasis(**library_basis_params)
 
         galaxies = basis._create_galaxies(log_base_masses=9)
 
@@ -208,7 +209,7 @@ class TestGalaxyBasis:
 
         basis.process_galaxies(
             galaxies=galaxies,
-            out_name="test_output_grid.hdf5",
+            out_name="test_output_library.hdf5",
             out_dir=f"{test_dir}/test_output/",
             n_proc=1,
             verbose=0,
@@ -219,7 +220,7 @@ class TestGalaxyBasis:
         expected_keys = [f"Galaxies/{i}" for i in expected_keys]
 
         check_hdf5(
-            hfile=f"{test_dir}/test_output/test_output_grid.hdf5",
+            hfile=f"{test_dir}/test_output/test_output_library.hdf5",
             expected_keys=expected_keys,
         )
 
@@ -244,13 +245,13 @@ class TestGalaxyBasis:
         expected_keys = [f"Galaxies/{i}" for i in expected_keys]
 
         check_hdf5(
-            hfile=f"{test_dir}/test_output/test_output_grid.hdf5",
+            hfile=f"{test_dir}/test_output/test_output_lhc.hdf5",
             expected_keys=expected_keys,
         )
 
-    def test_plot_galaxy(self, grid_basis_params, test_parametric_galaxies, test_dir):
+    def test_plot_galaxy(self, library_basis_params, test_parametric_galaxies, test_dir):
         """Test that plot_galaxy correctly plots a Galaxy object."""
-        basis = GalaxyBasis(**grid_basis_params)
+        basis = GalaxyBasis(**library_basis_params)
 
         basis.galaxies = test_parametric_galaxies
 
@@ -267,7 +268,7 @@ class TestGalaxyBasis:
         """Test that full_single_cat_creation creates a single catalog."""
         basis = GalaxyBasis(**lhc_basis_params)
 
-        combined = basis.create_mock_cat(
+        combined = basis.create_mock_library(
             log_stellar_masses=[9] * len(lhc_basis_params["redshifts"]),
             emission_model_key="emergent",
             out_name="test_combined_simple",
@@ -289,7 +290,7 @@ class TestGalaxyBasis:
 
         expected_attrs = {
             "FilterCodes": basis.instrument.filters.filter_codes,
-            "ParameterNames": combined.grid_parameter_names,
+            "ParameterNames": combined.library_parameter_names,
             "model_name": [basis.model_name],
         }
         check_hdf5(out_file, expected_keys=expected_keys, expected_attrs=expected_attrs)
@@ -298,21 +299,21 @@ class TestGalaxyBasis:
 class TestCombinedBasis:
     """Test suite for the CombinedBasis class."""
 
-    def test_init_combined(self, combined_grid_basis_params, test_dir):
+    def test_init_combined(self, combined_library_basis_params, test_dir):
         """Test that CombinedBasis initializes correctly with valid parameters."""
-        combined = CombinedBasis(**combined_grid_basis_params)
+        combined = CombinedBasis(**combined_library_basis_params)
 
         assert combined.out_name == "test_combined"
         assert len(combined.bases) == 2
-        assert np.array_equal(combined.redshifts, combined_grid_basis_params["redshifts"])
+        assert np.array_equal(combined.redshifts, combined_library_basis_params["redshifts"])
         assert combined.base_emission_model_keys == ["emergent", "emergent"]
         assert combined.out_dir == f"{test_dir}/test_output/"
 
-    def test_process_bases(self, combined_grid_basis_params):
+    def test_process_bases(self, combined_library_basis_params):
         """Test that process_bases correctly processes the bases."""
         # Call process_bases to ensure it runs without errors
 
-        combined = CombinedBasis(**combined_grid_basis_params)
+        combined = CombinedBasis(**combined_library_basis_params)
 
         combined.process_bases(n_proc=1, overwrite=True)
 
@@ -323,15 +324,15 @@ class TestCombinedBasis:
             expected_keys = [f"Galaxies/{i}" for i in expected_keys]
             check_hdf5(f"{out_dir}/{out_name}", expected_keys=expected_keys)
 
-    def test_create_grid(self, combined_grid_basis_params):
-        """Test that create_grid correctly creates a combined grid."""
-        combined = CombinedBasis(**combined_grid_basis_params)
+    def test_create_library(self, combined_library_basis_params):
+        """Test that create_library correctly creates a combined library."""
+        combined = CombinedBasis(**combined_library_basis_params)
 
         # Passing in extra analysis function to pipeline to calculate mUV.
         # Any funciton could be passed in.
         combined.process_bases(overwrite=True, mUV=(calculate_muv, Planck18), n_proc=1)
 
-        combined.create_grid()
+        combined.create_library()
 
         # Check that the output file exists
         out_file = f"{combined.out_dir}/{combined.out_name}.hdf5"
@@ -346,7 +347,7 @@ class TestCombinedBasis:
 
         expected_attrs = {
             "FilterCodes": combined.bases[0].instrument.filters.filter_codes,
-            "ParameterNames": combined.grid_parameter_names,
+            "ParameterNames": combined.library_parameter_names,
             "model_name": [base.model_name for base in combined.bases],
         }
 
@@ -357,13 +358,13 @@ class TestCombinedBasis:
             check_size=True,
         )
 
-    def test_create_full_grid(self, combined_lhc_basis_params):
-        """Test that create_grid correctly creates a combined grid for LHC parameters."""
+    def test_create_full_library(self, combined_lhc_basis_params):
+        """Test that create_library correctly creates a combined library for LHC parameters."""
         combined = CombinedBasis(**combined_lhc_basis_params)
 
         combined.process_bases(overwrite=True, mUV=(calculate_muv, Planck18), n_proc=1)
 
-        combined.create_grid()
+        combined.create_library()
 
         # Check that the output file exists
         out_file = f"{combined.out_dir}/{combined.out_name}.hdf5"
@@ -378,7 +379,7 @@ class TestCombinedBasis:
 
         expected_attrs = {
             "FilterCodes": combined.bases[0].instrument.filters.filter_codes,
-            "ParameterNames": combined.grid_parameter_names,
+            "ParameterNames": combined.library_parameter_names,
             "model_name": [base.model_name for base in combined.bases],
         }
 
@@ -393,17 +394,17 @@ class TestCombinedBasis:
 class TestSBIFitter:
     """Test suite for the SBI_Fitter class."""
 
-    def test_init_sbifitter_from_grid(self, test_sbi_grid):
-        """Test that synference initializes correctly with a valid grid."""
-        fitter = SBI_Fitter.init_from_hdf5(model_name="test_sbi", hdf5_path=test_sbi_grid)
+    def test_init_sbifitter_from_library(self, test_sbi_library):
+        """Test that synference initializes correctly with a valid library."""
+        fitter = SBI_Fitter.init_from_hdf5(model_name="test_sbi", hdf5_path=test_sbi_library)
 
-        assert fitter.grid_path == test_sbi_grid, (
-            "synference did not initialize with the correct grid file."
+        assert fitter.library_path == test_sbi_library, (
+            "synference did not initialize with the correct library file."
         )
 
-    def test_sbifitter_feature_array_creation(self, test_sbi_grid):
-        """Test that synference can create a basic feature array from the grid."""
-        fitter = SBI_Fitter.init_from_hdf5(model_name="test_sbi", hdf5_path=test_sbi_grid)
+    def test_sbifitter_feature_array_creation(self, test_sbi_library):
+        """Test that synference can create a basic feature array from the library."""
+        fitter = SBI_Fitter.init_from_hdf5(model_name="test_sbi", hdf5_path=test_sbi_library)
 
         fitter.create_feature_array_from_raw_photometry()
 
@@ -508,16 +509,16 @@ class TestSBIFitter:
 
 
 class TestFullPipeline:
-    """Test suite for full runthrough of grids and synference."""
+    """Test suite for full runthrough of libraries and synference."""
 
     def test_full_lhc(self, lhc_basis_params, test_dir):
-        """Test the full runthrough of LHC grid creation and synference."""
+        """Test the full runthrough of LHC library creation and synference."""
         # Create the GalaxyBasis with LHC parameters
         basis = GalaxyBasis(**lhc_basis_params)
 
         stellar_masses = np.random.uniform(7, 11, size=len(lhc_basis_params["redshifts"]))
 
-        basis.create_mock_cat(
+        basis.create_mock_library(
             log_stellar_masses=stellar_masses,
             emission_model_key="emergent",
             out_name="test_full_simple",
@@ -526,7 +527,7 @@ class TestFullPipeline:
             overwrite=True,
         )
 
-        # Initialize synference from the created grid
+        # Initialize synference from the created library
         fitter = SBI_Fitter.init_from_hdf5(
             model_name="test_sbi_lhc",
             hdf5_path=f"{test_dir}/test_output/test_full_simple.hdf5",

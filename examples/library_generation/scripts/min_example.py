@@ -146,8 +146,8 @@ basis = GalaxyBasis(
 )
 
 # Create our mock training catalogue!
-basis.create_mock_cat(
-    out_name=f"cat_{name}",
+basis.create_mock_library(
+    out_name=f"library_{name}",
     log_stellar_masses=all_param_dict["log_masses"],
     emission_model_key="total",
     out_dir=out_dir,
@@ -164,7 +164,7 @@ basis.create_mock_cat(
 
 # Initialize SBI
 empirical_model_fitter = SBI_Fitter.init_from_hdf5(
-    hdf5_path=f"{out_dir}/grid_{name}.hdf5", model_name=f"sbi_{name}"
+    hdf5_path=f"{out_dir}/library_{name}.hdf5", model_name=f"sbi_{name}"
 )
 
 # Create explicit feature array for training.

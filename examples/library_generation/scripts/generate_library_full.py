@@ -321,7 +321,7 @@ combined_basis = CombinedBasis(
     base_emission_model_keys=["total"],
     combination_weights=None,
     redshifts=redshifts,
-    out_name=f"grid_{name}",
+    out_name=f"library_{name}",
     out_dir=out_dir,
     draw_parameter_combinations=False,  # Since we have already drawn the parameters,
     # we don't need to combine them again.
@@ -346,4 +346,4 @@ combined_basis.process_bases(
 )
 
 # Create grid - kinda overkill for a single case, but it does work.
-combined_basis.create_grid(overwrite=True)
+combined_basis.create_library(overwrite=True)

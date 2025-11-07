@@ -206,8 +206,8 @@ for grid_name in popIII_grids:
     )
     # name = "test_sbi"
 
-    if os.path.exists(f"{out_dir}/grid_{name}.hdf5") and not overwrite:
-        print(f"Grid {name} already exists. Skipping...")
+    if os.path.exists(f"{out_dir}/library_{name}.hdf5") and not overwrite:
+        print(f"Library {name} already exists. Skipping...")
         continue
 
     basis = GalaxyBasis(
@@ -235,8 +235,8 @@ for grid_name in popIII_grids:
     # This is the simple way-
     # it runs the following three steps for you.
 
-    basis.create_mock_cat(
-        out_name=f"grid_{name}",
+    basis.create_mock_library(
+        out_name=f"library_{name}",
         out_dir=out_dir,
         overwrite=overwrite,
         n_proc=n_proc,
@@ -266,5 +266,5 @@ combined_basis.process_bases(
 )
 
 # Create grid - kinda overkill for a single case, but it does work.
-combined_basis.create_grid(overwrite=True)
+combined_basis.create_library(overwrite=True)
 """
