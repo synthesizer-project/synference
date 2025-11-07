@@ -1,4 +1,6 @@
 # ignore warnings for readability
+"Multinode variant of the grid generation script for synference."
+
 import copy
 import os
 import sys
@@ -18,6 +20,16 @@ from synthesizer.parametric import SFH, ZDist
 from tqdm import tqdm
 from unyt import K, Myr, unyt_array
 
+try:
+    from mpi4py import MPI
+
+    rank = MPI.COMM_WORLD.Get_rank()  # Get the rank of the current process
+    size = MPI.COMM_WORLD.Get_size()  # Get the total number of processes
+except ImportError:
+    rank, size = 0, 1
+
+print(f"Rank {rank} with {size} processes available.")
+
 from synference import (
     GalaxyBasis,
     calculate_beta,
@@ -26,12 +38,16 @@ from synference import (
     calculate_mass_weighted_age,
     calculate_muv,
     calculate_sfh_quantile,
-    calculate_sfr,
     calculate_surviving_mass,
     draw_from_hypercube,
     generate_constant_R,
     generate_random_DB_sfh,
     generate_sfh_basis,
+    calculate_line_ew,
+    calculate_line_flux,
+    calculate_xi_ion0,
+    calculate_burstiness,
+    calculate_Ndot_ion,
 )
 
 # Filters
@@ -127,29 +143,51 @@ grid_dir = os.environ["SYNTHESIZER_GRID_DIR"]
 # path for this file
 
 dir_path = os.path.dirname(os.path.abspath(__file__))
-out_dir = os.path.join(os.path.dirname(os.path.dirname(dir_path)), "grids/")
+out_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(dir_path))), "libraries/")
 
 try:
     n_proc = int(sys.argv[1])
 except Exception:
     n_proc = 6
 
+print(f"Number of processes/task: {n_proc}")
+
+from mpi4py import MPI
+
 av_to_tau_v = 1.086  # conversion factor from Av to tau_v for the dust attenuation curve
-overwrite = True  # whether to overwrite existing grids
-Nmodels = 100_000  # number of models to generate
-batch_size = 50_000  # number of models to generate in each batch
+overwrite = False  # whether to overwrite existing grids
+Nmodels = 100_000  # 25_000  # number of models to generate
+grid_name = "BPASS"  # name for the grid
+cat_type = "spectra"  # spectra or photometry
 redshift = (0.01, 14)
 masses = (4, 12)
 max_redshift = 20  # gives maximum age of SFH at a given redshift
 cosmo = Planck18  # cosmology to use for age calculations
 emission_key = "total"  # 'attenuated' if no dust emission or 'emergent' if fesc > 0
 # ---------------------------------------------------------------
-
-
 logAv = (-3, 0.7)  # Log-uniform between 0.001 and 5.0 magnitudes
 log_zmet = (-4, -1.39)  # max of grid (e.g. 0.04)
 
 seed = 42  # Seed for reproducibility
+
+mask = np.zeros(Nmodels, dtype=bool)
+galaxies_per_node = Nmodels // size
+start_idx = rank * galaxies_per_node
+end_idx = start_idx + galaxies_per_node
+if rank == size - 1:  # Last node gets the remainder
+    end_idx = Nmodels
+mask[start_idx:end_idx] = True
+
+if int(sys.argv[2]) == 1:
+    mask = np.ones(Nmodels, dtype=bool)
+
+
+batch_size = np.sum(mask) + 1
+
+grid_dict = {
+    "FSPS": "fsps-3.2-mist-miles_chabrier03-0.1,300_cloudy-c23.01-sps",
+    "BPASS": "bpass-2.2.1-bin_chabrier03-0.1,300.0_cloudy-c23.01-sps",
+}
 
 
 def continuity_agebins(
@@ -270,19 +308,29 @@ def continuity_agebins(
     "tau": (0.01, 10),  # Uniform between 0.01 and 10 Gyr
     "max_age_norm": (0.01, 0.99),  # normalized to maximum age of the universe at that redshift.
 },
+
+"dense_basis": {
+        "Nparam_SFH": 3,
+        "tx_alpha": 1,
+        "sfh_type": SFH.DenseBasis,
+        "sfh_param_names": [
+            "ssfr",
+        ],
+        "ssfr": (-12, -7),  # log10(sSFR) in yr^-1'
+        "params_to_ignore": ["max_age"],
+    }
+
 """
 
 sfhs = {
-    "log_normal": {
-        "sfh_type": SFH.LogNormal,
-        "sfh_param_names": ["tau", "peak_age_norm"],
-        "tau": (0.05, 2.5),  # in Gyr
-        "tau_units": [None, None],
-        "peak_age_norm": (
-            0.001,
-            0.99,
-        ),  # normalized to maximum age of the universe at that redshift.
-        "params_to_ignore": ["max_age"],  # correlates with redshift, so not needed
+    "continuity": {  # SWITCH SYNTHESIZER BRANCH AND UNCOMMENT CONTINUITY REFERENCES BELOW
+        "sfh_type": SFH.Continuity,
+        "agebins": continuity_agebins,
+        "df": 2,
+        "scale": 1.0,  # scale for students-t prior
+        "params_to_ignore": ["max_age", "agebins"],
+        "nbins": 6,  # number of bins to use for the Continuity SFH
+        "sfh_param_names": [],
     }
 }
 
@@ -294,6 +342,9 @@ full_params_base = {
     "log_masses": masses,
     "log_Av": logAv,  # Av in magnitudes
     "log_zmet": log_zmet,
+    "slope": (-0.3, 1.1),  # slope for the Calzetti attenuation curve
+    "fesc_lya": (0.0, 1.0),  # escape fraction of Lyman-alpha photons
+    "dust_bump_amplitude": (0.0, 5.0),  # amplitude of the 2175A dust bump
 }
 
 for sfh_name, sfh_params in sfhs.items():
@@ -303,23 +354,23 @@ for sfh_name, sfh_params in sfhs.items():
 
     sfh_name = str(sfh_type).split(".")[-1].split("'")[0]
 
-    name = f"BPASS_Chab_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_Calzetti_v3"  # noqa: E501
-    print(f"{out_dir}/grid_{name}.hdf5")
-    if os.path.exists(f"{out_dir}/v2/grid_{name}.hdf5") and not overwrite:
-        print(f"Grid {name} already exists, skipping.")
+    name = f"{grid_name}_Chab_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_Calzetti_v5_multinode"  # noqa: E501
+    print(f"{out_dir}/library_{name}.hdf5")
+    if os.path.exists(f"{out_dir}/library_{name}.hdf5") and not overwrite:
+        print(f"Library {name} already exists, skipping.")
         continue
 
     for param_name in sfh_param_names:
         full_params[param_name] = sfh_params[param_name]
     if sfh_type == SFH.DenseBasis:
         # Add dummy parameters for the SFH
-        for i in tqdm(range(sfh_params["Nparam_SFH"]), desc="Adding SFH parameters"):
+        for i in range(sfh_params["Nparam_SFH"]):
             j = 100 * (i + 1) / (sfh_params["Nparam_SFH"] + 1)
             full_params[f"sfh_quantile_{j:.0f}"] = (
                 0,
                 1,
             )  # dummy parameters for the SFH
-    """elif sfh_type == SFH.Continuity:
+    elif sfh_type == SFH.Continuity:
         # Add dummy parameters for the Continuity SFH
         for i in tqdm(range(sfh_params["nbins"])):
             j = 100 * (i + 1) / (sfh_params["nbins"] + 1)
@@ -332,18 +383,24 @@ for sfh_name, sfh_params in sfhs.items():
     # Draw samples from Latin Hypercube.
     # unlog_keys are keys which should be unlogged after drawing from the hypercube.
     # they will be renamed to not include 'log_' after drawing.
+    print("Drawing samples from Latin Hypercube.")
     all_param_dict = draw_from_hypercube(
         full_params, Nmodels, rng=seed, unlog_keys=["log_Av"] + sfh_params.get("unlog_keys", [])
     )  # noqa: E501
 
     # Create the grid
     grid = Grid(
-        "bpass-2.2.1-bin_chabrier03-0.1,300.0_cloudy-c23.01-sps.hdf5",
+        grid_dict[grid_name],
+        # "bpass-2.2.1-bin_chabrier03-0.1,300.0_cloudy-c23.01-sps.hdf5",
         grid_dir=grid_dir,
         new_lam=new_wav,
     )
+    print(grid.available_lines)
     # Metallicity
-    Z_dists = [ZDist.DeltaConstant(log10metallicity=log_z) for log_z in all_param_dict["log_zmet"]]
+    Z_dists = [
+        ZDist.DeltaConstant(log10metallicity=log_z)
+        for log_z in tqdm(all_param_dict["log_zmet"], desc="Creating ZDist", disable=rank != 0)
+    ]
 
     # Redshifts
     redshifts = np.array(all_param_dict["redshift"])
@@ -354,41 +411,65 @@ for sfh_name, sfh_params in sfhs.items():
         tx_alpha = sfh_params["tx_alpha"]  # tx_alpha for the Dense Basis SFH
         sfh_models = []
         logsfrs = []
-        for i in tqdm(range(Nmodels)):
-            z = all_param_dict["redshift"][i]
-            logmass = all_param_dict["log_masses"][i]
-            logssfr = all_param_dict["ssfr"][i]
-            logsfr = logmass + logssfr
-            logsfrs.append(logsfr)
-            sfh, tx = generate_random_DB_sfh(
-                Nparam=Nparam_SFH,
-                tx_alpha=tx_alpha,
-                redshift=z,
-                logsfr=logsfr,
-                logmass=logmass,
-            )
+
+        skip = os.path.exists(f"{out_dir}/sps_{name}.hdf5") and not overwrite
+
+        # Alternatively check for all of _0 to _N given total number of models/nodes
+        # and skip if all exist.
+
+        """n_required = Nmodels // batch_size
+
+        if all(
+            os.path.exists(f"{out_dir}/sps_{name}_{i}.hdf5") and not overwrite
+            for i in range(n_required)
+        ):
+            skip = True
+
+        if skip:
+            print(f"SPS models for {name} already exist, skipping SFH generation.")"""
+
+        for i in tqdm(range(Nmodels), desc="Generating SFH models", disable=rank != 0):
+            if not skip or i == 0:
+                z = all_param_dict["redshift"][i]
+                logmass = all_param_dict["log_masses"][i]
+                logssfr = all_param_dict["ssfr"][i]
+                logsfr = logmass + logssfr
+                logsfrs.append(logsfr)
+                if mask[i] or skip:
+                    sfh, tx = generate_random_DB_sfh(
+                        Nparam=Nparam_SFH,
+                        tx_alpha=tx_alpha,
+                        redshift=z,
+                        logsfr=logsfr,
+                        logmass=logmass,
+                    )
+                    for j in range(Nparam_SFH):
+                        all_param_dict[f"sfh_quantile_{100 * (j + 1) / (Nparam_SFH + 1):.0f}"][
+                            i
+                        ] = tx[j]
+                else:
+                    sfh = None
             sfh_models.append(sfh)
             # Reassign parameters
-            for j in range(Nparam_SFH):
-                all_param_dict[f"sfh_quantile_{100 * (j + 1) / (Nparam_SFH + 1):.0f}"][i] = tx[j]
+
         full_params.pop("ssfr", None)  # remove ssfr from full_params
         # Add logSFR to all_param_dict
         all_param_dict["log_sfr"] = np.array(logsfrs)
         # UNCOMMENT IN GENERAL! Just because main doesn't have this brnch.
-        """elif sfh_type == SFH.Continuity:
-            # Draw from prior.
-            sfh_models = []
-            for i in tqdm(range(Nmodels)):
-                z_i = all_param_dict["redshift"][i]
-                agebins = sfh_params["agebins"](z_i, cosmo=cosmo, Nbins=6)
-                sfh_models.append(
-                    sfh_params["sfh_type"].init_from_prior(
-                        agebins,
-                        df=sfh_params["df"],
-                        scale=sfh_params["scale"],
-                        limits=(-30, 30),
-                    )
-        )"""
+    elif sfh_type == SFH.Continuity:
+        # Draw from prior.
+        sfh_models = []
+        for i in tqdm(range(Nmodels)):
+            z_i = all_param_dict["redshift"][i]
+            agebins = sfh_params["agebins"](z_i, cosmo=cosmo, Nbins=6)
+            sfh_models.append(
+                sfh_params["sfh_type"].init_from_prior(
+                    agebins,
+                    df=sfh_params["df"],
+                    scale=sfh_params["scale"],
+                    limits=(-30, 30),
+                )
+            )
 
     else:
         if "beta" in sfh_param_names:
@@ -408,14 +489,14 @@ for sfh_name, sfh_params in sfhs.items():
     dust_emission = Greybody(temperature=40 * K, emissivity=1.5)
 
     # Essentially CF00 with explicit fesc and fesc_ly_alpha parameters.
-
+    print("Creating emission model.")
     emission_model = PacmanEmission(
         grid=grid,
         tau_v="tau_v",
-        dust_curve=Calzetti2000(),
+        dust_curve=Calzetti2000(slope="slope", ampl="dust_bump_amplitude"),
         dust_emission=dust_emission,
         fesc=0.0,  # escape fraction of ionizing photons
-        fesc_ly_alpha=0.0,  # escape fraction of Lyman-alpha photons
+        fesc_ly_alpha="fesc_lya",  # escape fraction of Lyman-alpha photons
     )
 
     # List of other varying or fixed parameters. Either a distribution to pull from or a list.
@@ -423,6 +504,9 @@ for sfh_name, sfh_params in sfhs.items():
     # galaxy and processed by the emission model.
     galaxy_params = {
         "tau_v": all_param_dict["Av"] / av_to_tau_v,
+        "slope": all_param_dict["slope"],
+        "fesc_lya": all_param_dict["fesc_lya"],
+        "dust_bump_amplitude": all_param_dict["dust_bump_amplitude"],
     }
 
     # Dictionary of alternative parametrizations for the galaxy parameters -
@@ -480,12 +564,13 @@ for sfh_name, sfh_params in sfhs.items():
             + [f"sfh_quantile_{100 * (j + 1) / (Nparam_SFH + 1):.0f}" for j in range(Nparam_SFH)],
             db_sf_convert,
         )  # noqa: E501
-    """elif sfh_type == SFH.Continuity:
+    elif sfh_type == SFH.Continuity:
         alt_parametrizations["logsfr_ratios"] = (
             [f"logsfr_ratio_{j}" for j in range(sfh_params["nbins"] - 1)],
             lambda p, p_dict: p_dict["logsfr_ratios"][int(p.split("_")[-1])],  # noqa: E501
-        )"""
+        )
 
+    print(f"Creating basis for {name} with {sfh_type} SFH.")
     basis = GalaxyBasis(
         model_name=f"sps_{name}",
         redshifts=redshifts,
@@ -514,17 +599,26 @@ for sfh_name, sfh_params in sfhs.items():
             print(f"Error plotting galaxy {i}: {e}")
             continue"""
 
-    basis.create_mock_cat(
+    multinode = True if sys.argv[2] == "0" else False  # Check if running in multinode mode
+    compile_grid = True if sys.argv[2] == "1" else False  # Check if running in multinode mode
+
+    param_transforms_to_save = {
+        "tau_v": lambda x: x["Av"] / av_to_tau_v,  # Save Av instead of tau_v
+    }
+
+    if sfh_type == SFH.DenseBasis:
+        param_transforms_to_save["db_tuple"] = make_db_tuple
+    basis.create_mock_library(
         emission_model_key=emission_key,
-        out_name=f"grid_{name}",
+        out_name=f"library_{name}",
         out_dir=out_dir,
         overwrite=overwrite,
         mUV=(calculate_muv, cosmo),  # Calculate mUV using the provided cosmology
         mass_weighted_age=calculate_mass_weighted_age,  # Calculate mass-weighted age
-        sfr_3=(calculate_sfr, 3 * Myr),  # Calculate SFR averaged over the last 3 Myr
-        sfr_10=(calculate_sfr, 10 * Myr),  # Calculate SFR averaged over the last 10 Myr
-        sfr_30=(calculate_sfr, 30 * Myr),  # Calculate SFR averaged over the last 30 Myr
-        sfr_100=(calculate_sfr, 100 * Myr),  # Calculate SFR averaged over the last 100 Myr
+        # sfr_3=(calculate_sfr, 3 * Myr),  # Calculate SFR averaged over the last 3 Myr
+        # sfr_10=(calculate_sfr, 10 * Myr),  # Calculate SFR averaged over the last 10 Myr
+        # sfr_30=(calculate_sfr, 30 * Myr),  # Calculate SFR averaged over the last 30 Myr
+        # sfr_100=(calculate_sfr, 100 * Myr),  # Calculate SFR averaged over the last 100 Myr
         sfh_quant_25=(calculate_sfh_quantile, 0.25, True),  # Calculate SFH quantile at 25%
         sfh_quant_50=(calculate_sfh_quantile, 0.50, True),  # Calculate SFH quantile at 50%
         sfh_quant_75=(calculate_sfh_quantile, 0.75, True),  # Calculate SFH quantile at 75%
@@ -533,20 +627,45 @@ for sfh_name, sfh_params in sfhs.items():
         log_surviving_mass=(calculate_surviving_mass, grid),  # Calculate surviving mass
         d4000=(calculate_d4000, emission_key),  # Calculate D4000 using the emission model
         beta=(calculate_beta, emission_key),  # Calculate beta using the qinstrument
+        Ha_EW=(
+            calculate_line_ew,
+            emission_model,
+            "Ha",
+            emission_key,
+        ),  # Calculate EW of H-alpha line
+        Ha_flux=(
+            calculate_line_flux,
+            emission_model,
+            "Ha",
+            emission_key,
+            cosmo,
+        ),  # Calculate flux of H-alpha line
+        OIII_EW=(
+            calculate_line_ew,
+            emission_model,
+            "O3",
+            emission_key,
+        ),  # Calculate EW of OIII doublet
+        OIII_flux=(
+            calculate_line_flux,
+            emission_model,
+            "O3",
+            emission_key,
+            cosmo,
+        ),  # Calculate flux of OIII doublet
+        burstiness=calculate_burstiness,
+        xi_ion0=(calculate_xi_ion0, emission_model, emission_key),
+        Ndot_ion=(calculate_Ndot_ion, emission_key),
         n_proc=n_proc,
         verbose=False,
         batch_size=batch_size,
-        parameter_transforms_to_save={
-            "db_tuple": make_db_tuple,  # Save the Dense Basis SFH tuple
-        },
+        parameter_transforms_to_save=param_transforms_to_save,
+        compile_grid=compile_grid,
+        multi_node=multinode,
+        cat_type=cat_type,
+        em_lines_to_save=["H 1 6562.80A", "O 3 5006.84A"],
+        spectra_to_save=["dust_emission"],
     )
-
-# no supplementary parameters took 5 seconds
-# mass weighted age, sfh quantiles, surviving mass took 11 seconds
-# d4000/beta/mUV took 12 seconds
-# All took 5 minutes!
-# it was creating the UVJ filter colletction for each model that took the longest time.
-# The UVJ filter collection is now created once at the start of the script.
 
 
 """ Graveyard
@@ -558,10 +677,4 @@ flux_Halpha=(calculate_line_flux, emission_model, "Ha", emission_key, cosmo),
 EW_OIII=(calculate_line_ew, emission_model, "O3", emission_key),
 # Calculate flux of OIII doublet noqa: E501
 flux_OIII=(calculate_line_flux, emission_model, "O3", emission_key, cosmo),
-# sfrs took 11 seconds
-
-
-# For Dense Basis
-# Creating 100, 000 galaxies took 46:48
-# Outputs took 160 minutes
 """

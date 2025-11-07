@@ -1966,7 +1966,7 @@
             "AB"
         ],
         "timestamp": "20250929_064412",
-        "grid_path": "/cosma/apps/dp276/dc-harv3/synference/grids/grid_BPASS_Chab_DenseBasis_SFH_0.01_z_14_logN_6.0_Calzetti_v4_multinode.hdf5",
+        "grid_path": "/cosma/apps/dp276/dc-harv3/synference/libraries/grid_BPASS_Chab_DenseBasis_SFH_0.01_z_14_logN_6.0_Calzetti_v4_multinode.hdf5",
         "name": "BPASS_DenseBasis_v4_final",
         "has_simulator": false,
         "engine": "NPE",

@@ -31,11 +31,12 @@ priv/
 Yggdrasil/
 models/*
 grids
+libraries
 !models/README.txt
 scripts/filters/
 *.joblib
 *.npz
-examples/grid_generation/filters/*
+examples/library_generation/filters/*
 
 # Jupyter Notebook checkpoints
 .ipynb_checkpoints
@@ -52,10 +53,8 @@ layouts
 
 tests/test_output/*
 tests/test_grids/*
-!tests/test_grids/sbi_test_grid.hdf5
-!tests/test_grids/sps_test_grid.hdf5
-!docs/source/advanced_topics/bpass_nested_samples.csv
-!docs/source/advanced_topics/fsps_nested_samples.csv
-!docs/source/gfx
+!tests/test_libraries/sbi_test_library.hdf5
+!tests/test_libraries/sps_test_library.hdf5
+!docs/build/gfx
 !docs/source/example_models/bpass_db_v4/*
-!docs/source/example_grids/*
+!docs/source/example_libraries/*

@@ -152,5 +152,5 @@ new_wav = generate_constant_R(R=300)
 filterset = FilterCollection(filter_codes, new_lam=new_wav)
 
 filterset.write_filters(
-    "/cosma/apps/dp276/dc-harv3/synference/examples/grid_generation/scripts/filters/GENERAL_SURVEY.hdf5"
+    "/cosma/apps/dp276/dc-harv3/synference/examples/library_generation/scripts/filters/GENERAL_SURVEY.hdf5"
 )
