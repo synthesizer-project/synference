@@ -4,19 +4,20 @@ import sys
 
 import numpy as np
 from astropy.cosmology import Planck18
-from synthesizer.emission_models import TotalEmission
+from synthesizer.emission_models import PacmanEmission
 from synthesizer.emission_models.attenuation import (
     Calzetti2000,
 )  # noqa
+from synthesizer.emission_models.dust.emission import Blackbody
 from synthesizer.grid import Grid
 from synthesizer.instruments import FilterCollection, Instrument
 from synthesizer.parametric import SFH, ZDist
-from unyt import Myr
+from unyt import K, Myr
 
 from synference import (
     GalaxyBasis,
+    calculate_mass_weighted_age,
     calculate_muv,
-    calculate_mwa,
     draw_from_hypercube,
     generate_constant_R,
     generate_sfh_basis,
@@ -80,8 +81,7 @@ if os.path.exists(path):
     filterset = FilterCollection(path=path)
 else:
     filterset = FilterCollection(filter_codes=filter_codes)
-    if not os.path.exists(os.path.dirname(path)):
-        os.makedirs(os.path.dirname(path))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     filterset.write_filters(path)
 
 
@@ -114,26 +114,43 @@ except Exception:
 
 # params
 
-Nmodels = 10_000  # 00
-redshifts = 0.1
+overwrite = True
+Nmodels = 100  # 00
+redshift = (0.001, 12)
 masses = (4, 12)  # log10 of stellar mass in solar masses
 max_redshift = 20  # gives maximum age of SFH at a given redshift
-log_z = -2.0  # log10 of metallicity in solar units
-cosmo = Planck18  # cosmology to use for age calculation
+cosmo = Planck18  # cosmology to use for age calculations
+fesc = 0.0  # escape fraction of ionizing photons
+fesc_ly_alpha = 0.1  # escape fraction of Ly-alpha photons
+dust_emission = Blackbody(
+    temperature=35 * K
+)  # No dust emission model for this grid, but can be added later.
+dust_curve = Calzetti2000()  # Dust attenuation curve to use for the grid.
+# ---------------------------------------------------------------
+# Pop II
+
 tau_v = (0.0, 3.0)
+log_zmet = (-4, -1.39)  # max of grid (e.g. 0.04)
 
 # SFH
 sfh_type = SFH.LogNormal
-tau = 0.4
-peak_age = (0, 10_000) * Myr
+tau = (0.05, 2.5)
+peak_age = (
+    0,
+    0.99,
+)  # normalized to maximum age of the universe at that redshift.
+
 # ---------------------------------------------------------------
 
 # Generate the grid. Could also seperate hyper-parameters for each model.
 
 param_prior_ranges = {
+    "redshift": redshift,
     "log_masses": masses,
-    "peak_age": peak_age,
     "tau_v": tau_v,
+    "log_zmet": log_zmet,
+    "tau": tau,
+    "peak_age": peak_age,
 }
 
 # Draw samples from Latin Hypercube
@@ -143,6 +160,8 @@ all_param_dict = draw_from_hypercube(
     rng=42,
 )
 
+# Get samples from the LHC draw dict
+redshifts = all_param_dict["redshift"]
 masses = all_param_dict["log_masses"]
 
 # Load Synthesizer SPS grid
@@ -153,15 +172,14 @@ grid = Grid(
 )
 
 # Metallicity
-Z_dists = [ZDist.DeltaConstant(log10metallicity=log_z) for i in range(len(masses))]
+Z_dists = [ZDist.DeltaConstant(log10metallicity=log_z) for log_z in all_param_dict["log_zmet"]]
 
 # Create LogNormal SFH from parameters.
-taus = np.full((Nmodels,), tau, dtype=np.float64)
-
+# These
 sfh_models, _ = generate_sfh_basis(
     sfh_type=sfh_type,
-    sfh_param_names=["tau", "peak_age"],
-    sfh_param_arrays=(taus, all_param_dict["peak_age"]),
+    sfh_param_names=["tau", "peak_age_norm"],
+    sfh_param_arrays=(all_param_dict["tau"], all_param_dict["peak_age"]),
     redshifts=redshifts,
     max_redshift=max_redshift,
     cosmo=cosmo,
@@ -169,11 +187,16 @@ sfh_models, _ = generate_sfh_basis(
 
 
 # Emission parameters
-emission_model = TotalEmission(
+emission_model = PacmanEmission(
     grid=grid,
-    dust_curve=Calzetti2000(),
-    fesc=0.0,  # Escape fraction of ionizing photons
+    fesc=fesc,
+    fesc_ly_alpha=fesc_ly_alpha,
+    dust_curve=dust_curve,  # ParametricLi08(model='SMC'),
+    dust_emission=Blackbody(temperature=35 * K),
 )
+
+emission_model.plot_emission_tree()
+print(type(emission_model))
 
 # List of other varying or fixed parameters. Either a distribution to pull from or a list.
 # Can be any parameter which can be property of emitter or galaxy
@@ -184,7 +207,8 @@ galaxy_params = {
 
 sfh_name = str(sfh_type).split(".")[-1].split("'")[0]
 
-name = f"BPASS_Chab_{sfh_name}_SFH_z={redshifts}_logN_{np.log10(Nmodels):.1f}_Calzetti_v1"  # noqa: E501
+name = f"BPASS_Chab_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_Calzetti_v2"  # noqa: E501
+name = "test_sbi"
 
 basis = GalaxyBasis(
     model_name=f"sps_{name}",
@@ -206,7 +230,7 @@ basis = GalaxyBasis(
 def z_to_max_age(params, max_redshift=20):
     """Convert redshift to maximum age of the SFH at that redshift."""
     z = params["redshift"]
-    from cosmology import Planck18 as cosmo
+    from astropy.cosmology import Planck18 as cosmo
 
     age = cosmo.age(z) - cosmo.age(max_redshift)
     age = age.to_value("Myr") * Myr
@@ -216,29 +240,19 @@ def z_to_max_age(params, max_redshift=20):
 # This is the simple way-
 # it runs the following three steps for you.
 
-# plot galaxies
-
-for i in range(0, 1000, 50):
-    basis.plot_galaxy(
-        i,
-        log_stellar_mass=all_param_dict["log_masses"][i],
-        emission_model_keys=["total"],
-        out_dir=out_dir,
-    )
-
-basis.create_mock_cat(
-    out_name=f"grid_{name}",
+basis.create_mock_library(
+    out_name=f"library_{name}",
     out_dir=out_dir,
-    overwrite=False,
+    overwrite=overwrite,
     n_proc=n_proc,
+    emission_model_key=emission_model.label,
     verbose=False,
     batch_size=50_000,
     mUV=(calculate_muv, cosmo),  # Calculate mUV for the mock catalogue.
-    mwa=calculate_mwa,  # Calculate MWA for the mock catalogue.
+    mwa=calculate_mass_weighted_age,  # Calculate MWA for the mock catalogue.
     parameter_transforms_to_save={
         "max_age": z_to_max_age
     },  # Save function to calculate the maximum age of the SFH at that redshift.
-    emission_model_key="total",
 )
 
 """
@@ -260,5 +274,5 @@ combined_basis.process_bases(
 )
 
 # Create grid - kinda overkill for a single case, but it does work.
-combined_basis.create_grid(overwrite=True)
+combined_basis.create_library(overwrite=True)
 """

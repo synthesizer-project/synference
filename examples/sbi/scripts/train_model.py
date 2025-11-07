@@ -52,9 +52,7 @@ class Args:
     n_nets: int = 1
     model_name: str = "sbi_model"
     name_append: str = ""
-    grid_path: str = (
-        f"{file_dir}/../../grids/grid_BPASS_Chab_LogNormal_SFH_0.001_z_12_logN_5.0_Calzetti_v2.hdf5"  # noqa
-    )
+    grid_path: str = f"{file_dir}/../../libraries/grid_BPASS_Chab_LogNormal_SFH_0.001_z_12_logN_5.0_Calzetti_v2.hdf5"  # noqa
     hidden_features: int = 64
     num_transforms: int = 6
     num_components: int = 10

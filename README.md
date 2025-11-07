@@ -111,7 +111,7 @@ sfh_models, _ = generate_sfh_basis(
 )
 ```
 
-Then from this model we create a mock catalogue of photometry and spectra, which we can then use to train a model on.
+Then from this model we create a **library** of photometry and parameter pairs, which we can then use to train a model on.
 
 ```python
 from synference import GalaxyBasis, SBI_Fitter
@@ -127,7 +127,7 @@ basis = GalaxyBasis(
     metal_dists=Z_dists,
 )
 
-basis.create_mock_cat(out_name=f'grid_test', emission_model_key='intrinsic', overwrite=True, out_dir="./")
+basis.create_mock_library(out_name=f'library_test', emission_model_key='intrinsic', overwrite=True, out_dir="./")
 ```
 
 Finally we can train a model using the `SBI_Fitter` class, which will automatically create the feature array and run the training. We have full control over the model architecture and training parameters, and can easily switch between different model types (e.g. MAF, NSF, MDN) from the lampe and sbi backends.
@@ -136,7 +136,7 @@ Here we are use a single Masked Autoregressive Flow (MAF) model, with 90 hidden 
 
 ```python
 empirical_model_fitter = SBI_Fitter.init_from_hdf5(
-    hdf5_path=f"./grid_test.hdf5", model_name=f"sbi_test"
+    hdf5_path=f"./library_test.hdf5", model_name=f"sbi_test"
 )
 empirical_model_fitter.create_feature_array()
 

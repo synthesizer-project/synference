@@ -1,4 +1,4 @@
-"""File containing Synthesizer grid generation and galaxy creation utilities."""
+"""File containing Synthesizer library generation and galaxy creation utilities."""
 
 import copy
 import inspect
@@ -35,7 +35,7 @@ try:
     from synthesizer.pipeline import Pipeline
 
     synthesizer_available = True
-except FileExistsError as e:
+except ImportError as e:
     print(e)
     logger.warning(
         "Synthesizer dependencies not installed. Only the SBI functions will be available."
@@ -67,7 +67,7 @@ from .noise_models import (
 from .utils import check_log_scaling, check_scaling, list_parameters, save_emission_model
 
 file_path = os.path.dirname(os.path.realpath(__file__))
-grid_folder = os.path.join(os.path.dirname(os.path.dirname(file_path)), "grids")
+library_folder = os.path.join(os.path.dirname(os.path.dirname(file_path)), "libraries")
 # Global variables for thread-shared data (initialized once per process)
 _thread_local = threading.local()
 
@@ -182,7 +182,7 @@ def calculate_muv(galaxy, cosmo=Planck18):
     Returns:
     -------
     dict
-        Dictionary containing the MUV malogginggnitude for each stellar spectrum in the galaxy.
+        Dictionary containing the MUV magnitude for each stellar spectrum in the galaxy.
     """
     z = galaxy.redshift
 
@@ -361,7 +361,7 @@ def calculate_beta(galaxy: Galaxy, emission_model_key: str = "total") -> float:
 
 
 def calculate_balmer_decrement(galaxy: Galaxy, emission_model_key: str = "total") -> float:
-    """Measures the Balmer decrement oemission_modelf a galaxy.
+    """Measures the Balmer decrement a galaxy.
 
     Args:
         galaxy: An instance of a synthesizer.parametric.Galaxy object.
@@ -423,12 +423,14 @@ def calculate_line_ew(galaxy: Galaxy, emission_model, line="Ha", emission_model_
 
     return line.equivalent_width[0]
 
-def calculate_burstiness(galaxy: Galaxy):
-    ''' SFR_10/SFR_100 '''
-    sfr_10=galaxy.stars.calculate_average_sfr((0, 1e7))
-    sfr_100=galaxy.stars.calculate_average_sfr((0, 1e8))
 
-    return (sfr_10/sfr_100).to_value('dimensionless')
+def calculate_burstiness(galaxy: Galaxy):
+    """SFR_10/SFR_100"""
+    sfr_10 = galaxy.stars.calculate_average_sfr((0, 1e7))
+    sfr_100 = galaxy.stars.calculate_average_sfr((0, 1e8))
+
+    return (sfr_10 / sfr_100).to_value("dimensionless")
+
 
 def calculate_line_luminosity(
     galaxy: Galaxy, emission_model, line="Ha", emission_model_key="total"
@@ -544,9 +546,7 @@ def calculate_xi_ion0(galaxy, emission_model, emission_model_key="total"):
     return xi_ion0.to("Hz/erg")
 
 
-def calculate_Ndot_ion(
-    galaxy, emission_model_key="total", ionisation_energy=13.6 * eV, limit=100
-):
+def calculate_Ndot_ion(galaxy, emission_model_key="total", ionisation_energy=13.6 * eV, limit=100):
     """Calculate the ionizing photon production rate (Ndot_ion) of a galaxy.
 
     Args:
@@ -625,9 +625,11 @@ def calculate_agn_fraction(
     )
     return agn_fraction
 
+
 def calculate_ml(galaxy, emission_model_key):
     """Calculate M/L ratio (in solar units)"""
     raise NotImplementedError
+
 
 class SUPP_FUNCTIONS:
     """A class to hold supplementary functions for galaxy analysis."""
@@ -994,6 +996,8 @@ def generate_emission_models(
             out_params[key].append(emission_params[key])
 
         # store value of varying parameter(s) in dictionary for this emission model
+        if fixed_params is None:
+            fixed_params = {}
 
         emission_params.update(fixed_params)
 
@@ -1373,7 +1377,7 @@ def create_galaxy(
             log10ages=np.log10(param_stars.ages),
             log10metallicities=np.log10(param_stars.metallicities),
             nstar=n,
-            current_masses=10**log_stellar_masses * Msun,
+            current_masses=np.power(10.0, np.asarray(log_stellar_masses, dtype=float)) * Msun,
             redshift=redshift,
             coordinates=np.random.normal(0, 0.01, (n, 3)) * Mpc,
             centre=np.zeros(3) * Mpc,
@@ -1513,7 +1517,7 @@ class GalaxyBasis:
         instrument: Instrument = None,
         redshift_dependent_sfh: bool = False,
         params_to_ignore: List[str] = None,
-        build_grid: bool = False,
+        build_library: bool = False,
     ) -> None:
         """Initialize the GalaxyBasis object with SFHs, redshifts, and other parameters.
 
@@ -1553,8 +1557,8 @@ class GalaxyBasis:
             which parameters are varying.
             E.g. max_age may be dependent on redshift, so we don't want to include it
                 in the varying parameters as the model can learn this.
-        build_grid : bool, optional
-            If True, build the grid of galaxies, by default True.
+        build_library : bool, optional
+            If True, build the grid of galaxies, by default False.
             If False, assume all dimensions of parameters are the same size and
             build the grid from the parameters. I.e don't generate combinations of
             parameters, just use the parameters as they are.
@@ -1566,7 +1570,7 @@ class GalaxyBasis:
         if params_to_ignore is None:
             params_to_ignore = []
 
-        if isinstance(redshifts, (float, int)) and not build_grid:
+        if isinstance(redshifts, (float, int)) and not build_library:
             redshifts = np.full(len(sfhs), redshifts)
 
         self.model_name = model_name
@@ -1582,7 +1586,7 @@ class GalaxyBasis:
         self.redshift_dependent_sfh = redshift_dependent_sfh
         self.log_stellar_masses = log_stellar_masses
         self.params_to_ignore = params_to_ignore
-        self.build_grid = build_grid
+        self.build_library = build_library
 
         self.galaxies = []
 
@@ -1611,7 +1615,7 @@ class GalaxyBasis:
                     # If the value is a dictionary, process it as a prior
                     self.galaxy_params[key] = self.process_priors(value)
 
-        if not build_grid:
+        if not build_library:
             logger.info("Generating grid directly from provided parameter samples.")
         elif self.redshift_dependent_sfh:
             # Check if the SFHs have a redshift attribute
@@ -1695,7 +1699,7 @@ class GalaxyBasis:
         List[Type[Galaxy]]
             List of Galaxy objects.
         """
-        if not self.build_grid:
+        if not self.build_library:
             raise ValueError("You probably meant to call_create_matched_galaxies instead.")
 
         varying_param_values = [
@@ -1882,8 +1886,18 @@ class GalaxyBasis:
                 )
             accept = False
 
-        if type(self.sfhs[0]).__name__ not in SFH.parametrisations and not isinstance(
-            self.sfhs[0], (unyt_quantity, float, int)
+        # Flatten SFHs regardless of storage (list or {z: [sfh,...]})
+        if isinstance(self.sfhs, dict):
+            _sfh_list = []
+            for v in self.sfhs.values():
+                _sfh_list.extend(v if isinstance(v, (list, tuple)) else [v])
+        else:
+            _sfh_list = self.sfhs
+        sfh_classes = set(type(sfh) for sfh in _sfh_list)
+
+        _sfh0 = _sfh_list[0]
+        if type(_sfh0).__name__ not in SFH.parametrisations and not isinstance(
+            _sfh0, (unyt_quantity, float, int)
         ):
             if verbose:
                 logger.warning(
@@ -2531,6 +2545,15 @@ class GalaxyBasis:
                 else:
                     logger.info("Running in single-node mode.")
 
+                from synthesizer.extensions.openmp_check import check_openmp
+
+                if not check_openmp() and n_proc > 1:
+                    logger.warning(
+                        "Synthesizer not installed with OpenMP support. "
+                        "Pipeline will run on a single core"
+                    )
+                    n_proc = 1
+
                 pipeline = Pipeline(
                     emission_model=self.emission_model,
                     nthreads=n_proc,
@@ -2658,7 +2681,7 @@ class GalaxyBasis:
 
     def plot_random_galaxy(self, masses, **kwargs):
         """Plot a random galaxy from the list of galaxies."""
-        if not self.build_grid:
+        if not self.build_library:
             idx = np.random.randint(0, len(self.redshifts))
             mass = masses[idx]
             return self.plot_galaxy(idx, log_stellar_mass=mass, **kwargs)
@@ -2681,7 +2704,7 @@ class GalaxyBasis:
             else:
                 galaxy_params[param] = self.galaxy_params[param]
 
-        if not self.build_grid and len(self.galaxies) == 0:
+        if not self.build_library and len(self.galaxies) == 0:
             # Get idx's from requirements and build galaxy directly
             galaxy = create_galaxy(
                 sfh=self.sfhs[idx],
@@ -2906,7 +2929,7 @@ $\\log_{{10}}(M_\\star/M_\\odot)$: {np.log10(mass):.1f}"""
         out_name,
         log_stellar_masses: unyt_array = None,
         emission_model_key: str = "total",
-        out_dir: str = grid_folder,
+        out_dir: str = library_folder,
         n_proc: int = 6,
         overwrite: Union[bool, List[bool]] = False,
         verbose=False,
@@ -2984,12 +3007,12 @@ $\\log_{{10}}(M_\\star/M_\\odot)$: {np.log10(mass):.1f}"""
             **extra_analysis_functions,
         )
 
-    def create_mock_cat(
+    def create_mock_library(
         self,
         out_name,
         log_stellar_masses: np.ndarray = None,
         emission_model_key: str = "total",
-        out_dir: str = grid_folder,
+        out_dir: str = library_folder,
         n_proc: int = 6,
         overwrite: Union[bool, List[bool]] = False,
         verbose=False,
@@ -3021,8 +3044,8 @@ $\\log_{{10}}(M_\\star/M_\\odot)$: {np.log10(mass):.1f}"""
             Emission model key to use for the mock catalog,
             by default "total".
         out_dir : str, optional
-            Directory to save the output file, by default "grid_folder".
-            If "grid_folder", saves to the Synthesizer grids directory.
+            Directory to save the output file, by default "library_folder".
+            If "library_folder", saves to the Synthesizer grids directory.
         n_proc : int, optional
             Number of processes to use for the pipeline, by default 6.
         overwrite : Union[bool, List[bool]], optional
@@ -3121,7 +3144,7 @@ $\\log_{{10}}(M_\\star/M_\\odot)$: {np.log10(mass):.1f}"""
             logger.info("Compiling the grid after processing bases.")
 
             if cat_type == "photometry":
-                combined_basis.create_grid(overwrite=overwrite)
+                combined_basis.create_library(overwrite=overwrite)
             elif cat_type == "spectra":
                 combined_basis.create_spectral_grid(overwrite=overwrite)
             else:
@@ -3178,7 +3201,7 @@ class CombinedBasis:
         base_emission_model_keys: List[str],
         combination_weights: np.ndarray,
         out_name: str = "combined_basis",
-        out_dir: str = grid_folder,
+        out_dir: str = library_folder,
         log_base_masses: Union[float, np.ndarray] = 9,
         draw_parameter_combinations: bool = False,
     ) -> None:
@@ -3606,21 +3629,21 @@ class CombinedBasis:
         self.pipeline_outputs = outputs
         return outputs
 
-    def create_grid(
+    def create_library(
         self,
         override_instrument: Union[Instrument, None] = None,
         save: bool = True,
         overload_out_name: str = "",
         overwrite: bool = False,
     ) -> dict:
-        """Creates a grid of SEDs for the given Synthesizer outputs.
+        """Creates a library of SEDs for the given Synthesizer outputs.
 
         This method assumes each input on CombinedBasis, (redshift, mass,
         and varying parameters) should be combined (e.g. sampling
         every combination of redshift, mass, and varying parameters) to
-        create the grid. The 'create_full_grid' method instead assumes
+        create the library. The 'create_full_library' method instead assumes
         that the input parameters are already combined, and does not
-        sample every combination. Generally the 'create_full_grid' method
+        sample every combination. Generally the 'create_full_library' method
         is more useful for the case where you have predrawn parameters
         randomly or from a prior or Latin Hypercube.
 
@@ -3628,23 +3651,23 @@ class CombinedBasis:
         ----------
 
         override_instrument : Instrument, optional
-            If provided, overrides the instrument used for the grid.
+            If provided, overrides the instrument used for the library.
         save : bool, optional
-            If True, saves the grid to a file.
+            If True, saves the library to a file.
         overload_out_name : str, optional
-            If provided, overrides the output name for the grid.
+            If provided, overrides the output name for the library.
         overwrite : bool, optional
-            If True, overwrites the existing grid file if it exists.
+            If True, overwrites the existing library file if it exists.
 
         Returns:
         -------
         dict
-            A dictionary containing the grid of SEDs, photometry, and properties.
+            A dictionary containing the library of SEDs, photometry, and properties.
         -----------
 
         """
         if not self.draw_parameter_combinations:
-            return self.create_full_grid(
+            return self.create_full_library(
                 override_instrument,
                 overwrite=overwrite,
                 save=save,
@@ -3658,7 +3681,7 @@ class CombinedBasis:
 
         if os.path.exists(f"{self.out_dir}/{out_name}") and not overwrite:
             logger.warning(f"File {self.out_dir}/{out_name} already exists. Skipping.")
-            self.load_grid_from_file(f"{self.out_dir}/{out_name}")
+            self.load_library_from_file(f"{self.out_dir}/{out_name}")
             return
 
         pipeline_outputs = self.load_bases()
@@ -3764,7 +3787,7 @@ class CombinedBasis:
 
         param_columns.extend(all_combined_param_names)
 
-        for redshift in tqdm(self.redshifts, desc="Creating grid"):
+        for redshift in tqdm(self.redshifts, desc="Creating library"):
             for log_total_mass in self.log_stellar_masses:
                 total_mass = 10**log_total_mass
 
@@ -3928,22 +3951,22 @@ class CombinedBasis:
             "parameter_units": param_units,
         }
 
-        self.grid_photometry = combined_outputs
-        self.grid_parameters = combined_params
-        self.grid_parameter_names = param_columns
-        self.grid_filter_codes = filter_codes
-        self.grid_supplementary_parameters = combined_supp_params
-        self.grid_supplementary_parameter_names = supp_param_keys
+        self.library_photometry = combined_outputs
+        self.library_parameters = combined_params
+        self.library_parameter_names = param_columns
+        self.library_filter_codes = filter_codes
+        self.library_supplementary_parameters = combined_supp_params
+        self.library_supplementary_parameter_names = supp_param_keys
 
         if save:
-            self.save_grid(out, overload_out_name=out_name, overwrite=overwrite)
+            self.save_library(out, overload_out_name=out_name, overwrite=overwrite)
 
-    def _validate_grid(self, grid_dict: dict, check_type="photometry") -> None:
+    def _validate_library(self, library_dict: dict, check_type="photometry") -> None:
         """Validate the grid dictionary.
 
         Parameters
         ----------
-        grid_dict : dict
+        library_dict : dict
             Dictionary containing the grid data.
             Expected keys are 'photometry', 'parameters', 'parameter_names',
             and 'filter_codes'.
@@ -3963,48 +3986,48 @@ class CombinedBasis:
             "filter_codes",
         ]
         for key in required_keys:
-            if key not in grid_dict:
+            if key not in library_dict:
                 raise ValueError(f"Missing required key: {key}")
 
-        if not isinstance(grid_dict[check_type], np.ndarray):
+        if not isinstance(library_dict[check_type], np.ndarray):
             raise ValueError(f"{check_type} must be a numpy array.")
 
-        if not isinstance(grid_dict["parameters"], np.ndarray):
+        if not isinstance(library_dict["parameters"], np.ndarray):
             raise ValueError("Parameters must be a numpy array.")
 
-        if not isinstance(grid_dict["parameter_names"], list):
+        if not isinstance(library_dict["parameter_names"], list):
             raise ValueError("Parameter names must be a list.")
 
-        if not isinstance(grid_dict["filter_codes"], (list, np.ndarray)):
+        if not isinstance(library_dict["filter_codes"], (list, np.ndarray)):
             raise ValueError("Filter codes must be a list.")
 
         # Check for NAN/INF in photometry and parameters
 
-        assert not np.any(np.isnan(grid_dict[check_type])), (
+        assert not np.any(np.isnan(library_dict[check_type])), (
             f"{check_type} contains NaN values. Please check the input data."
         )
-        assert not np.any(np.isinf(grid_dict[check_type])), (
+        assert not np.any(np.isinf(library_dict[check_type])), (
             f"{check_type} contains infinite values. Please check the input data."
         )
-        assert not np.any(np.isnan(grid_dict["parameters"])), (
+        assert not np.any(np.isnan(library_dict["parameters"])), (
             "Parameters contain NaN values. Please check the input data."
         )
-        assert not np.any(np.isinf(grid_dict["parameters"])), (
+        assert not np.any(np.isinf(library_dict["parameters"])), (
             "Parameters contain infinite values. Please check the input data."
         )
 
-    def save_grid(
+    def save_library(
         self,
-        grid_dict: dict,  # E.g. output from create_grid
+        library_dict: dict,  # E.g. output from create_library
         overload_out_name: str = "",
         overwrite: bool = False,
-        grid_params_to_save=["model_name"],
+        library_params_to_save=["model_name"],
     ) -> None:
         """Save the grid to a file.
 
         Parameters
         ----------
-        grid_dict : dict
+        library_dict : dict
             Dictionary containing the grid data.
             Expected keys are 'photometry', 'parameters', 'parameter_names',
             and 'filter_codes'.
@@ -4012,8 +4035,8 @@ class CombinedBasis:
         out_name : str, optional
             Name of the output file, by default 'grid.hdf5'
         """
-        check_type = "photometry" if "photometry" in grid_dict else "spectra"
-        self._validate_grid(grid_dict, check_type=check_type)
+        check_type = "photometry" if "photometry" in library_dict else "spectra"
+        self._validate_library(library_dict, check_type=check_type)
 
         # Check if the output directory exists, if not create it
         if not os.path.exists(self.out_dir):
@@ -4038,48 +4061,54 @@ class CombinedBasis:
         # Create a new HDF5 file
         with h5py.File(full_out_path, "w") as f:
             # Create a group for the grid data
-            grid_group = f.create_group("Grid")
+            library_group = f.create_group("Grid")
             # Create datasets for the photometry and parameters
-            if "photometry" in grid_dict:
-                grid_group.create_dataset(
-                    "Photometry", data=grid_dict["photometry"], compression="gzip"
+            if "photometry" in library_dict:
+                library_group.create_dataset(
+                    "Photometry", data=library_dict["photometry"], compression="gzip"
                 )
-            if "spectra" in grid_dict:
-                grid_group.create_dataset("Spectra", data=grid_dict["spectra"], compression="gzip")
+            if "spectra" in library_dict:
+                library_group.create_dataset(
+                    "Spectra", data=library_dict["spectra"], compression="gzip"
+                )
 
-            grid_group.create_dataset(
-                "Parameters", data=grid_dict["parameters"], compression="gzip"
+            library_group.create_dataset(
+                "Parameters", data=library_dict["parameters"], compression="gzip"
             )
 
-            if "supplementary_parameters" in grid_dict:
-                grid_group.create_dataset(
+            if "supplementary_parameters" in library_dict:
+                library_group.create_dataset(
                     "SupplementaryParameters",
-                    data=grid_dict["supplementary_parameters"],
+                    data=library_dict["supplementary_parameters"],
                     compression="gzip",
                 )
 
             # Create a dataset for the parameter names
-            f.attrs["ParameterNames"] = grid_dict["parameter_names"]
+            f.attrs["ParameterNames"] = library_dict["parameter_names"]
             try:
-                f.attrs["FilterCodes"] = grid_dict["filter_codes"]
+                f.attrs["FilterCodes"] = library_dict["filter_codes"]
             except OSError:
                 # HDF5 has a limit on string length for attributes
                 # Save as a dataset instead
-                grid_group.create_dataset(
+                library_group.create_dataset(
                     "FilterCodes",
-                    data=np.array(grid_dict["filter_codes"], dtype="S"),
+                    data=np.array(library_dict["filter_codes"], dtype="S"),
                     compression="gzip",
                 )
                 f.attrs["FilterCodes"] = "/Grid/FilterCodes/"
-            if "supplementary_parameters" in grid_dict:
-                f.attrs["SupplementaryParameterNames"] = grid_dict["supplementary_parameter_names"]
-                f.attrs["SupplementaryParameterUnits"] = grid_dict["supplementary_parameter_units"]
+            if "supplementary_parameters" in library_dict:
+                f.attrs["SupplementaryParameterNames"] = library_dict[
+                    "supplementary_parameter_names"
+                ]
+                f.attrs["SupplementaryParameterUnits"] = library_dict[
+                    "supplementary_parameter_units"
+                ]
             f.attrs["PhotometryUnits"] = "nJy"
 
-            if "parameter_units" in grid_dict:
-                f.attrs["ParameterUnits"] = grid_dict["parameter_units"]
+            if "parameter_units" in library_dict:
+                f.attrs["ParameterUnits"] = library_dict["parameter_units"]
 
-            for param in grid_params_to_save:
+            for param in library_params_to_save:
                 out = []
                 for base in self.bases:
                     out.append(str(getattr(base, param)))
@@ -4092,7 +4121,7 @@ class CombinedBasis:
             f.attrs["CreationDT"] = datetime.now().strftime("%Y%m%d_%H%M%S")
 
             # Add anything else as a dataset
-            for key, value in grid_dict.items():
+            for key, value in library_dict.items():
                 if key not in [
                     "photometry",
                     "spectra",
@@ -4107,15 +4136,16 @@ class CombinedBasis:
                     if isinstance(value, (np.ndarray, list)) and isinstance(value[0], str):
                         f.attrs[key] = value
                     else:
-                        grid_group.create_dataset(key, data=value, compression="gzip")
+                        library_group.create_dataset(key, data=value, compression="gzip")
                         if isinstance(value, (unyt_array, unyt_quantity)):
-                            grid_group[key].attrs["Units"] = value.units
+                            library_group[key].attrs["Units"] = value.units
 
-    def plot_galaxy_from_grid(
+    def plot_galaxy_from_library(
         self,
         index: int,
         show: bool = True,
         save: bool = False,
+        override_filter_codes=[],
     ):
         """Plot a galaxy at a grid index.
 
@@ -4128,20 +4158,23 @@ class CombinedBasis:
         save : bool, optional
             If True, saves the plot. Defaults to False.
         """
-        if self.grid_photometry is None:
-            raise ValueError("Grid photometry not created. Run create_grid() first.")
+        if self.library_photometry is None:
+            raise ValueError("Library photometry not created. Run create_library() first.")
 
         if not hasattr(self, "pipeline_outputs"):
             self.load_bases()
 
         # Get the parameters for this index
-        params = self.grid_parameters[:, index]
+        params = self.library_parameters[:, index]
 
         # Get the photometry for this index
-        photometry = self.grid_photometry[:, index]
+        photometry = self.library_photometry[:, index]
 
         # Get the filter codes
-        filter_codes = [f"JWST/{i}" for i in self.grid_filter_codes]
+        if len(override_filter_codes) > 0:
+            filter_codes = override_filter_codes
+        else:
+            filter_codes = self.library_filter_codes
         filterset = FilterCollection(filter_codes, verbose=False)
 
         # For each basis, look at which parameters for that basis and match to spectra.
@@ -4151,7 +4184,7 @@ class CombinedBasis:
         for i, base in enumerate(self.bases):
             # Get the varying parameters for this base
             base_params = {}
-            for i, param_name in enumerate(self.grid_parameter_names):
+            for i, param_name in enumerate(self.library_parameter_names):
                 # Extract the original parameter name without the base prefix
                 if "/" in param_name:
                     basis, orig_param = param_name.split("/")
@@ -4202,11 +4235,16 @@ class CombinedBasis:
             ), f"""Wavelengths for base {i} do not match base 0.
                 {wavs} != {total_wavelengths[0]}"""
 
-        weight_pos = "weight_fraction" == self.grid_parameter_names
-        weights = params[weight_pos]
 
-        # Only works for combining 2 bases at the moment
-        weights = np.array((weights[0], 1 - weights[0]))
+        if len(self.bases) == 1:
+            weights = np.array((1.0,))
+        elif "weight_fraction" in self.library_parameter_names:
+            w_idx = self.library_parameter_names.index("weight_fraction")
+            w = float(params[w_idx])
+            weights = np.array((w, 1 - w))
+        else:
+            # Fallback: equal weights across bases if not encoded
+            weights = np.ones(len(self.bases)) / len(self.bases)
 
         # Stack the spectra according to the combination weights.
         # Spectra has shape (wav, n_bases)
@@ -4279,7 +4317,7 @@ class CombinedBasis:
         # Text box with parameters and values
 
         textstr = "\n".join(
-            [f"{key}: {value:.2f}" for key, value in zip(self.grid_parameter_names, params)]
+            [f"{key}: {value:.2f}" for key, value in zip(self.library_parameter_names, params)]
         )
         props = dict(boxstyle="round", facecolor="wheat", alpha=0.5)
         ax.text(
@@ -4306,7 +4344,7 @@ class CombinedBasis:
 
         return fig
 
-    def load_grid_from_file(
+    def load_library_from_file(
         self,
         file_path: str,
     ) -> dict:
@@ -4323,25 +4361,31 @@ class CombinedBasis:
             Dictionary containing the grid data.
         """
         with h5py.File(file_path, "r") as f:
-            grid_data = {
+            if isinstance(f.attrs["FilterCodes"], (bytes, str)) and str(
+                f.attrs["FilterCodes"]
+            ).startswith("/Grid/FilterCodes"):
+                fcodes = f["Grid/FilterCodes"][()].astype(str)
+            else:
+                fcodes = f.attrs["FilterCodes"]
+            library_data = {
                 "parameters": f["Grid"]["Parameters"][()],
                 "parameter_names": f.attrs["ParameterNames"],
-                "filter_codes": f.attrs["FilterCodes"],
+                "filter_codes": fcodes,
             }
 
             if "Photometry" in f["Grid"]:
-                grid_data["photometry"] = f["Grid"]["Photometry"][()]
-                self.grid_photometry = grid_data["photometry"]
+                library_data["photometry"] = f["Grid"]["Photometry"][()]
+                self.library_photometry = library_data["photometry"]
 
             if "Spectra" in f["Grid"]:
-                grid_data["spectra"] = f["Grid"]["Spectra"][()]
-                self.grid_spectra = grid_data["spectra"]
+                library_data["spectra"] = f["Grid"]["Spectra"][()]
+                self.library_spectra = library_data["spectra"]
 
-        self.grid_parameters = grid_data["parameters"]
-        self.grid_parameter_names = grid_data["parameter_names"]
-        self.grid_filter_codes = grid_data["filter_codes"]
+        self.library_parameters = library_data["parameters"]
+        self.library_parameter_names = library_data["parameter_names"]
+        self.library_filter_codes = library_data["filter_codes"]
 
-        return grid_data
+        return library_data
 
     def _validate_bases(self, pipeline_outputs, skip_inst=False) -> None:
         # ===== VALIDATION =====
@@ -4377,7 +4421,7 @@ class CombinedBasis:
                         Cannot combine bases with different filters."""
                     )
 
-    def create_full_grid(
+    def create_full_library(
         self,
         override_instrument: Union[Instrument, None] = None,
         save: bool = True,
@@ -4802,26 +4846,28 @@ class CombinedBasis:
         # Update object attributes
         if spectral_mode:
             out["spectra"] = combined_outputs
-            self.grid_spectra = combined_outputs
+            self.library_spectra = combined_outputs
             # 'Grid filter codes' can just be the wavelength array here
-            self.grid_filter_codes = model_output["wavelengths"].to("um").value
-            out["filter_codes"] = self.grid_filter_codes
+            self.library_filter_codes = (
+                pipeline_outputs[self.bases[0].model_name]["wavelengths"].to("um").value
+            )
+            out["filter_codes"] = self.library_filter_codes
         else:
             out["photometry"] = combined_outputs
             out["filter_codes"] = filter_codes
-            self.grid_photometry = combined_outputs
-            self.grid_filter_codes = filter_codes
+            self.library_photometry = combined_outputs
+            self.library_filter_codes = filter_codes
 
-        self.grid_parameters = combined_params
-        self.grid_parameter_names = param_columns
-        self.grid_supplementary_parameters = combined_supp_params
-        self.grid_supplementary_parameter_names = supp_param_keys
-        self.grid_supplementary_parameter_units = supp_param_units_list
-        self.grid_parameter_units = param_units
+        self.library_parameters = combined_params
+        self.library_parameter_names = param_columns
+        self.library_supplementary_parameters = combined_supp_params
+        self.library_supplementary_parameter_names = supp_param_keys
+        self.library_supplementary_parameter_units = supp_param_units_list
+        self.library_parameter_units = param_units
 
         # Save results if requested
         if save:
-            self.save_grid(out, overload_out_name=overload_out_name, overwrite=overwrite)
+            self.save_library(out, overload_out_name=overload_out_name, overwrite=overwrite)
 
     def create_spectral_grid(
         self,
@@ -4831,7 +4877,7 @@ class CombinedBasis:
     ) -> dict:
         """Creates a parameter grid for spectroscopic observations.
 
-        Wrapper for `create_full_grid`, but specifically for spectroscopic outputs,
+        Wrapper for `create_full_library`, but specifically for spectroscopic outputs,
         to match e.g. NIRSpec IFU, or DESI etc. The only spectral sampling
         currently supported is the one used in the instrument/grid combination.
 
@@ -4849,7 +4895,7 @@ class CombinedBasis:
         dict
             A dictionary containing the grid of SEDs, photometry, and properties.
         """
-        return self.create_full_grid(
+        return self.create_full_library(
             override_instrument=None,
             save=save,
             overload_out_name=overload_out_name,
@@ -4897,6 +4943,8 @@ class GalaxySimulator(object):
         photometry_to_remove=None,
         ignore_params: list = None,
         ignore_scatter: bool = False,
+        return_type="array",
+        device: str = "cpu",
     ) -> None:
         """Parameters
 
@@ -4976,6 +5024,12 @@ class GalaxySimulator(object):
             List of parameters which are sampled which won't be checked for use against the model.
         ignore_scatter : bool
             If True, ignore scatter in the empirical uncertainty model. Default is False.
+        return_type : str
+            Return type of the simulate function. Default is 'array'.
+            Can be 'array' or 'tensor'.
+        device : str
+            Device to use for tensor calculations. Default is 'cpu'.
+            Can be 'cpu' or 'cuda'. Only used if return_type is 'tensor'.
 
         """
         if fixed_params is None:
@@ -5020,6 +5074,8 @@ class GalaxySimulator(object):
         self.depths = depths
         self.ignore_params = ignore_params
         self.ignore_scatter = ignore_scatter
+        self.return_type = return_type
+        self.device = device
 
         self.unused_params = []
         self.reported_unused = False
@@ -5145,14 +5201,14 @@ class GalaxySimulator(object):
         print(f"Updated filters: {self.instrument.filters.filter_codes}")
 
     @classmethod
-    def from_grid(
+    def from_library(
         cls,
-        grid_path: str,
+        library_path: str,
         override_synthesizer_grid_dir: Union[None, str, bool] = True,
         override_emission_model: Union[None, EmissionModel] = None,
         **kwargs,
     ):
-        """Create a GalaxySimulator from a grid file.
+        """Create a GalaxySimulator from a library file.
 
         This method reads a grid file in HDF5 format, extracts the necessary
         components such as the grid, instrument, cosmology, SFH model,
@@ -5160,15 +5216,15 @@ class GalaxySimulator(object):
 
         Parameters
         ----------
-        grid_path : str
+        library_path : str
             Path to the grid file in HDF5 format.
         override_synthesizer_grid_dir : Union[None, str], optional
             If provided, this directory will override the synthesizer grid directory
             specified in the grid file. This is useful for using a model
             on a different computer or environment where the grid directory
             is not the same as the one used to create the grid file.
-            If True, and the grid_dir saved in the file does not exist,
-            it will check for a SYNTHESIZER_GRID_DIR environment variable
+            If True, and the library_dir saved in the file does not exist,
+            it will check for a synthesizer_grid_DIR environment variable
             and use that as the grid directory. If a string is provided,
             it will use that as the grid directory.
         override_emission_model : Union[None, EmissionModel], optional
@@ -5183,15 +5239,15 @@ class GalaxySimulator(object):
         """
         # Open h5py, look for 'Model' and instatiate by reading the grid.
 
-        if not os.path.exists(grid_path):
+        if not os.path.exists(library_path):
             raise FileNotFoundError(
-                f"Grid path {grid_path} does not exist. Cannot create GalaxySimulator."
+                f"Grid path {library_path} does not exist. Cannot create GalaxySimulator."
             )
 
-        with h5py.File(grid_path, "r") as f:
+        with h5py.File(library_path, "r") as f:
             if "Model" not in f:
                 raise ValueError(
-                    f"""Grid file {grid_path} does not contain 'Model' group.
+                    f"""Grid file {library_path} does not contain 'Model' group.
                     Cannot create GalaxySimulator."""
                 )
 
@@ -5202,20 +5258,35 @@ class GalaxySimulator(object):
                 model_group["Instrument/Filters/Header/Wavelengths"][:], units=Angstrom
             )
 
-            grid_name = model_group.attrs["grid_name"]
+            grid_name = model_group.attrs.get("grid_name", None)
             grid_dir = model_group.attrs.get("grid_dir", None)
             if override_synthesizer_grid_dir is not None and not os.path.exists(grid_dir):
-                if isinstance(override_synthesizer_grid_dir, str):
+                if isinstance(override_synthesizer_grid_dir, str) and os.path.exists(
+                    override_synthesizer_grid_dir
+                ):
                     grid_dir = override_synthesizer_grid_dir
-                elif override_synthesizer_grid_dir is True:
-                    # Check for SYNTHESIZER_GRID_DIR environment variable
+                else:
+                    # Check for synthesizer_grid_DIR environment variable
                     grid_dir = os.getenv("SYNTHESIZER_GRID_DIR", None)
                     if grid_dir is None:
                         from synthesizer import get_grids_dir
-                        grid_dir = str(get_grids_dir())
 
-            if grid_dir.endswith(".hdf5") or grid_dir.endswith(".h5"):
-                print("Overriding internal grid name to grid passed in directory path.")
+                        grid_dir = str(get_grids_dir())
+                        if isinstance(override_synthesizer_grid_dir, str) and (
+                            override_synthesizer_grid_dir.endswith(".hdf5")
+                            or override_synthesizer_grid_dir.endswith(".h5")
+                        ):
+                            logger.info("Overriding internal library name from provided file path.")
+                            grid_name = (
+                                os.path.basename(override_synthesizer_grid_dir)
+                                .replace(".hdf5", "")
+                                .replace(".h5", "")
+                            )
+
+            if isinstance(grid_dir, str) and (
+                grid_dir.endswith(".hdf5") or grid_dir.endswith(".h5")
+            ):
+                logger.info("Overriding internal library name from provided file path.")
                 grid_name = os.path.basename(grid_dir).replace(".hdf5", "").replace(".h5", "")
                 grid_dir = os.path.dirname(grid_dir)
 
@@ -5329,7 +5400,7 @@ class GalaxySimulator(object):
 
                     if dust_emission_model is None:
                         raise ValueError(
-                            f"Dust emission model {dust_emission_model_name} not found in synthesizer.emission_models. Cannot create from_grid."  # noqa: E501
+                            f"Dust emission model {dust_emission_model_name} not found in synthesizer.emission_models. Cannot create from_library."  # noqa: E501
                         )
 
                     dust_emission_model_params = {}
@@ -5739,6 +5810,9 @@ class GalaxySimulator(object):
         if self.include_phot_errors:
             fluxes = np.concatenate((fluxes, errors))
 
+        if self.return_type == "tensor":
+            fluxes = torch.tensor(np.atleast_2d(fluxes), device=self.device)
+
         return fluxes
 
     def _normalize(self, fluxes, method=None, norm_unit="AB", add_norm_pos=-1):
@@ -5892,28 +5966,6 @@ class GalaxySimulator(object):
         return self.__repr__()
 
 
-class GridFromSimOutput:
-    """GridFromSimOutput class to create a Grid from simulation output."""
-
-    def __init__(
-        self,
-        sim_output_path: str,
-        feature_columns: List[str] = None,
-        parameter_columns: List[str] = None,
-    ):
-        """Create a Grid from a simulation output file.
-
-        This class reads a simulation output file and creates a Grid object
-        from the data contained within it. The simulation output file is expected
-        to be in a tabular format.
-
-        Parameters
-        ----------
-        sim_output : Union[str, h5py.File]
-            Path to the simulation output file or an open h5py.File object.
-        """
-
-
 def test_out_of_distribution(
     observed_photometry: np.ndarray,
     simulated_photometry: np.ndarray,
@@ -5997,10 +6049,10 @@ def test_out_of_distribution(
     return filtered_sim_photometry, outlier_indices
 
 
-class GridCreator:
-    """Class to create grids for Synference simulations.
+class LibraryCreator:
+    """Class to create libraries for Synference simulations.
 
-    Allows creation of a grid from parameter and observation arrays without
+    Allows creation of a library from parameter and observation arrays without
     using Synthesizer.
 
     Parameters
@@ -6044,7 +6096,7 @@ class GridCreator:
         out_folder: str = ".",
         overwrite: bool = False,
     ):
-        """Initialize the GridCreator.
+        """Initialize the LibraryCreator.
 
         Allows creation of a grid from parameter and observation arrays without
         using Synthesizer.
@@ -6101,8 +6153,8 @@ class GridCreator:
 
         print(f"Number of parameters: {nparams}")
         print(f"Number of observations: {nobs}")
-        print(f"Num rows in parameter grid: {self.parameter_grid.shape[1]}")
-        print(f"Num rows in observation grid: {self.observation_grid.shape[1]}")
+        print(f"Num rows in parameter library: {self.parameter_grid.shape[1]}")
+        print(f"Num rows in observation library: {self.observation_grid.shape[1]}")
 
         assert self.parameter_grid.shape[0] == len(self.parameter_names), (
             "Number of rows in parameter_grid must match length of parameter_names."
@@ -6138,21 +6190,24 @@ class GridCreator:
                 "must match number of columns in parameter_grid."
             )
 
-        self.create_grid(out_folder=out_folder, overwrite=overwrite)
+        self.create_library(out_folder=out_folder, overwrite=overwrite)
 
-    def create_grid(self, out_folder=".", overwrite=False) -> None:
-        """Create the grid and save it to an HDF5 file."""
+    def create_library(self, out_folder=".", overwrite=False) -> None:
+        """Create the libraey and save it to an HDF5 file."""
         if not os.path.exists(out_folder):
             os.makedirs(out_folder)
 
-        if os.path.exists(os.path.join(out_folder, f"grid_{self.model_name}.h5")) and not overwrite:
+        if (
+            os.path.exists(os.path.join(out_folder, f"library_{self.model_name}.h5"))
+            and not overwrite
+        ):
             raise FileExistsError(
-                f"Grid file {self.model_name}_grid.h5 already exists "
+                f"Library file library_{self.model_name}.h5 already exists "
                 f"in {out_folder}. Use overwrite=True to overwrite."
             )
 
-        grid_path = os.path.join(out_folder, f"grid_{self.model_name}.h5")
-        with h5py.File(grid_path, "w") as f:
+        library_path = os.path.join(out_folder, f"library_{self.model_name}.h5")
+        with h5py.File(library_path, "w") as f:
             grid = f.create_group("Grid")
 
             grid.create_dataset(
@@ -6192,7 +6247,7 @@ class GridCreator:
             f.attrs["PhotometryUnits"] = self.observation_units
 
             f.attrs["CreationDT"] = datetime.now().strftime("%Y%m%d_%H%M%S")
-        print(f"Grid saved to {grid_path}")
+        logger.info(f"Library saved to {library_path}")
 
 
 if __name__ == "__main__":
