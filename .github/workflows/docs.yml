@@ -44,7 +44,7 @@ jobs:
           sudo apt install pandoc
           pip install .[test,docs]
           pip install "dense_basis@git+https://github.com/kartheikiyer/dense_basis"
-          pip install "ltu_ili@git+https://github.com/maho3/ltu-ili.git[pytorch]"
+          pip install "ltu_ili@git+https://github.com/maho3/ltu-ili.git"
           pip install pytest-xdist  # enable parallel pytest execution
        - name: Download test data
         run: |
