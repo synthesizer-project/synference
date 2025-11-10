@@ -96,7 +96,9 @@ grid_dir = os.environ["SYNTHESIZER_GRID_DIR"]
 # path for this file
 
 dir_path = os.path.dirname(os.path.abspath(__file__))
-out_dir = "/home/tharvey/work/synference/grids"
+from synference import grid_folder
+
+out_dir = grid_folder
 
 
 def continuity_agebins(
@@ -174,11 +176,11 @@ except Exception:
     n_proc = 6
 
 av_to_tau_v = 1.086  # conversion factor from Av to tau_v for the dust attenuation curve
-overwrite = False  # whether to overwrite existing grids
-Nmodels = 100_000  # 00  # _000
+overwrite = False  # whether to overwrite existing libraries
+Nmodels = 100  # 00  # _000
 batch_size = 40_000  # number of models to generate in each batch
-redshift = (0.01, 12)
-masses = (4, 12)
+redshift = 0
+masses = 9.0  # log stellar masses
 max_redshift = 20  # gives maximum age of SFH at a given redshift
 cosmo = Planck18  # cosmology to use for age calculations
 
@@ -192,6 +194,7 @@ dust_birth_fraction = (
 )  # multiplier for the attenuation av for the birth cloud
 log_zmet = (-4, -1.39)  # max of grid (e.g. 0.04)
 
+masses = np.full(Nmodels, masses)
 
 sfhs = {
     "log_normal": {
@@ -208,8 +211,6 @@ sfhs = {
 }
 
 full_params_base = {
-    "redshift": redshift,
-    "log_masses": masses,
     "log_Av": logAv,  # Av in magnitudes
     "dust_birth_fraction": dust_birth_fraction,
     "log_zmet": log_zmet,
@@ -237,7 +238,7 @@ for sfh_name, sfh_params in sfhs.items():
                 0,
                 1,
             )  # dummy parameters for the SFH
-    """elif sfh_type == SFH.Continuity:
+    elif sfh_type == SFH.Continuity:
         # Add dummy parameters for the Continuity SFH
         for i in tqdm(range(sfh_params["nbins"])):
             j = 100 * (i + 1) / (sfh_params["nbins"] + 1)
@@ -245,7 +246,6 @@ for sfh_name, sfh_params in sfhs.items():
                 0,
                 1,
             )
-        # add to SFH_param_names"""
 
     # Draw samples from Latin Hypercube.
     # unlog_keys are keys which should be unlogged after drawing from the hypercube.
@@ -262,9 +262,6 @@ for sfh_name, sfh_params in sfhs.items():
     )
     # Metallicity
     Z_dists = [ZDist.DeltaConstant(log10metallicity=log_z) for log_z in all_param_dict["log_zmet"]]
-
-    # Redshifts
-    redshifts = np.array(all_param_dict["redshift"])
 
     if sfh_type == SFH.DenseBasis:
         # Draw SFH params from prior
@@ -293,20 +290,20 @@ for sfh_name, sfh_params in sfhs.items():
         # Add logSFR to all_param_dict
         all_param_dict["log_sfr"] = np.array(logsfrs)
         # UNCOMMENT IN GENERAL! Just because main doesn't have this brnch.
-        """elif sfh_type == SFH.Continuity:
-            # Draw from prior.
-            sfh_models = []
-            for i in tqdm(range(Nmodels)):
-                z_i = all_param_dict["redshift"][i]
-                agebins = sfh_params["agebins"](z_i, cosmo=cosmo, Nbins=6)
-                sfh_models.append(
-                    sfh_params["sfh_type"].init_from_prior(
-                        agebins,
-                        df=sfh_params["df"],
-                        scale=sfh_params["scale"],
-                        limits=(-30, 30),
-                    )
-        )"""
+    elif sfh_type == SFH.Continuity:
+        # Draw from prior.
+        sfh_models = []
+        for i in tqdm(range(Nmodels)):
+            z_i = redshift if isinstance(redshift, (int, float)) else all_param_dict["redshift"][i]
+            agebins = sfh_params["agebins"](z_i, cosmo=cosmo, Nbins=6)
+            sfh_models.append(
+                sfh_params["sfh_type"].init_from_prior(
+                    agebins,
+                    df=sfh_params["df"],
+                    scale=sfh_params["scale"],
+                    limits=(-30, 30),
+                )
+            )
 
     else:
         if "beta" in sfh_param_names:
@@ -316,7 +313,9 @@ for sfh_name, sfh_params in sfhs.items():
             sfh_param_names=sfh_param_names,
             sfh_param_arrays=[all_param_dict[param] for param in sfh_param_names],
             sfh_param_units=sfh_params.get("sfh_units", None),
-            redshifts=redshifts,
+            redshifts=redshift
+            if isinstance(redshift, (int, float))
+            else all_param_dict["redshift"],
             max_redshift=max_redshift,
             cosmo=cosmo,
             iterate_redshifts=False,
@@ -396,15 +395,15 @@ for sfh_name, sfh_params in sfhs.items():
             + [f"sfh_quantile_{100 * (j + 1) / (Nparam_SFH + 1):.0f}" for j in range(Nparam_SFH)],
             db_sf_convert,
         )  # noqa: E501
-    """elif sfh_type == SFH.Continuity:
+    elif sfh_type == SFH.Continuity:
         alt_parametrizations["logsfr_ratios"] = (
             [f"logsfr_ratio_{j}" for j in range(sfh_params["nbins"] - 1)],
             lambda p, p_dict: p_dict["logsfr_ratios"][int(p.split("_")[-1])],  # noqa: E501
-        )"""
+        )
 
     basis = GalaxyBasis(
         model_name=f"sps_{name}",
-        redshifts=redshifts,
+        redshifts=redshift,
         grid=grid,
         emission_model=emission_model,
         sfhs=sfh_models,
@@ -420,10 +419,10 @@ for sfh_name, sfh_params in sfhs.items():
 
     combined_basis = CombinedBasis(
         bases=[basis],
-        log_stellar_masses=all_param_dict["log_masses"],
+        log_stellar_masses=masses,
         base_emission_model_keys=["total"],
         combination_weights=None,
-        redshifts=redshifts,
+        redshifts=redshift,
         out_name=f"library_{name}",
         out_dir=out_dir,
         draw_parameter_combinations=False,  # Since we have already drawn the parameters,
@@ -435,7 +434,7 @@ for sfh_name, sfh_params in sfhs.items():
             basis.plot_galaxy(
                 idx=i,
                 out_dir=f"{out_dir}/plots/{name}/",
-                log_stellar_mass=all_param_dict["log_masses"][i],
+                log_stellar_mass=masses[i],
             )
         except ValueError as e:
             print(f"Error plotting galaxy {i}: {e}")
