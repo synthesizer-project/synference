@@ -43,8 +43,9 @@ jobs:
           pip install wheel
           sudo apt install pandoc
           pip install .[test,docs]
-          pip install "dense_basis@git+https://github.com/kartheikiyer/dense_basis"
+          pip install "dense_basis@git+https://github.com/kartheikiyer/dense_basis.git"
           pip install "ltu_ili@git+https://github.com/maho3/ltu-ili.git"
+          pip install "synthesizer@git+https://github.com/synthesizer-project/synthesizer.git"
           pip install pytest-xdist  # enable parallel pytest execution
       - name: Download test data
         run: |

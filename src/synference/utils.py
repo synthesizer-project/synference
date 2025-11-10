@@ -2789,13 +2789,16 @@ def download_test_data():
     """Downloads test data for Synference using the synference-download CLI tool."""
     import subprocess
 
-    """Downloads test data for Synference."""
-
     data_dir = get_data_dir() / "synference"
     data_dir.mkdir(parents=True, exist_ok=True)
 
     # Download the test data
-    subprocess.run(["synference-download", "--test", "-d", str(data_dir)])
+    subprocess.run(
+        ["synference-download", "--test", "-d", str(data_dir)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
     print(f"Test data downloaded to {data_dir}")
 
 
