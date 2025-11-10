@@ -1093,11 +1093,97 @@ class SBI_Fitter:
                 "Please use 'photometry' or 'spectra'."
             )
 
+    def _apply_flux_normalization(
+        self,
+        grid: np.ndarray,
+        wavs_um: np.ndarray,
+        method: Union[str, Callable],
+        parameters: Dict,
+        desc: str,
+    ) -> np.ndarray:
+        """Helper function to apply flux normalization to a grid."""
+        logger.info(f"{desc.capitalize()}...")
+
+        # Ensure grid is writeable if we need to modify it
+        if not grid.flags.writeable:
+            grid = grid.copy()
+
+        for i in trange(grid.shape[1], desc=desc):
+            flux = grid[:, i]
+            norm_factor = 1.0  # Default
+
+            if callable(method):
+                # Pass wavelengths (um), flux (grid units), and other params
+                # User-defined function is responsible for its own parameters
+                norm_factor = method(wavs_um, flux, **parameters)
+            elif method == "tophat":
+                center = parameters.get("center")  # in um
+                width = parameters.get("width")  # in um
+                if center is None or width is None:
+                    raise ValueError(
+                        "'tophat' norm requires 'center' and 'width' in flux_norm_parameters"
+                    )
+
+                half_width = width / 2.0
+                mask_norm = (wavs_um >= (center - half_width)) & (wavs_um <= (center + half_width))
+                if np.sum(mask_norm) > 0:
+                    norm_factor = np.mean(flux[mask_norm])
+                else:
+                    norm_factor = 0.0  # No overlap
+
+            elif method == "bandpass":
+                filter_obj = parameters.get("filter")
+                if filter_obj is None:
+                    raise ValueError(
+                        "'bandpass' norm requires a 'filter' object in flux_norm_parameters"
+                    )
+
+                # Assuming a filter API like sedpy.Filter
+                # It must have .wavelength (in length units) and .transmission
+                try:
+                    # Convert filter wavelengths to microns to match spectrum
+                    filter_wav = filter_obj.lam.to_value("um")
+                    filter_transmission = filter_obj.transmission
+                except AttributeError:
+                    raise ValueError(
+                        "Filter object must have 'wavelength' "
+                        "(unyt_array) and 'transmission' (array) attributes"
+                    )
+
+                # Interpolate filter transmission to spectrum wavelengths
+                interp_trans = np.interp(
+                    wavs_um, filter_wav, filter_transmission, left=0.0, right=0.0
+                )
+
+                # Calculate mean flux in band:
+                # integral(F_lambda * T_lambda * d_lambda) / integral(T_lambda * d_lambda)
+                numerator = np.trapz(flux * interp_trans, x=wavs_um)
+                denominator = np.trapz(interp_trans, x=wavs_um)
+
+                norm_factor = numerator / denominator if denominator > 0 else 0.0
+
+            else:
+                raise ValueError(f"Unknown flux_norm_method: {method}")
+
+            # Apply normalization
+            if norm_factor != 0:
+                grid[:, i] = flux / norm_factor
+            else:
+                # Avoid division by zero
+                logger.warning(
+                    f"Normalization factor is zero for spectrum {i} ({desc}). Setting flux to zero."
+                )
+                grid[:, i] = 0.0
+
+        return grid
+
     def create_feature_array_from_raw_spectra(
         self,
         extra_features=["redshift"],
         crop_wavelength_range: Union[tuple, list] = None,
         normed_flux_units: str = "AB",
+        flux_norm_method: Union[str, Callable, None] = None,
+        flux_norm_parameters: Dict = None,
         parameters_to_remove: list = None,
         parameters_to_add: list = None,
         parameter_transformations: Dict[str, Callable] = None,
@@ -1128,6 +1214,19 @@ class SBI_Fitter:
                 The units of the flux to normalize to. E.g. 'AB', 'nJy', etc.
                 If it starts with 'log10 ', it will be treated as a logarithmic
                 normalization, e.g. 'log10 nJy'. This is not supported for AB magnitudes.
+            flux_norm_method: str or callable, optional
+                Method to use for flux normalization. Options are:
+                - 'tophat': Normalize by the flux in a tophat filter.
+                - 'bandpass': Normalize by the flux in a bandpass filter.
+                - callable: A function that takes in the wavelength and flux arrays
+                    and returns the normalized flux array.
+            flux_norm_parameters: dict, optional
+                Parameters to pass to the flux normalization method.
+                E.g. for 'tophat', this should include the Filter width and center.
+                For 'bandpass', this should be a Synthesizer filter object.
+                For callable, this should include any parameters the function requires.
+                Specify 'rest_frame': True/False to indicate whether the
+                normalization should be done in the rest frame or observed frame.
             parameters_to_remove: list, optional
                 Parameters to remove from the parameter array.
             parameters_to_add: list, optional
@@ -1180,6 +1279,17 @@ class SBI_Fitter:
 
         grid = self.raw_observation_grid
 
+        is_rest_norm = flux_norm_parameters.get("rest_frame", False)
+
+        if flux_norm_method is not None and is_rest_norm:
+            grid = self._apply_flux_normalization(
+                grid=grid,
+                wavs_um=wavs.to_value("um"),
+                method=flux_norm_method,
+                parameters=flux_norm_parameters,
+                desc="Applying rest-frame norm",
+            )
+
         if has_redshift:
             logger.info("Redshift detected. Transforming spectra to observed frame.")
             # Assert that all necessary inputs for transformation are provided
@@ -1192,6 +1302,17 @@ class SBI_Fitter:
             assert inst_resolution_r is not None, (
                 "inst_resolution_r must be provided for convolution."
             )
+
+            if crop_wavelength_range is not None:
+                logger.warning(
+                    "Assuming crop_wavelength_range is in"
+                    'observed frame when "redshift" is a feature.'
+                )
+
+                resample_wavelengths = resample_wavelengths[
+                    (resample_wavelengths >= crop_wavelength_range[0])
+                    & (resample_wavelengths <= crop_wavelength_range[1])
+                ]
 
             observed_frame_grid = np.zeros(
                 (len(resample_wavelengths), grid.shape[1]), dtype=np.float32
@@ -1219,6 +1340,15 @@ class SBI_Fitter:
             mask = (wavs >= crop_wavelength_range[0] * um) & (wavs <= crop_wavelength_range[1] * um)
         else:
             mask = np.ones(len(wavs), dtype=bool)
+
+        if flux_norm_method is not None and not is_rest_norm:
+            grid = self._apply_flux_normalization(
+                grid=grid,
+                wavs_um=wavs.to_value("um"),
+                method=flux_norm_method,
+                parameters=flux_norm_parameters,
+                desc="Applying observed-frame norm",
+            )
 
         if isinstance(mask, unyt_array):
             mask = mask.value
@@ -1272,9 +1402,12 @@ class SBI_Fitter:
             "extra_features": extra_features,
             "crop_wavelength_range": crop_wavelength_range,
             "normed_flux_units": normed_flux_units,
+            "flux_norm_method": flux_norm_method,
+            "flux_norm_parameters": flux_norm_parameters,
             "parameters_to_remove": parameters_to_remove,
             "parameters_to_add": parameters_to_add,
             "parameter_transformations": parameter_transformations,
+            "resample_wavelengths": resample_wavelengths,
         }
 
         self.update_parameter_array(

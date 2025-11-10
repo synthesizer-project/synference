@@ -208,6 +208,57 @@ class DepthUncertaintyModel(UncertaintyModel):
         )
 
 
+class SpectralUncertaintyModel(UncertaintyModel):
+    """Applies uncertanties to a spectrum based on a fixed error kernel or a provided table."""
+    def __init__(self, error_kernel: np.ndarray, **kwargs: Any):
+        """Initializes the model with a fixed error kernel.
+
+        Args:
+            error_kernel (np.ndarray): An array of uncertainties to apply to the spectrum.
+            kwargs: Additional keyword arguments for the base class.
+
+        Returns:
+            None
+        """
+        super().__init__(**kwargs)
+        self.error_kernel = error_kernel
+
+    def apply_noise(
+        self, flux: np.ndarray, **kwargs
+    ) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
+        """Applies Gaussian noise to the input flux based on the error kernel."""
+        if len(kwargs) > 0:
+            print(f"WARNING {kwargs} arguments will have no effect with this model.")
+
+        if flux.shape != self.error_kernel.shape:
+            raise ValueError("Input flux shape must match the error kernel shape.")
+
+        noise = np.random.normal(loc=0.0, scale=self.error_kernel, size=flux.shape)
+        noisy_flux = flux + noise
+
+        if self.return_noise:
+            return noisy_flux, self.error_kernel
+
+        return noisy_flux
+    
+    def serialize_to_hdf5(self, hdf5_group: h5py.Group):
+        """Serializes the model to an HDF5 group."""
+        attrs = hdf5_group.attrs
+        attrs["__class__"] = self.__class__.__name__
+        attrs["return_noise"] = self.return_noise
+        hdf5_group.create_dataset("error_kernel", data=self.error_kernel)
+
+    @classmethod
+    def _from_hdf5_group(cls, hdf5_group: h5py.Group) -> "SpectralUncertaintyModel":
+        """Loads a model from an HDF5 group."""
+        error_kernel = hdf5_group["error_kernel"][:]
+        return cls(
+            error_kernel=error_kernel,
+            return_noise=hdf5_group.attrs["return_noise"],
+        )
+    
+
+
 class EmpiricalUncertaintyModel(UncertaintyModel, ABC):
     """Abstract base for empirical uncertainty models from observed data."""
 

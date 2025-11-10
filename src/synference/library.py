@@ -425,7 +425,17 @@ def calculate_line_ew(galaxy: Galaxy, emission_model, line="Ha", emission_model_
 
 
 def calculate_burstiness(galaxy: Galaxy):
-    """SFR_10/SFR_100"""
+    """Calculate the burstiness parameter of a galaxy.
+
+    Burstiness is defined as the ratio of the SFR averaged over the last 10 Myr
+    to the SFR averaged over the last 100 Myr.
+
+    Args:
+        galaxy: An instance of a synthesizer.parametric.Galaxy object.
+
+    Returns:
+        The burstiness parameter as a dimensionless float.
+    """
     sfr_10 = galaxy.stars.calculate_average_sfr((0, 1e7))
     sfr_100 = galaxy.stars.calculate_average_sfr((0, 1e8))
 
@@ -627,7 +637,7 @@ def calculate_agn_fraction(
 
 
 def calculate_ml(galaxy, emission_model_key):
-    """Calculate M/L ratio (in solar units)"""
+    """Calculate M/L ratio (in solar units)."""
     raise NotImplementedError
 
 
@@ -4235,7 +4245,6 @@ class CombinedBasis:
             ), f"""Wavelengths for base {i} do not match base 0.
                 {wavs} != {total_wavelengths[0]}"""
 
-
         if len(self.bases) == 1:
             weights = np.array((1.0,))
         elif "weight_fraction" in self.library_parameter_names:
@@ -4405,7 +4414,7 @@ class CombinedBasis:
             ("log_stellar_masses", self.log_stellar_masses),
             ("combination_weights", self.combination_weights),
         ]:
-            if len(array) != ngal:
+            if not isinstance(array, (int, float)) and len(array) != ngal:
                 raise ValueError(
                     f"""{array_name} length {len(array)} does not match
                     number of galaxies {ngal}."""
@@ -4554,7 +4563,11 @@ class CombinedBasis:
         all_supp_params = []
 
         for pos in range(ngal):
-            redshift = self.redshifts[pos]
+            redshift = (
+                self.redshifts[pos]
+                if isinstance(self.redshifts, (np.ndarray, list, tuple))
+                else self.redshifts
+            )
             log_total_mass = self.log_stellar_masses[pos]
             # mass in solar masses
             total_mass = 10**log_total_mass
@@ -5585,7 +5598,17 @@ class GalaxySimulator(object):
 
         for key in self.param_transforms:
             value = self.param_transforms[key]
-            if isinstance(value, tuple):
+            # check if key is tuple - could be replacing multiple parameters
+            if isinstance(key, tuple):
+                name = value[0]
+                func = value[1]
+
+                param_subset = {k: params[k] for k in key if k in params}
+                try:
+                    params[name] = func(**param_subset)
+                except Exception as e:
+                    logger.error(f"Error applying transform {value} to {key}: {e}")
+            elif isinstance(value, tuple):
                 name = self.param_transforms[key][0]
                 func = self.param_transforms[key][1]
 
@@ -5598,7 +5621,10 @@ class GalaxySimulator(object):
                         continue
                         # logger.error(f"Error applying transform {value} to {key}: {e}")
             elif callable(value):
-                params[key] = value(params[key])
+                if key in params:
+                    params[key] = value(params[key])
+                else:
+                    params[key] = value(params)
 
         # Check if we have all SFH and ZDist parameters
         for key in self.sfh_params + self.zdist_params:
@@ -5607,14 +5633,34 @@ class GalaxySimulator(object):
                     f"""Missing required parameter {key} for SFH or ZDist.
                     Cannot create photometry."""
                 )
+
+        sfh_input = {i: params[i] for i in self.sfh_params}
+        for i in self.optional_sfh_params:
+            if i in params:
+                sfh_input[i] = params[i]
+
+        if len(sfh_input) <= 1:
+            logger.warning(
+                f"SFH input has only {len(sfh_input)} parameters. "
+                "Check that all required SFH parameters are provided."
+            )
         sfh = self.sfh_model(
-            **{i: params[i] for i in self.sfh_params},
-            **{i: params[i] for i in self.optional_sfh_params if i in params},
+            **sfh_input,
         )
+        zdist_input = {i: params[i] for i in self.zdist_params}
+        for i in self.optional_zdist_params:
+            if i in params:
+                zdist_input[i] = params[i]
+
         zdist = self.zdist_model(
-            **{i: params[i] for i in self.zdist_params},
-            **{i: params[i] for i in self.optional_zdist_params if i in params},
+            **zdist_input,
         )
+
+        # print({i: params[i] for i in self.sfh_params})
+        # print({i: params[i] for i in self.zdist_params})
+
+        # print({i: params[i] for i in self.optional_zdist_params if i in params})
+        # print({i: params[i] for i in self.optional_sfh_params if i in params})
 
         # Get param names which aren't in the sfh or zdist models or the required keys
         param_names = [i for i in params.keys() if i not in self.total_possible_keys]
