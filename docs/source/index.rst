@@ -23,7 +23,6 @@ Contents
    posterior_inference/intro
    advanced_topics/advanced_topics
    FAQ/FAQ
-   notebook_examples/cookbook
    auto_examples/index
    API
 
