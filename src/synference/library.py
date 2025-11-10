@@ -5352,7 +5352,7 @@ class GalaxySimulator(object):
                 emission_model_name = em_group.attrs["name"]
                 import synthesizer.emission_models as em
                 import synthesizer.emission_models.attenuation as dm
-                import synthesizer.emission_models.dust.emission as dem
+                import synthesizer.emission_models.dust as dem
                 from synthesizer.emission_models.stellar.pacman_model import (
                     PacmanEmissionNoEscapedNoDust,
                     PacmanEmissionNoEscapedWithDust,
