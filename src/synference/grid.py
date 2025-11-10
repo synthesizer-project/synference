@@ -4361,7 +4361,7 @@ class CombinedBasis:
             ("log_stellar_masses", self.log_stellar_masses),
             ("combination_weights", self.combination_weights),
         ]:
-            if len(array) != ngal:
+            if not isinstance(array, (int, float)) and len(array) != ngal:
                 raise ValueError(
                     f"""{array_name} length {len(array)} does not match
                     number of galaxies {ngal}."""
@@ -4510,7 +4510,7 @@ class CombinedBasis:
         all_supp_params = []
 
         for pos in range(ngal):
-            redshift = self.redshifts[pos]
+            redshift = self.redshifts[pos] if isinstance(self.redshifts, (np.ndarray, list, tuple)) else self.redshifts
             log_total_mass = self.log_stellar_masses[pos]
             # mass in solar masses
             total_mass = 10**log_total_mass
