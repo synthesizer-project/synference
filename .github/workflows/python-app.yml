@@ -33,6 +33,7 @@ jobs:
         python -m pip install --upgrade pip
         WITH_OPENMP=1 pip install .
         pip install ruff pytest
+        pip install "ltu_ili@git+https://github.com/maho3/ltu-ili.git[pytorch]"
     
     - name: Test import
       run: |
