@@ -77,3 +77,9 @@ Multiple optional dependency groups can be installed in one command. For instanc
 .. code-block:: bash
 
     pip install synference[test,docs]
+
+
+Help
+~~~~
+
+If you wish to report an issue or get help with Synference, please `raise an issue <https://github.com/synthesizer-project/synference/issues>`_ on Github.
