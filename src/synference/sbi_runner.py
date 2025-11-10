@@ -2391,7 +2391,6 @@ class SBI_Fitter:
         # if not getattr(self, "has_features", False):
         #    raise RuntimeError(
         #    )
-        #        "The feature creation pipeline has not been initialized. Please run `create_feature_array_from_raw_photometry` first."  # noqa: E501
 
         feature_array_flags = self.feature_array_flags
 
@@ -2654,12 +2653,12 @@ class SBI_Fitter:
                                 empirical_model = load_unc_model_from_hdf5(
                                     filepath=new_path, group_name=model_name
                                 )
-                            except Exception as e2:
+                            except Exception:
                                 empirical_model = None
                         if empirical_model is None:
                             logger.warning(
                                 f"Could not load noise model '{model_name}' from {val} "
-                                f"(fallback tried: {new_path}). Skipping. Error: {e}"
+                                f"(fallback tried: {new_path}). Skipping."
                             )
                             continue
                 elif isinstance(val, UncertaintyModel):
@@ -2688,7 +2687,8 @@ class SBI_Fitter:
                             break
                     if eindex is None:
                         logger.warning(
-                            f"No matching error column for '{model_name}'. Skipping empirical scaling."
+                            f"No matching error column for '{model_name}'. "
+                            "exc_info=Skipping empirical scaling."
                         )
                         continue
                     error_column = feature_array[eindex, :]
@@ -6342,6 +6342,7 @@ class SBI_Fitter:
 
     @property
     def likelihood_func(self):
+        """Get the likelihood function from the posterior if available."""
         if hasattr(self, "posteriors") and self.posteriors is not None:
             likelihood = self.posteriors.potential_fn.potential_fns[0].likelihood_estimator
             return likelihood
