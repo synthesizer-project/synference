@@ -161,7 +161,7 @@ indent-width = 4
 
 
 # Assume Python 3.10 by default regardless
-target-version = "py10"
+target-version = "py310"
 
 
 [tool.ruff.lint]
