@@ -56,5 +56,5 @@ tests/test_grids/*
 !tests/test_libraries/sbi_test_library.hdf5
 !tests/test_libraries/sps_test_library.hdf5
 !docs/build/gfx
-!docs/source/example_models/bpass_db_v4/*
+!docs/source/example_models/BPASS_DB_v4/*
 !docs/source/example_libraries/*
