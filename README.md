@@ -1,7 +1,5 @@
 # Synference
-<center>
-<img src="docs/source/gfx/synference_logo.png"  alt="logo" align="right" width="200px"/>
-</center>
+<img src="https://raw.githubusercontent.com/synthesizer-project/synference/main/docs/source/gfx/synference_logo.png" align="right" width="140px"/>
 
 
 [![workflow](https://github.com/synthesizer-project/synference/actions/workflows/python-app.yml/badge.svg)](https://github.com/synthesizer-project/synference/actions)
