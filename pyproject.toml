@@ -14,8 +14,7 @@ requires-python = ">=3.10"
 dependencies = [
     "torch",
     "lampe",
-    "ltu-ili @ git+https://github.com/maho3/ltu-ili",
-    "tarp @ git+https://github.com/maho3/tarp.git",
+    "ltu-ili",
     "cosmos-synthesizer",
     "scikit-learn",
     "sbi>=0.22.0",
@@ -32,10 +31,13 @@ dependencies = [
     "plotext",
     "matplotlib",
     "numba",
-    "dense_basis @git+https://github.com/kartheikiyer/dense_basis.git",
 ]
 
 [project.optional-dependencies]
+
+densebasis = [
+    "densebasis @ git+https://github.com/kartheikiyer/dense_basis.git"
+]
 
 simformer = [
     "simformer @ git+https://github.com/tHarvey303/simformer/"
