@@ -4,6 +4,30 @@ version = "0.1.0"
 description = "Simulation-based inference for SED-fitting of galaxy photometry and spectroscopy"
 license = {file = "LICENSE.md"}
 readme = "README.md"
+
+# Project keywords
+keywords =[
+  "galaxy",
+  "modelling",
+  "SED-fitting",
+  "simulation-based inference",
+  "smoothed particle hydrodynamics",
+  "particles",
+  "nbody",
+  "galaxy formation",
+  "parametric",
+  "theory",
+  "sph",
+  "cosmology",
+  "galaxy evolution",
+  "survey",
+  "space telescope",
+  "SED",
+  "sed",
+  "spectral energy distribution",
+  "stellar population",
+  "synthesis",
+]
 authors = [
     { name = "T. Harvey", email = "tharvey303@gmail.com" },
     {name = "S. Newman", email = "sophie.newman@port.ac.uk" },
@@ -11,10 +35,21 @@ authors = [
 ]
 requires-python = ">=3.10"
 
+# Classifiers
+classifiers = [  # Optional
+  "Development Status :: 4 - Beta",  # 3 Alpha/4 Beta/5 Production/Stable
+  "Intended Audience :: Science/Research",
+  "Topic :: Scientific/Engineering :: Astronomy",
+  "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+
+  # Supported Python versions
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3 :: Only",
+]
 dependencies = [
     "torch",
     "lampe",
-    "ltu-ili",
     "cosmos-synthesizer",
     "scikit-learn",
     "sbi>=0.22.0",
@@ -34,14 +69,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-
-densebasis = [
-    "densebasis @ git+https://github.com/kartheikiyer/dense_basis.git"
-]
-
-simformer = [
-    "simformer @ git+https://github.com/tHarvey303/simformer/"
-]
 
 # Development
 dev = [
@@ -72,6 +99,13 @@ docs = [
     "sphinx-copybutton",
     "readthedocs-sphinx-search",
 ]
+
+# Project urls
+[project.urls]
+"Homepage" = "https://github.com/synthesizer-project/synference"
+"Bug Reports" = "https://github.com/synthesizer-project/synference/issues"
+"Source" = "https://github.com/synthesizer-project/synference"
+"Documentation" = "https://synthesizer-project.github.io/synference/"
 
 [build-system]
 requires = ["hatchling"]
@@ -126,8 +160,8 @@ indent-width = 4
 
 
 
-# Assume Python 3.8 by default regardless
-target-version = "py38"
+# Assume Python 3.10 by default regardless
+target-version = "py10"
 
 
 [tool.ruff.lint]
