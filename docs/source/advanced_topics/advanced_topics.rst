@@ -6,6 +6,5 @@ In this section, we cover some advanced topics and features of Synference that g
 .. toctree::
    :maxdepth: 1
 
-   nle
    custom_loop
    simformer
