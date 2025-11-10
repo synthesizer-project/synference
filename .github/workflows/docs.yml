@@ -42,6 +42,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install wheel
           sudo apt install pandoc
+          pip install "cosmos-synthesizer@git+https://github.com/synthesizer-project/synthesizer.git"
           pip install .[test,docs]
           pip install "dense_basis@git+https://github.com/kartheikiyer/dense_basis"
           pip install "ltu_ili@git+https://github.com/maho3/ltu-ili.git"
