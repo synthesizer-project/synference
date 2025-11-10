@@ -45,7 +45,7 @@ jobs:
           pip install .[test,docs]
           pip install "dense_basis@git+https://github.com/kartheikiyer/dense_basis.git"
           pip install "ltu_ili@git+https://github.com/maho3/ltu-ili.git"
-          pip install "synthesizer@git+https://github.com/synthesizer-project/synthesizer.git"
+          pip install "cosmos-synthesizer@git+https://github.com/synthesizer-project/synthesizer.git#egg=synthesizer"
           pip install pytest-xdist  # enable parallel pytest execution
       - name: Download test data
         run: |
