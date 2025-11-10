@@ -237,7 +237,7 @@ for sfh_name, sfh_params in sfhs.items():
                 0,
                 1,
             )  # dummy parameters for the SFH
-    """elif sfh_type == SFH.Continuity:
+    elif sfh_type == SFH.Continuity:
         # Add dummy parameters for the Continuity SFH
         for i in tqdm(range(sfh_params["nbins"])):
             j = 100 * (i + 1) / (sfh_params["nbins"] + 1)
@@ -245,7 +245,6 @@ for sfh_name, sfh_params in sfhs.items():
                 0,
                 1,
             )
-        # add to SFH_param_names"""
 
     # Draw samples from Latin Hypercube.
     # unlog_keys are keys which should be unlogged after drawing from the hypercube.
@@ -293,7 +292,7 @@ for sfh_name, sfh_params in sfhs.items():
         # Add logSFR to all_param_dict
         all_param_dict["log_sfr"] = np.array(logsfrs)
         # UNCOMMENT IN GENERAL! Just because main doesn't have this brnch.
-        """elif sfh_type == SFH.Continuity:
+        elif sfh_type == SFH.Continuity:
             # Draw from prior.
             sfh_models = []
             for i in tqdm(range(Nmodels)):
@@ -306,7 +305,7 @@ for sfh_name, sfh_params in sfhs.items():
                         scale=sfh_params["scale"],
                         limits=(-30, 30),
                     )
-        )"""
+        )
 
     else:
         if "beta" in sfh_param_names:
@@ -396,11 +395,11 @@ for sfh_name, sfh_params in sfhs.items():
             + [f"sfh_quantile_{100 * (j + 1) / (Nparam_SFH + 1):.0f}" for j in range(Nparam_SFH)],
             db_sf_convert,
         )  # noqa: E501
-    """elif sfh_type == SFH.Continuity:
+    elif sfh_type == SFH.Continuity:
         alt_parametrizations["logsfr_ratios"] = (
             [f"logsfr_ratio_{j}" for j in range(sfh_params["nbins"] - 1)],
             lambda p, p_dict: p_dict["logsfr_ratios"][int(p.split("_")[-1])],  # noqa: E501
-        )"""
+        )
 
     basis = GalaxyBasis(
         model_name=f"sps_{name}",

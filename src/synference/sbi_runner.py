@@ -1192,6 +1192,14 @@ class SBI_Fitter:
                 "inst_resolution_r must be provided for convolution."
             )
 
+            if crop_wavelength_range is not None:
+                logger.warning('Assuming crop_wavelength_range is in observed frame when "redshift" is a feature.')
+
+                resample_wavelengths = resample_wavelengths[
+                    (resample_wavelengths >= crop_wavelength_range[0])
+                    & (resample_wavelengths <= crop_wavelength_range[1])
+                ]
+
             observed_frame_grid = np.zeros(
                 (len(resample_wavelengths), grid.shape[1]), dtype=np.float32
             )
@@ -1274,6 +1282,7 @@ class SBI_Fitter:
             "parameters_to_remove": parameters_to_remove,
             "parameters_to_add": parameters_to_add,
             "parameter_transformations": parameter_transformations,
+            "resample_wavelengths": resample_wavelengths,
         }
 
         self.update_parameter_array(

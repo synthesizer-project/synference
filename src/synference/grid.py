@@ -5514,7 +5514,17 @@ class GalaxySimulator(object):
 
         for key in self.param_transforms:
             value = self.param_transforms[key]
-            if isinstance(value, tuple):
+            # check if key is tuple - could be replacing multiple parameters
+            if isinstance(key, tuple):
+                name = value[0]
+                func = value[1]
+
+                param_subset = {k: params[k] for k in key if k in params}
+                try:
+                    params[name] = func(**param_subset)
+                except Exception as e:
+                    logger.error(f"Error applying transform {value} to {key}: {e}")
+            elif isinstance(value, tuple):
                 name = self.param_transforms[key][0]
                 func = self.param_transforms[key][1]
 
@@ -5527,7 +5537,10 @@ class GalaxySimulator(object):
                         continue
                         # logger.error(f"Error applying transform {value} to {key}: {e}")
             elif callable(value):
-                params[key] = value(params[key])
+                if key in params:
+                    params[key] = value(params[key])
+                else:
+                    params[key] = value(params)
 
         # Check if we have all SFH and ZDist parameters
         for key in self.sfh_params + self.zdist_params:
@@ -5536,14 +5549,34 @@ class GalaxySimulator(object):
                     f"""Missing required parameter {key} for SFH or ZDist.
                     Cannot create photometry."""
                 )
+
+        sfh_input = {i: params[i] for i in self.sfh_params}
+        for i in self.optional_sfh_params:
+            if i in params:
+                sfh_input[i] = params[i]
+
+        if len(sfh_input) <= 1:
+            logger.warning(
+                f"SFH input has only {len(sfh_input)} parameters. "
+                "Check that all required SFH parameters are provided."
+            )
         sfh = self.sfh_model(
-            **{i: params[i] for i in self.sfh_params},
-            **{i: params[i] for i in self.optional_sfh_params if i in params},
+            **sfh_input,
         )
+        zdist_input = {i: params[i] for i in self.zdist_params}
+        for i in self.optional_zdist_params:
+            if i in params:
+                zdist_input[i] = params[i]
+        
         zdist = self.zdist_model(
-            **{i: params[i] for i in self.zdist_params},
-            **{i: params[i] for i in self.optional_zdist_params if i in params},
+            **zdist_input,
         )
+
+        #print({i: params[i] for i in self.sfh_params})
+        #print({i: params[i] for i in self.zdist_params})
+
+        #print({i: params[i] for i in self.optional_zdist_params if i in params})
+        #print({i: params[i] for i in self.optional_sfh_params if i in params})
 
         # Get param names which aren't in the sfh or zdist models or the required keys
         param_names = [i for i in params.keys() if i not in self.total_possible_keys]
