@@ -51,7 +51,7 @@ jobs:
           # Download test grid data 
           mkdir -p data/libraries/
           synthesizer-download --test-grids --dust-grid
-          synference-download --test
+          python -c "from synference.utils import download_test_data; download_test_data()"
       - name: Sphinx Build
         run: |
           # Test sphinx build (runs all notebooks)

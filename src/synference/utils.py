@@ -23,6 +23,10 @@ try:
 except (ImportError, RuntimeError):
     spectres = None
 
+try:
+    from synthesizer import get_data_dir
+except ImportError:
+    get_data_dir = lambda: os.path.dirname(__file__)  # noqa: E731
 
 try:
     import plotext as plo
@@ -2779,3 +2783,20 @@ def interval_sharpness(
 
     # Return negative interval score so tighter intervals are closer to zero
     return -float(np.mean(scores))
+
+
+def download_test_data():
+    """Downloads test data for Synference using the synference-download CLI tool."""
+    import subprocess
+
+    """Downloads test data for Synference."""
+
+    data_dir = get_data_dir() / "synference"
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    # Download the test data
+    subprocess.run(["synference-download", "--test", "-d", str(data_dir)])
+    print(f"Test data downloaded to {data_dir}")
+
+
+test_data_dir = get_data_dir() / "synference"
