@@ -21,6 +21,7 @@ from synference import (  # noqa E402
     calculate_muv,
     draw_from_hypercube,
     generate_sfh_basis,
+    test_data_dir,
 )
 
 
@@ -31,15 +32,17 @@ def test_dir():
 
 
 @pytest.fixture
-def library_dir(test_dir):
-    """Fixture to get the grid directory path."""
-    return test_dir / "test_libraries"
+def library_dir():
+    """Fixture to get the library directory path."""
+    return test_data_dir
 
 
 @pytest.fixture
 def synthesizer_grid_dir(test_dir):
     """Fixture to get the synthesizer grid directory path and set environment variable."""
-    synthesizer_grid_dir = test_dir / "synthesizer_grids"
+    from synthesizer import get_grids_dir
+
+    synthesizer_grid_dir = get_grids_dir()
     os.environ["SYNTHESIZER_GRID_DIR"] = str(synthesizer_grid_dir)
     return synthesizer_grid_dir
 

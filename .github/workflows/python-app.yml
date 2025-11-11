@@ -31,9 +31,11 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        WITH_OPENMP=1 pip install .
+        pip install .
         pip install ruff pytest
         pip install "ltu_ili@git+https://github.com/maho3/ltu-ili.git"
+        pip install "cosmos-synthesizer@git+https://github.com/synthesizer-project/synthesizer.git#egg=synthesizer"
+        python -c "from synference.utils import download_test_data; download_test_data()"
     
     - name: Test import
       run: |
