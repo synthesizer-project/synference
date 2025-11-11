@@ -5352,7 +5352,7 @@ class GalaxySimulator(object):
                 emission_model_name = em_group.attrs["name"]
                 import synthesizer.emission_models as em
                 import synthesizer.emission_models.attenuation as dm
-                import synthesizer.emission_models.dust as dem
+                import synthesizer.emission_models.generators.dust as dem
                 from synthesizer.emission_models.stellar.pacman_model import (
                     PacmanEmissionNoEscapedNoDust,
                     PacmanEmissionNoEscapedWithDust,
@@ -5374,7 +5374,8 @@ class GalaxySimulator(object):
 
                 if emission_model is None:
                     raise ValueError(
-                        f"Emission model {emission_model_name} not found in synthesizer.emission_models. Cannot create GalaxySimulator."  # noqa: E501
+                        f"Emission model {emission_model_name} not found in synthesizer.emission_models. "  # noqa: E501
+                        "Cannot create GalaxySimulator."
                     )
 
                 if "dust_law" in em_group.attrs:
@@ -5413,7 +5414,8 @@ class GalaxySimulator(object):
 
                     if dust_emission_model is None:
                         raise ValueError(
-                            f"Dust emission model {dust_emission_model_name} not found in synthesizer.emission_models. Cannot create from_library."  # noqa: E501
+                            f"Dust emission model {dust_emission_model_name} not found"
+                            " in synthesizer.emission_models. Cannot create from_library."
                         )
 
                     dust_emission_model_params = {}
