@@ -7,23 +7,21 @@
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![Contributions welcome](https://img.shields.io/badge/contributions-welcome-brightgreen.svg?style=flat)](https://github.com/synthesizer-project/synference/blob/main/docs/CONTRIBUTING.md)
 [![License: GPLv3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-
-<!--[![Documentation Status](https://github.com/synthesizer-project/synference/actions/workflows/static.yml/badge.svg)](https://synthesizer-project.github.io/synference/)-->
+[![Documentation Status](https://github.com/synthesizer-project/synference/actions/workflows/docs.yml/badge.svg)](https://synthesizer-project.github.io/synference/)
 
 ### Overview
 
-Synference is a Python package designed to fit to perform simulation-based inference (SBI, also known as likelihood free inference) SED fitting. It integrates with [Synthesizer](https://synthesizer-project.github.io) for flexible and fast generation of mock spectra and photometry,
-and uses the [LtU-ILI](https://ltu-ili.readthedocs.io/) package for fast, amortised posterior inference.
+Synference is a Python package designed to fit to perform simulation-based inference (SBI, also known as likelihood free inference) SED fitting. It integrates with [Synthesizer](https://synthesizer-project.github.io) for flexible and fast generation of mock spectra and photometry, and uses the [LtU-ILI](https://ltu-ili.readthedocs.io/) package for fast, amortised posterior inference.
 
 ### Key Features
 
 - **Flexible Mock Generation**: Generate mock spectra and photometry using Synthesizer, allowing for full flexibility in almost every aspect of SED generation, including a wide range of post-processed stellar population synthesis grids.
-- **Flexible Training**: Mock photometry creation is seperated from the training of the inference model, allowing for flexible training strategies and the use of different inference models, as well as quickly switching between different feature sets - e.g. different filtersets, different noise models, etc.
+- **Flexible Training**: Mock photometry creation is separated from the training of the inference model, allowing for flexible training strategies and the use of different inference models, as well as quickly switching between different feature sets - e.g. different filtersets, different noise models, etc.
 - **Fast Inference**: Leverage LtU-ILI for fast, amortised posterior inference, enabling efficient fitting of complex models to data.
 
 ### Requirements
 
-synference requires Python 3.10 or higher. It has the following dependencies:
+Synference requires Python 3.10 or higher. It has the following dependencies:
 
 - [synthesizer](https://synthesizer-project.github.io) for mock generation
 - [ltu-ili](https://ltu-ili.readthedocs.io/) for inference
@@ -39,11 +37,11 @@ synference requires Python 3.10 or higher. It has the following dependencies:
 - [tqdm](https://tqdm.github.io/) for progress bars
 - [jax](https://jax.readthedocs.io/) for GPU acceleration (optional, for some inference models)
 
-These dependencies will be automatically installed when you install synference using pip.
+These dependencies will be automatically installed when you install Synference using pip.
 
 ### Installation
 
-The easiest way to currently install synference is to clone the repository and install it in editable mode:
+The easiest way to currently install Synference is to clone the repository and install it in editable mode:
 
 ```bash
 git clone https://www.github.com/synthesizer-project/synference.git
@@ -53,7 +51,7 @@ pip install -e .
 
 ### Getting Started
 
-To get started with synference, you can check out the [examples](examples/) directory for usage examples and tutorials. The examples cover various aspects of using synference, including:
+To get started with Synference, you can check out the [examples](examples/) directory for usage examples and tutorials. The examples cover various aspects of using Synference, including:
 
 - Generating mock spectra and photometry with Synthesizer
 - Training inference models with LtU-ILI
@@ -64,7 +62,7 @@ To get started with synference, you can check out the [examples](examples/) dire
 
 The most basic usage, for creating a simple mock catalogue and training a model on it looks like this:
 
-Firstly we setup the Synthesizer based model. More details on how to set up the Synthesizer model can be found in the [Synthesizer documentation](https://synthesizer-project.github.io/). Here we use a BPASS SPS grid, a lognormal star formation history, a single stellar metallicity and a simple emission model including Cloudy nebular emission but no dust reprocessing. The photometric filters used are common JWST/NIRCam wideband filters, but any filters supported by [SVO](https://svo2.cab.inta-csic.es/theory/fps/index.php) or loaded manually can be used. The model parameters are drawn from a Latin hypercube sampling of the parameter space, but this can be done in any way indepedent of synference. All we are providing to the grid generation is a set of *10,000* galaxies with a range of stellar masses, redshifts, metallicities, and star formation histories, and these can be created in any way you like.
+Firstly we setup the Synthesizer based model. More details on how to set up the Synthesizer model can be found in the [Synthesizer documentation](https://synthesizer-project.github.io/). Here we use a BPASS SPS grid, a lognormal star formation history, a single stellar metallicity and a simple emission model including Cloudy nebular emission but no dust reprocessing. The photometric filters used are common JWST/NIRCam wideband filters, but any filters supported by [SVO](https://svo2.cab.inta-csic.es/theory/fps/index.php) or loaded manually can be used. The model parameters are drawn from a Latin hypercube sampling of the parameter space, but this can be done in any way independent of Synference. All we are providing to the grid generation is a set of *10,000* galaxies with a range of stellar masses, redshifts, metallicities, and star formation histories, and these can be created in any way you like.
 
 ```python
 from synthesizer.grid import Grid
@@ -156,17 +154,15 @@ empirical_model_fitter.recover_SED(observed_data_vector)
 
 ```
 
-This is just a basic example to get you started. synference is highly flexible and can be adapted to a wide range of use cases in simulation-based inference for SED fitting.
+This is just a basic example to get you started. Synference is highly flexible and can be adapted to a wide range of use cases in simulation-based inference for SED fitting.
 
 ### Documentation
 
-Work in progress.
+Documentation for Synference is available at [synthesizer-project.github.io/synference](https://synthesizer-project.github.io/synference/). The documentation includes installation instructions, tutorials, API references, and examples to help you get started with using Synference for your own projects.
 
 ### Contributing
 
-We welcome contributions to synference! If you have suggestions, bug reports, or would like to contribute code, please open an issue or submit a pull request on GitHub. Please see our [Code of Conduct](CODE_OF_CONDUCT.md) for more details on how to contribute and interact with the community.
+We welcome contributions to Synference! If you have suggestions, bug reports, or would like to contribute code, please open an issue or submit a pull request on GitHub. Please see our [Code of Conduct](CODE_OF_CONDUCT.md) for more details on how to contribute and interact with the community.
 
 ### License
-This project is licensed under the GNU General Public License v3.0 (GPLv3). See the [LICENSE](LICENSE) file for details. This means you can use, modify, and distribute the code freely, but any derivative works must also be open source and distributed under the same license. We warn users that this software is offered "as is", without any warranty or guarantee of fitness for a particular purpose. synference is under active development, and therefore may change in the future.
-
-
+This project is licensed under the GNU General Public License v3.0 (GPLv3). See the [LICENSE](LICENSE) file for details. This means you can use, modify, and distribute the code freely, but any derivative works must also be open source and distributed under the same license. We warn users that this software is offered "as is", without any warranty or guarantee of fitness for a particular purpose. Synference is under active development, and therefore may change in the future.
