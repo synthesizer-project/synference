@@ -80,23 +80,47 @@ html_theme_options = {
     "sidebar_hide_name": True,
 }
 
-html_title = "synference"
+html_title = "Synference"
 
 ignore_pattern = ["basic_model.py"]
 
-import urllib.request
-
-
-def fetch_remote_content(app, docname, source):
-    if docname == "getting_started/contributing":
-        # Fetch the remote content
-        url = "https://raw.githubusercontent.com/synthesizer-project/synthesizer/refs/heads/main/docs/source/getting_started/contributing.rst"
-        with urllib.request.urlopen(url) as response:
-            remote_content = response.read().decode("utf-8")
-
-        # Append or prepend to your document
-        source[0] = source[0] + "\n\n" + remote_content
-
-
-def setup(app):
-    app.connect("source-read", fetch_remote_content)
+# """
+# Custom function to fetch remote content and append to local document.
+# Used for fetching the contribution guidelines from the main synthesizer repo.
+# """
+# import urllib.request
+#
+#
+# def fetch_remote_content(app, docname, source):
+#     """Get contributing guidelines from synthesizer main repo."""
+#     if docname == "getting_started/contributing":
+#         # Fetch the remote content
+#         url = (
+#             "https://raw.githubusercontent.com/"
+#             "synthesizer-project/synthesizer/refs"
+#             "/heads/main/docs/source/getting_"
+#             "started/contributing.rst"
+#         )
+#         with urllib.request.urlopen(url) as response:
+#             remote_content = response.read().decode("utf-8")
+#
+#         # Find the "Contributing" section with tildes
+#         search_string = "Contributing\n~~~~~~~~~~~~"
+#
+#         # Find the position of this string
+#         start_index = remote_content.find(search_string)
+#
+#         if start_index != -1:
+#             # Extract content from "Contributing" onwards
+#             extracted_content = remote_content[start_index:]
+#
+#             # Append to your document
+#             source[0] = source[0] + "\n\n" + extracted_content
+#         else:
+#             # Handle case where the string isn't found
+#             app.warn("Could not find 'Contributing' section in remote content")
+#
+#
+# def setup(app):
+#     """Fetch remote contributing guidelines."""
+#     app.connect("source-read", fetch_remote_content)
