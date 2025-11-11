@@ -40,7 +40,9 @@ def library_dir():
 @pytest.fixture
 def synthesizer_grid_dir(test_dir):
     """Fixture to get the synthesizer grid directory path and set environment variable."""
-    synthesizer_grid_dir = test_dir / "synthesizer_grids"
+    from synthesizer import get_grids_dir
+
+    synthesizer_grid_dir = get_grids_dir()
     os.environ["SYNTHESIZER_GRID_DIR"] = str(synthesizer_grid_dir)
     return synthesizer_grid_dir
 

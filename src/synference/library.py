@@ -2903,8 +2903,6 @@ $\\log_{{10}}(M_\\star/M_\\odot)$: {np.log10(mass):.1f}"""
         ax[0].set_xlim(min_x, max_x)
         ax[0].set_ylim(min_y, max_y)
 
-        print(min_x, max_x)
-
         if save:
             if not os.path.exists(out_dir):
                 os.makedirs(out_dir)
@@ -5211,7 +5209,7 @@ class GalaxySimulator(object):
                 new_filters.append(filter_code)
 
         self.instrument.filters = FilterCollection(filter_codes=new_filters)
-        print(f"Updated filters: {self.instrument.filters.filter_codes}")
+        logger.info(f"Updated filters: {self.instrument.filters.filter_codes}")
 
     @classmethod
     def from_library(
@@ -5302,7 +5300,6 @@ class GalaxySimulator(object):
                 logger.info("Overriding internal library name from provided file path.")
                 grid_name = os.path.basename(grid_dir).replace(".hdf5", "").replace(".h5", "")
                 grid_dir = os.path.dirname(grid_dir)
-
             grid = Grid(grid_name, grid_dir)  # new_lam=lam)
 
             # Step 2. Make instrument
@@ -5316,7 +5313,7 @@ class GalaxySimulator(object):
             except Exception:
                 from astropy.cosmology import Planck18 as cosmo
 
-                print("Failed to load cosmology from HDF5. Using Planck18 instead.")
+                logger.warning("Failed to load cosmology from HDF5. Using Planck18 instead.")
 
             # Step 4 - Collect sfh_model
 
@@ -5352,7 +5349,7 @@ class GalaxySimulator(object):
                 emission_model_name = em_group.attrs["name"]
                 import synthesizer.emission_models as em
                 import synthesizer.emission_models.attenuation as dm
-                import synthesizer.emission_models.dust as dem
+                import synthesizer.emission_models.generators.dust as dem
                 from synthesizer.emission_models.stellar.pacman_model import (
                     PacmanEmissionNoEscapedNoDust,
                     PacmanEmissionNoEscapedWithDust,
@@ -5374,7 +5371,8 @@ class GalaxySimulator(object):
 
                 if emission_model is None:
                     raise ValueError(
-                        f"Emission model {emission_model_name} not found in synthesizer.emission_models. Cannot create GalaxySimulator."  # noqa: E501
+                        f"Emission model {emission_model_name} not found in synthesizer.emission_models. "  # noqa: E501
+                        "Cannot create GalaxySimulator."
                     )
 
                 if "dust_law" in em_group.attrs:
@@ -5413,7 +5411,8 @@ class GalaxySimulator(object):
 
                     if dust_emission_model is None:
                         raise ValueError(
-                            f"Dust emission model {dust_emission_model_name} not found in synthesizer.emission_models. Cannot create from_library."  # noqa: E501
+                            f"Dust emission model {dust_emission_model_name} not found"
+                            " in synthesizer.emission_models. Cannot create from_library."
                         )
 
                     dust_emission_model_params = {}
@@ -5431,8 +5430,8 @@ class GalaxySimulator(object):
                             dust_emission_model_params[key] = value
                     cmb = dust_emission_model_params.pop("cmb_factor", None)
                     dust_emission_model_params.pop("temperature_z", None)
-                    if cmb is not None:
-                        dust_emission_model_params["cmb_heating"] = cmb != 1
+                    # if cmb is not None:
+                    #    dust_emission_model_params["cmb_heating"] = cmb != 1
                     dust_emission_model = dust_emission_model(**dust_emission_model_params)
                 else:
                     dust_emission_model = None
@@ -5464,7 +5463,6 @@ class GalaxySimulator(object):
                     emission_model_params["dust_emission"] = dust_emission_model
                     emission_model_params.pop("dust_emission_model", None)
 
-                print("params:", emission_model_params)
                 emission_model = emission_model(
                     grid=grid,
                     **emission_model_params,
@@ -6197,10 +6195,10 @@ class LibraryCreator:
         nparams = self.parameter_grid.shape[0]
         nobs = self.observation_grid.shape[0]
 
-        print(f"Number of parameters: {nparams}")
-        print(f"Number of observations: {nobs}")
-        print(f"Num rows in parameter library: {self.parameter_grid.shape[1]}")
-        print(f"Num rows in observation library: {self.observation_grid.shape[1]}")
+        logger.info(f"Number of parameters: {nparams}")
+        logger.info(f"Number of observations: {nobs}")
+        logger.info(f"Num rows in parameter library: {self.parameter_grid.shape[1]}")
+        logger.info(f"Num rows in observation library: {self.observation_grid.shape[1]}")
 
         assert self.parameter_grid.shape[0] == len(self.parameter_names), (
             "Number of rows in parameter_grid must match length of parameter_names."
