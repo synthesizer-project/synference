@@ -3354,6 +3354,7 @@ class SBI_Fitter:
                     plot_name=f"{self.name}_SED_{pos}",
                     simulator=simulator,
                     extra_parameters=extra_parameters,
+                    verbose=False,
                 )
                 try:
                     id = table["ID"][pos]
@@ -5723,6 +5724,7 @@ class SBI_Fitter:
         fig=None,
         ax=None,
         ax_sfh=None,
+        verbose=True,
     ):
         """Recover the SED for a given observation, if a simulator is provided.
 
@@ -5809,7 +5811,7 @@ class SBI_Fitter:
         if isinstance(simulator, GalaxySimulator) or True:  # This is broken somehow??
             simulator.output_type = ["photo_fnu", "fnu", "sfh"]
             simulator.out_flux_unit = "nJy"
-            for i in trange(num_samples, desc="Running simulator on samples"):
+            for i in trange(num_samples, desc="Running simulator on samples", disable=not verbose):
                 if isinstance(samples, dict):
                     params = {key: samples[key][i] for key in samples.keys()}
                 else:
