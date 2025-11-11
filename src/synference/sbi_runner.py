@@ -5544,8 +5544,6 @@ class SBI_Fitter:
             for lo, hi, name in zip(low, high, self.fitted_parameter_names[idx_to_drop]):
                 prior.add_parameter(name, dist=(lo, hi))
 
-            print(prior)
-
             sampler = nautilus.Sampler(prior, log_likelihood, **sampler_kwargs)
             sampler.run(verbose=True)
 
