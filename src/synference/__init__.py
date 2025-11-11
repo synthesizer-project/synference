@@ -10,7 +10,7 @@ from .utils import (
     timeout_handler, TimeoutException, create_sqlite_db, f_jy_err_to_asinh, create_database_universal,
     f_jy_to_asinh, check_scaling, detect_outliers, compare_methods_feature_importance,
     analyze_feature_contributions, optimize_sfh_xlimit, make_serializable, setup_mpi_named_logger, move_to_device,
-    asinh_err_to_f_jy
+    asinh_err_to_f_jy, download_test_data, test_data_dir
 )
 # Set up logging
 logger = setup_mpi_named_logger("synference", level=logging.INFO)
@@ -110,4 +110,6 @@ __all__ = [
     "setup_mpi_named_logger",
     "move_to_device",
     "create_database_universal",
+    "download_test_data",
+    "test_data_dir",
 ]

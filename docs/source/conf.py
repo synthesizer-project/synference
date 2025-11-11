@@ -80,7 +80,7 @@ html_theme_options = {
     "sidebar_hide_name": True,
 }
 
-html_title = "synference"
+html_title = "Synference"
 
 ignore_pattern = ["basic_model.py"]
 
