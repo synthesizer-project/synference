@@ -94,7 +94,7 @@ This will build a local copy of the documentation representative of the currentl
 
 ## Contributing to the Documentation
 
-The synference documentation is written in a combination of reStructuredText, Jupyter notebooks and Python scripts.
+The Synference documentation is written in a combination of reStructuredText, Jupyter notebooks and Python scripts.
 Adding content should be relatively simple if you follow the instructions below.
 
 ### Adding notebooks

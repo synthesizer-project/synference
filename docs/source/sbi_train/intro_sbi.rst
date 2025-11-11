@@ -1,6 +1,8 @@
 Training SBI Models
 *******************
 
+In this section, we provide an overview of the various methods for training Simulation-Based Inference (SBI) models in Synference. Training an SBI model is a crucial step in the simulation-based inference workflow, as it allows us to learn the relationship between model parameters and synthetic observables from a library of pre-computed simulations or via online learning.
+
 .. toctree::
    :maxdepth: 2
 
