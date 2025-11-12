@@ -3,6 +3,8 @@ Synference
 
 Synference is an open-source python package for SED fitting of photometric and spectroscopic data using Simulation-Based Inference (SBI) methods. It is part of the broader `Synthesizer project <https://synthesizer-project.github.io/>`_, which aims to provide tools for generating and analyzing synthetic astronomical observables.
 
+The aim of Synference is to make the SBI approach to SED fitting more accessible to those without experience with machine learning or SBI. Synference provides a :math:`10^3-10^5` speed-up over conventional Bayesian SED fitting tools whilst retaining robust Bayesian posteriors, and Synthesizer provides a rapid and flexible forward model for generating training data (or you can :doc:`bring your own! <../library_gen/bring_your_own_library>`).
+
 This documentation provides a broad overview of the various components in Synference and how they interact.
 The `Getting Started guide <getting_started/getting_started>`_ contains download and installation instructions, as well as an overview of the code.
 
