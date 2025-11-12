@@ -8,7 +8,7 @@ Synference therefore provides tools to generate a 'library' of pre-computed simu
 Normal use of Synference uses the 'Synthesizer' package to generate synthetic observables from a set of input parameters. The Synthesizer package provides a high-level interface to a variety of underlying astrophysical simulation codes, and can generate a wide range of synthetic observables including photometric fluxes, spectra, and images. The full Synthesizer documentation can be found `here <https://synthesizer-project.github.io/synthesizer/>`_, but we provide a brief crash course below.
 
 .. toctree::
-   :maxdepth: 2
+   :maxdepth: 1
 
    synthesizer_crash_course
    basic_library_generation

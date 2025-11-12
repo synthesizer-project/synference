@@ -18,11 +18,19 @@ Synference requires Python 3.10 or higher. It is recommended to use the latest s
 Installing from PyPI (Recommended)
 ##################################
 
-To install Synference, you can use pip (not yet!):
+To install Synference, you can use install directly from the PyPI repository:
 
 .. code-block:: bash
 
    pip install synference
+
+Additionally you will currently have to install `LtU-ILI https://ltu-ili.readthedocs.io/en/latest/install.html` separately, as it can't be included as a dependency. This can be achieved simply as follows:
+
+.. code-block:: bash
+
+    git clone https://github.com/maho3/ltu-ili.git
+    cd ltu-ili
+    pip install ".[pytorch]"
 
 
 Installing from Source 
