@@ -210,6 +210,7 @@ class DepthUncertaintyModel(UncertaintyModel):
 
 class SpectralUncertaintyModel(UncertaintyModel):
     """Applies uncertanties to a spectrum based on a fixed error kernel or a provided table."""
+
     def __init__(self, error_kernel: np.ndarray, **kwargs: Any):
         """Initializes the model with a fixed error kernel.
 
@@ -240,7 +241,7 @@ class SpectralUncertaintyModel(UncertaintyModel):
             return noisy_flux, self.error_kernel
 
         return noisy_flux
-    
+
     def serialize_to_hdf5(self, hdf5_group: h5py.Group):
         """Serializes the model to an HDF5 group."""
         attrs = hdf5_group.attrs
@@ -256,7 +257,6 @@ class SpectralUncertaintyModel(UncertaintyModel):
             error_kernel=error_kernel,
             return_noise=hdf5_group.attrs["return_noise"],
         )
-    
 
 
 class EmpiricalUncertaintyModel(UncertaintyModel, ABC):
@@ -321,7 +321,7 @@ class EmpiricalUncertaintyModel(UncertaintyModel, ABC):
 
     def plot(self, ax: Optional[plt.Axes] = None):
         """Plots the binned median error and standard deviation."""
-        fig, ax = plt.subplots() if ax is None else (None, ax)
+        fig, ax = plt.subplots() if ax is None else (ax.get_figure(), ax)
         if self.bin_centers is None or len(self.bin_centers) < 2:
             raise AttributeError("Binned data not found. Cannot plot.")
 
@@ -335,10 +335,14 @@ class EmpiricalUncertaintyModel(UncertaintyModel, ABC):
             alpha=0.7,
         )
 
-        ax.set_xlabel("Flux")
+        f = "Flux"
+        if isinstance(self, AsinhEmpiricalUncertaintyModel):
+            f = "Mag [asinh]"
+
+        ax.set_xlabel(f)
         ax.set_ylabel("Error")
         ax.legend()
-        plt.show()
+        return fig
 
     def _create_interpolators(self):
         if self.bin_centers is None or len(self.bin_centers) < 2:
