@@ -41,13 +41,21 @@ These dependencies will be automatically installed when you install Synference u
 
 ### Installation
 
-The easiest way to currently install Synference is to clone the repository and install it in editable mode:
+The easiest way to currently install Synference is from the PyPI repository.
+
+```bash
+pip install synference
+```
+
+If you want the latest development version you can also clone the repository and install it in editable mode:
 
 ```bash
 git clone https://www.github.com/synthesizer-project/synference.git
 cd synference
 pip install -e .
 ```
+
+Note that due to PyPI restrictions you will have to install [LtU-ILI](https://ltu-ili.readthedocs.io/en/latest/install.html) separately, as it can't be included as a dependency.
 
 ### Getting Started
 

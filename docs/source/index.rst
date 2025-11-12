@@ -15,7 +15,7 @@ Contents
 --------
 
 .. toctree::
-   :maxdepth: 2
+   :maxdepth: 1
    
    getting_started/getting_started
    sbi/introduction_to_sbi
