@@ -25,8 +25,9 @@ Contents
    posterior_inference/intro
    advanced_topics/advanced_topics
    FAQ/FAQ
-   auto_examples/index
    API
+   .. auto_examples/index
+
 
 Citation & Acknowledgement
 --------------------------

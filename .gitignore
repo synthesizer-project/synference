@@ -50,6 +50,7 @@ uv.lock
 
 __marimo__
 layouts
+docs/source/advanced_topics/config.yaml
 
 tests/test_output/*
 tests/test_grids/*
