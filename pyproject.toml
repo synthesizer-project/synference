@@ -1,6 +1,6 @@
 [project]
 name = "synference"
-version = "0.1.0"
+version = "0.1.1"
 description = "Simulation-based inference for SED-fitting of galaxy photometry and spectroscopy"
 license = {file = "LICENSE.md"}
 readme = "README.md"
