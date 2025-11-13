@@ -1507,7 +1507,7 @@ class GalaxyBasis:
 
     If however you are sampling on a grid, or want dependent priors, you can instead
     pass in a few basis SFHs, redshifts, and metallicity distributions, and then
-    the class will generate a grid of galaxies by combining every combination of
+    the class will generate a library of galaxies by combining every combination of
     SFH, redshift, and metallicity distributions. This can reduce the number of
     galaxies created.
     """
@@ -1568,9 +1568,9 @@ class GalaxyBasis:
             E.g. max_age may be dependent on redshift, so we don't want to include it
                 in the varying parameters as the model can learn this.
         build_library : bool, optional
-            If True, build the grid of galaxies, by default False.
+            If True, build the library of galaxies, by default False.
             If False, assume all dimensions of parameters are the same size and
-            build the grid from the parameters. I.e don't generate combinations of
+            build the library from the parameters. I.e don't generate combinations of
             parameters, just use the parameters as they are.
         """
         if galaxy_params is None:
@@ -1626,7 +1626,7 @@ class GalaxyBasis:
                     self.galaxy_params[key] = self.process_priors(value)
 
         if not build_library:
-            logger.info("Generating grid directly from provided parameter samples.")
+            logger.info("Generating library directly from provided parameter samples.")
         elif self.redshift_dependent_sfh:
             # Check if the SFHs have a redshift attribute
             for sfh in self.sfhs:
@@ -1880,7 +1880,7 @@ class GalaxyBasis:
             All metallicity distributions are the same underlying ZDist class.
             Single emission model class.
             We understand emitter parameters and can store them.
-            We can store the grid path and filter names.
+            We can store the library path and filter names.
             We can serialize alt_parametrizations.
 
         If the model is simple enough, we can store in HDF5 and
@@ -2053,24 +2053,28 @@ class GalaxyBasis:
             # store emission model parameters
             em_model_params = save_emission_model(self.emission_model)
 
-            em_group.attrs["parameter_keys"] = em_model_params["fixed_parameter_keys"]
-            em_group.attrs["parameter_values"] = em_model_params["fixed_parameter_values"]
-            # if it can be an int or float, store as such
-            em_group.attrs["parameter_units"] = em_model_params["fixed_parameter_units"]
+            try:
+                em_group.attrs["parameter_keys"] = em_model_params["fixed_parameter_keys"]
+                em_group.attrs["parameter_values"] = em_model_params["fixed_parameter_values"]
+                # if it can be an int or float, store as such
+                em_group.attrs["parameter_units"] = em_model_params["fixed_parameter_units"]
 
-            if em_model_params["dust_law"] is not None:
-                em_group.attrs["dust_law"] = em_model_params["dust_law"]
-                em_group.attrs["dust_attenuation_keys"] = em_model_params["dust_attenuation_keys"]
-                em_group.attrs["dust_attenuation_values"] = em_model_params[
-                    "dust_attenuation_values"
-                ]
-                em_group.attrs["dust_attenuation_units"] = em_model_params["dust_attenuation_units"]
+                if em_model_params["dust_law"] is not None:
+                    em_group.attrs["dust_law"] = em_model_params["dust_law"]
+                    em_group.attrs["dust_attenuation_keys"] = em_model_params["dust_attenuation_keys"]
+                    em_group.attrs["dust_attenuation_values"] = em_model_params[
+                        "dust_attenuation_values"
+                    ]
+                    em_group.attrs["dust_attenuation_units"] = em_model_params["dust_attenuation_units"]
 
-            if em_model_params["dust_emission"] is not None:
-                em_group.attrs["dust_emission"] = em_model_params["dust_emission"]
-                em_group.attrs["dust_emission_keys"] = em_model_params["dust_emission_keys"]
-                em_group.attrs["dust_emission_values"] = em_model_params["dust_emission_values"]
-                em_group.attrs["dust_emission_units"] = em_model_params["dust_emission_units"]
+                if em_model_params["dust_emission"] is not None:
+                    em_group.attrs["dust_emission"] = em_model_params["dust_emission"]
+                    em_group.attrs["dust_emission_keys"] = em_model_params["dust_emission_keys"]
+                    em_group.attrs["dust_emission_values"] = em_model_params["dust_emission_values"]
+                    em_group.attrs["dust_emission_units"] = em_model_params["dust_emission_units"]
+            except Exception as e:
+                print(em_model_params["dust_emission_keys"],  em_model_params["dust_emission_values"])
+                logger.critical(f'Error saving emission model to library: {e}, {em_model_params}')
 
             # Store a version of astropy cosmo
             cosmo_yaml = self.cosmo.to_format("yaml")
@@ -3081,7 +3085,7 @@ $\\log_{{10}}(M_\\star/M_\\odot)$: {np.log10(mass):.1f}"""
             model, you can a direct str: callable pair, which will add a new
             parameter to the model based on the callable function.
         compile_grid : bool, optional
-            If True, compiles the grid after processing,
+            If True, compiles the library after processing,
             by default True.
         multi_node : bool, optional
             If True, runs the processing in parallel across multiple nodes,
@@ -3149,7 +3153,7 @@ $\\log_{{10}}(M_\\star/M_\\odot)$: {np.log10(mass):.1f}"""
 
         if compile_grid:
             # Make code wait until all bases are processed
-            logger.info("Compiling the grid after processing bases.")
+            logger.info("Compiling the library after processing bases.")
 
             if cat_type == "photometry":
                 combined_basis.create_library(overwrite=overwrite)
@@ -3970,12 +3974,12 @@ class CombinedBasis:
             self.save_library(out, overload_out_name=out_name, overwrite=overwrite)
 
     def _validate_library(self, library_dict: dict, check_type="photometry") -> None:
-        """Validate the grid dictionary.
+        """Validate the library dictionary.
 
         Parameters
         ----------
         library_dict : dict
-            Dictionary containing the grid data.
+            Dictionary containing the library data.
             Expected keys are 'photometry', 'parameters', 'parameter_names',
             and 'filter_codes'.
         check_type : str, optional
@@ -4031,12 +4035,12 @@ class CombinedBasis:
         overwrite: bool = False,
         library_params_to_save=["model_name"],
     ) -> None:
-        """Save the grid to a file.
+        """Save the library to a file.
 
         Parameters
         ----------
         library_dict : dict
-            Dictionary containing the grid data.
+            Dictionary containing the library data.
             Expected keys are 'photometry', 'parameters', 'parameter_names',
             and 'filter_codes'.
 
@@ -4068,7 +4072,7 @@ class CombinedBasis:
             os.remove(full_out_path)
         # Create a new HDF5 file
         with h5py.File(full_out_path, "w") as f:
-            # Create a group for the grid data
+            # Create a group for the library data
             library_group = f.create_group("Grid")
             # Create datasets for the photometry and parameters
             if "photometry" in library_dict:
@@ -4095,7 +4099,7 @@ class CombinedBasis:
             f.attrs["ParameterNames"] = library_dict["parameter_names"]
             try:
                 f.attrs["FilterCodes"] = library_dict["filter_codes"]
-            except OSError:
+            except (OSError, RuntimeError):
                 # HDF5 has a limit on string length for attributes
                 # Save as a dataset instead
                 library_group.create_dataset(
@@ -4160,7 +4164,7 @@ class CombinedBasis:
         Parameters
         ----------
         index : int
-            Index of the galaxy in the grid.
+            Index of the galaxy in the library.
         show : bool, optional
             If True, shows the plot. Defaults to True.
         save : bool, optional
@@ -4355,17 +4359,17 @@ class CombinedBasis:
         self,
         file_path: str,
     ) -> dict:
-        """Load the grid from a file.
+        """Load the library from a file.
 
         Parameters
         ----------
         file_path : str
-            Path to the HDF5 file containing the grid data.
+            Path to the HDF5 file containing the library data.
 
         Returns:
         -------
         dict
-            Dictionary containing the grid data.
+            Dictionary containing the library data.
         """
         with h5py.File(file_path, "r") as f:
             if isinstance(f.attrs["FilterCodes"], (bytes, str)) and str(
@@ -4448,9 +4452,9 @@ class CombinedBasis:
         override_instrument : Instrument, optional
             If provided, use these filters instead of those in the bases
         save : bool, default=True
-            Whether to save the grid to disk
+            Whether to save the library to disk
         overload_out_name : str, default=''
-            Custom filename for saving the grid
+            Custom filename for saving the library
         overwrite : bool, default=False
             Whether to overwrite existing files
         """
@@ -4895,16 +4899,16 @@ class CombinedBasis:
         Parameters
         ----------
         save : bool, optional
-            If True, saves the grid to a file.
+            If True, saves the library to a file.
         overload_out_name : str, optional
-            If provided, overrides the output name for the grid.
+            If provided, overrides the output name for the library.
         overwrite : bool, optional
             If True, overwrites the existing grid file if it exists.
 
         Returns:
         -------
         dict
-            A dictionary containing the grid of SEDs, photometry, and properties.
+            A dictionary containing the library of SEDs, photometry, and properties.
         """
         return self.create_full_library(
             override_instrument=None,
@@ -5228,43 +5232,43 @@ class GalaxySimulator(object):
         Parameters
         ----------
         library_path : str
-            Path to the grid file in HDF5 format.
+            Path to the library file in HDF5 format.
         override_synthesizer_grid_dir : Union[None, str], optional
             If provided, this directory will override the synthesizer grid directory
-            specified in the grid file. This is useful for using a model
+            specified in the library file. This is useful for using a model
             on a different computer or environment where the grid directory
-            is not the same as the one used to create the grid file.
+            is not the same as the one used to create the library file.
             If True, and the library_dir saved in the file does not exist,
             it will check for a synthesizer_grid_DIR environment variable
-            and use that as the grid directory. If a string is provided,
+            and use that as the library directory. If a string is provided,
             it will use that as the grid directory.
         override_emission_model : Union[None, EmissionModel], optional
-            If provided, this emission model will override the one in the grid file.
+            If provided, this emission model will override the one in the library file.
         **kwargs : dict
             Additional keyword arguments to pass to the GalaxySimulator constructor.
 
         Returns:
         -------
         GalaxySimulator
-            An instance of GalaxySimulator initialized with the grid data.
+            An instance of GalaxySimulator initialized with the library data.
         """
-        # Open h5py, look for 'Model' and instatiate by reading the grid.
+        # Open h5py, look for 'Model' and instatiate by reading the library.
 
         if not os.path.exists(library_path):
             raise FileNotFoundError(
-                f"Grid path {library_path} does not exist. Cannot create GalaxySimulator."
+                f"Library path {library_path} does not exist. Cannot create GalaxySimulator."
             )
 
         with h5py.File(library_path, "r") as f:
             if "Model" not in f:
                 raise ValueError(
-                    f"""Grid file {library_path} does not contain 'Model' group.
+                    f"""Library file {library_path} does not contain 'Model' group.
                     Cannot create GalaxySimulator."""
                 )
 
             model_group = f["Model"]
 
-            # Step 1. Make grid
+            # Step 1. Make library
             lam = unyt_array(
                 model_group["Instrument/Filters/Header/Wavelengths"][:], units=Angstrom
             )
@@ -6102,7 +6106,7 @@ class LibraryCreator:
     Parameters
     -----------
     model_name : str
-        Name of the model/grid.
+        Name of the model/library.
     parameter_names : List[str]
         List of parameter names.
     parameter_grid : np.ndarray
