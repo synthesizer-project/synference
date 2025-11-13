@@ -43,10 +43,7 @@ This will load the model from the specified path and move it to the CPU for infe
 What other SBI tools are available for SED fitting and more generally for galaxy inference?
 --------------------------------------------------------------------------------------------
 
-There are a number of great tools out there for specific applications of SBI.
-This is not an exhaustive list (and feel free to suggest more), but below
-we've collated some of the useful tools we've found. Please cite the
-relevant papers if you use these tools. 
+There are a number of great tools out there for specific applications of SBI. This is not an exhaustive list (and feel free to suggest more), but below we've collated some of the useful tools we've found. Please cite the relevant papers if you use these tools. 
 
 1. `SBIPIX <https://github.com/patriglesias/SBIPIX/>`_ - Published
    `here <https://ui.adsabs.harvard.edu/abs/2025arXiv250604336I/abstract>`_.
