@@ -3,17 +3,19 @@ Synference
 
 Synference is an open-source python package for SED fitting of photometric and spectroscopic data using Simulation-Based Inference (SBI) methods. It is part of the broader `Synthesizer project <https://synthesizer-project.github.io/>`_, which aims to provide tools for generating and analyzing synthetic astronomical observables.
 
+The aim of Synference is to make the SBI approach to SED fitting more accessible to those without experience with machine learning or SBI. Synference provides a :math:`10^3-10^5` speed-up over conventional Bayesian SED fitting tools whilst retaining robust Bayesian posteriors, and Synthesizer provides a rapid and flexible forward model for generating training data (or you can :doc:`bring your own! <../library_gen/bring_your_own_library>`).
+
 This documentation provides a broad overview of the various components in Synference and how they interact.
 The `Getting Started guide <getting_started/getting_started>`_ contains download and installation instructions, as well as an overview of the code.
 
-For detailed examples of what synference can do, take a look at the `Examples <auto_examples/index>`_ page.
+For detailed examples of what Synference can do, take a look at the `Examples <auto_examples/index>`_ page.
 A full description of the code base is provided in the `API <API>`_.
 
 Contents
 --------
 
 .. toctree::
-   :maxdepth: 2
+   :maxdepth: 1
    
    getting_started/getting_started
    sbi/introduction_to_sbi
@@ -23,13 +25,14 @@ Contents
    posterior_inference/intro
    advanced_topics/advanced_topics
    FAQ/FAQ
-   auto_examples/index
    API
+   .. auto_examples/index
+
 
 Citation & Acknowledgement
 --------------------------
 
-Please cite **all** of the following papers if you use synference in your research. Harvey et al. 2025 (in prep.) introduces the synference code, `Lovell et al. 2025 <https://ui.adsabs.harvard.edu/abs/2025arXiv250803888L/abstract>`_ & `Roper et al. 2025 <https://ui.adsabs.harvard.edu/abs/2025arXiv250615811R/abstract>`_ introduce the synthesizer code, and `Ho et al. 2024 <https://ui.adsabs.harvard.edu/abs/2024OJAp....7E..54H/abstract>`_ introduces the LtU-ILI framework.
+Please cite **all** of the following papers if you use Synference in your research. Harvey et al. 2025 (in prep.) introduces the Synference code, `Lovell et al. 2025 <https://ui.adsabs.harvard.edu/abs/2025arXiv250803888L/abstract>`_ & `Roper et al. 2025 <https://ui.adsabs.harvard.edu/abs/2025arXiv250615811R/abstract>`_ introduce the Synthesizer code, and `Ho et al. 2024 <https://ui.adsabs.harvard.edu/abs/2024OJAp....7E..54H/abstract>`_ introduces the LtU-ILI framework.
 
 .. code-block:: bibtex
 
@@ -97,4 +100,4 @@ Primary Contributors
 License
 -------
 
-synference is free software made available under the GNU General Public License v3.0. For details see the `LICENSE <https://github.com/synthesizer-project/synference/blob/main/LICENSE.md>`_.
+Synference is free software made available under the GNU General Public License v3.0. For details see the `LICENSE <https://github.com/synthesizer-project/synference/blob/main/LICENSE.md>`_.

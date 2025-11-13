@@ -23,6 +23,10 @@ try:
 except (ImportError, RuntimeError):
     spectres = None
 
+try:
+    from synthesizer import get_data_dir
+except ImportError:
+    get_data_dir = lambda: os.path.dirname(__file__)  # noqa: E731
 
 try:
     import plotext as plo
@@ -850,7 +854,8 @@ def save_emission_model(model):
 
     if "dust_emission" in model._models:
         dust_em = model._models["dust_emission"].generator
-        dust_emission_keys.update(dust_em.__dict__)
+        settable_params = dust_em.__annotations__
+        dust_emission_keys.update({param:getattr(dust_em, param) for param in settable_params.keys()})
         dust_emission_model = type(dust_em).__name__
     else:
         dust_emission_model = None
@@ -2779,3 +2784,23 @@ def interval_sharpness(
 
     # Return negative interval score so tighter intervals are closer to zero
     return -float(np.mean(scores))
+
+
+def download_test_data():
+    """Downloads test data for Synference using the synference-download CLI tool."""
+    import subprocess
+
+    data_dir = get_data_dir() / "synference"
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    # Download the test data
+    subprocess.run(
+        ["synference-download", "--test", "--destination", f"{str(data_dir)}"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    print(f"Test data downloaded to {data_dir}")
+
+
+test_data_dir = get_data_dir() / "synference"

@@ -40,4 +40,22 @@ A: You can load a previously trained model using the `SBI_Fitter.load_saved_mode
 
 This will load the model from the specified path and move it to the CPU for inference. You can then use this model to perform inference on new data. The model can be trained on GPU and then loaded on CPU for inference as shown above.
 
+What other SBI tools are available for SED fitting and more generally for galaxy inference?
+--------------------------------------------------------------------------------------------
+
+There are a number of great tools out there for specific applications of SBI. This is not an exhaustive list (and feel free to suggest more), but below we've collated some of the useful tools we've found. Please cite the relevant papers if you use these tools. 
+
+1. `SBIPIX <https://github.com/patriglesias/SBIPIX/>`_ - Published
+   `here <https://ui.adsabs.harvard.edu/abs/2025arXiv250604336I/abstract>`_.
+   Specifically for pixel-level inference from galaxy images, this
+   package provides pretrained models as well as the ability to train
+   your own models.
+2. `SBI++ <https://github.com/wangbingjie/sbi_pp>`_ - Published
+   `here <https://ui.adsabs.harvard.edu/abs/2023ApJ...952L..10W/abstract>`_,
+   this tool demonstrates a SBI workflow for SED fitting which can deal
+   with out of distribution noise and missing data.
+3. `SBI-SFHs <https://github.com/patriglesias/SBI_SFHs>`_ - Published
+   `here <https://www.aanda.org/articles/aa/abs/2024/09/aa49909-24/aa49909-24.html>`_
+   this tool recovers galaxy SFHS from spectroscopy.
+
 

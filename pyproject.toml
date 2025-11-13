@@ -1,6 +1,6 @@
 [project]
 name = "synference"
-version = "0.1.0"
+version = "0.1.1"
 description = "Simulation-based inference for SED-fitting of galaxy photometry and spectroscopy"
 license = {file = "LICENSE.md"}
 readme = "README.md"
@@ -52,6 +52,7 @@ dependencies = [
     "lampe",
     "cosmos-synthesizer",
     "scikit-learn",
+    "tarp",
     "sbi>=0.22.0",
     "h5py",
     "optuna",
@@ -106,6 +107,10 @@ docs = [
 "Bug Reports" = "https://github.com/synthesizer-project/synference/issues"
 "Source" = "https://github.com/synthesizer-project/synference"
 "Documentation" = "https://synthesizer-project.github.io/synference/"
+
+# Entry points
+[project.scripts]
+synference-download-data="synference.utils:download_test_data"
 
 [build-system]
 requires = ["hatchling"]

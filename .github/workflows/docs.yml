@@ -42,16 +42,18 @@ jobs:
           python -m pip install --upgrade pip
           pip install wheel
           sudo apt install pandoc
+          pip install "cosmos-synthesizer@git+https://github.com/synthesizer-project/synthesizer.git"
           pip install .[test,docs]
-          pip install "dense_basis@git+https://github.com/kartheikiyer/dense_basis"
+          pip install "dense_basis@git+https://github.com/kartheikiyer/dense_basis.git"
           pip install "ltu_ili@git+https://github.com/maho3/ltu-ili.git"
+          pip install "cosmos-synthesizer@git+https://github.com/synthesizer-project/synthesizer.git#egg=synthesizer"
           pip install pytest-xdist  # enable parallel pytest execution
       - name: Download test data
         run: |
           # Download test grid data 
           mkdir -p data/libraries/
           synthesizer-download --test-grids --dust-grid
-          synference-download --test
+          python -c "from synference.utils import download_test_data; download_test_data()"
       - name: Sphinx Build
         run: |
           # Test sphinx build (runs all notebooks)
