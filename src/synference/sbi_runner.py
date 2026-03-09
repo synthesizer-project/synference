@@ -6413,16 +6413,24 @@ class SBI_Fitter:
             single = True
 
         # --- Batched direct path ---
-        # For multiple observations with a DirectSampler we use the progressive
-        # batch-shrinkage algorithm which avoids both the min-gating problem and
-        # the per-observation batch-size cap present in sbi's sample_batched.
-        if sample_method == "direct" and not single and hasattr(sampler, "sample_batched"):
-            samples = sampler.sample_batched(
-                nsteps=num_samples,
-                x=X_test_array.cpu().numpy(),
-                samples_per_draw=samples_per_draw,
+        # For multiple observations use sbi's sample_batched, which now has two
+        # bugs fixed in the underlying accept_reject_sample:
+        #   1. Min-gating: num_remaining is now tracked per-observation so the
+        #      loop terminates as soon as all observations have enough samples,
+        #      not when the cumulative minimum catches up.
+        #   2. Batch-size cap: the 100_000 // num_xos cap in DirectPosterior has
+        #      been removed so GPU throughput is not artificially throttled.
+        # For MCMC / VI methods or a single observation, fall through to the
+        # serial loop below.
+        if sample_method == "direct" and not single:
+            x_batched = X_test_array  # already on self.device
+            raw = posteriors.sample_batched(
+                (num_samples,),
+                x=x_batched,
                 show_progress_bars=True,
             )
+            # sample_batched returns (num_samples, N, theta_dim); transpose to (N, num_samples, theta_dim)
+            samples = raw.permute(1, 0, 2).detach().cpu().numpy()
             return samples
 
         # --- Serial fallback (MCMC / VI / single observation) ---
