@@ -6356,6 +6356,7 @@ class SBI_Fitter:
         num_samples: int = 1000,
         timeout_seconds_per_test=30,
         log_times=False,
+        samples_per_draw: int = 5_000,
         **kwargs,
     ) -> np.ndarray:
         """Sample from the posterior distribution.
@@ -6368,7 +6369,13 @@ class SBI_Fitter:
             posteriors: List of posterior distributions. If None, will use the stored
                 posteriors.
             num_samples: Number of samples to draw from the posterior.
-            timeout_seconds_per_test: Timeout in seconds for each test sample.
+            timeout_seconds_per_test: Timeout in seconds for each test sample
+                (only used in serial fallback path).
+            log_times: Log per-galaxy sampling times (serial path only).
+            samples_per_draw: Candidate samples drawn per active observation per
+                iteration in the batched direct path.  Larger values increase GPU
+                utilisation at the cost of memory.  Only used when
+                ``sample_method='direct'`` and more than one observation is given.
 
         Returns:
             A numpy array of samples drawn from the posterior distribution.
@@ -6402,54 +6409,36 @@ class SBI_Fitter:
         # Handle single sample case
         single = False
         if X_test_array.ndim == 1 or (X_test_array.ndim == 2 and X_test_array.shape[0] == 1):
-            # Just ensure shape is correct
             X_test_array = torch.unsqueeze(X_test_array, 0)
             single = True
-            # print("Single sample inference.")
-            # return sample_with_timeout(sampler, num_samples, X_test_array,
-            #                                   timeout_seconds_per_test)
 
-        # ISSUE! sample_batched seems to be much slower than sampling one by one!
-        """
-        if hasattr(posteriors, "sample_batched"):
-            X_test_array = torch.squeeze(X_test_array)
-            samples = (
-                posteriors.sample_batched((1,), x=X_test_array, show_progress_bars=True)
-                .detach()
-                .cpu()
-                .numpy()
-            )  # noqa E501
-            samples = np.transpose(samples, (1, 0, 2))
+        # --- Batched direct path ---
+        # For multiple observations with a DirectSampler we use the progressive
+        # batch-shrinkage algorithm which avoids both the min-gating problem and
+        # the per-observation batch-size cap present in sbi's sample_batched.
+        if sample_method == "direct" and not single and hasattr(sampler, "sample_batched"):
+            samples = sampler.sample_batched(
+                nsteps=num_samples,
+                x=X_test_array.cpu().numpy(),
+                samples_per_draw=samples_per_draw,
+                show_progress_bars=True,
+            )
             return samples
-        """
 
-        # Handle multiple samples case
+        # --- Serial fallback (MCMC / VI / single observation) ---
         shape = len(self.fitted_parameter_names)
-        # test_sample = sample_with_timeout(
-        #    sampler, num_samples, X_test_array[0], timeout_seconds_per_test
-        # )
-        # shape = test_sample.shape
 
         if log_times:
             times = []
-        # Draw samples from the posterior
         samples = np.zeros((len(X_test_array), num_samples, shape))
-        # samples[0] = test_sample  # First sample is already drawn
         for i in trange(0, len(X_test_array), desc="Sampling from posterior"):
             start_time = time.time()
             try:
-                # print(X_test_array[i])
                 samples[i] = sampler.sample(nsteps=num_samples, x=X_test_array[i], progress=False)
-                """samples[i] = sample_with_timeout(
-                    sampler,
-                    num_samples,
-                    X_test_array[i],
-                    timeout_seconds_per_test,
-                )"""
             except TimeoutException:
                 logger.error(
-                    f"""Timeout exceeded for sample {i}.
-                    Returning empty array for this sample."""
+                    f"Timeout exceeded for sample {i}. "
+                    "Returning empty array for this sample."
                 )
                 samples[i] = np.nan
             except KeyboardInterrupt:
