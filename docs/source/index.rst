@@ -32,9 +32,28 @@ Contents
 Citation & Acknowledgement
 --------------------------
 
-Please cite **all** of the following papers if you use Synference in your research. Harvey et al. 2025 (in prep.) introduces the Synference code, `Lovell et al. 2025 <https://ui.adsabs.harvard.edu/abs/2025arXiv250803888L/abstract>`_ & `Roper et al. 2025 <https://ui.adsabs.harvard.edu/abs/2025arXiv250615811R/abstract>`_ introduce the Synthesizer code, and `Ho et al. 2024 <https://ui.adsabs.harvard.edu/abs/2024OJAp....7E..54H/abstract>`_ introduces the LtU-ILI framework.
+Please cite **all** of the following papers if you use Synference in your research. `Harvey et al. 2026 <https://arxiv.org/abs/2511.10640>`_ introduces the Synference code, `Lovell et al. 2025 <https://ui.adsabs.harvard.edu/abs/2025arXiv250803888L/abstract>`_ & `Roper et al. 2026 <https://ui.adsabs.harvard.edu/abs/2025arXiv250615811R/abstract>`_ introduce the Synthesizer code, and `Ho et al. 2024 <https://ui.adsabs.harvard.edu/abs/2024OJAp....7E..54H/abstract>`_ introduces the LtU-ILI framework.
 
 .. code-block:: bibtex
+
+      @ARTICLE{2026MNRAS.547ag282H,
+             author = {{Harvey}, Thomas and {Lovell}, Christopher C. and {Newman}, Sophie and {Conselice}, Christopher J. and {Austin}, Duncan and {Roper}, William J. and {Vijayan}, Aswin P. and {Wilkins}, Stephen M. and {Iglesias-Navarro}, Patricia and {Rusakov}, Vadim and {Li}, Qiong and {Adams}, Nathan and {Magdwick}, Kai and {Goolsby}, Caio M. and {Huertas-Company}, Marc and {Ho}, Matthew},
+              title = "{Flexible simulation-based inference for galaxy photometric fitting with synthesizer}",
+            journal = {\mnras},
+           keywords = {methods: data analysis, techniques: photometric, galaxies: photometry, galaxies: stellar content, Astrophysics of Galaxies, Cosmology and Nongalactic Astrophysics, Instrumentation and Methods for Astrophysics},
+               year = 2026,
+              month = mar,
+             volume = {547},
+             number = {1},
+                eid = {stag282},
+              pages = {stag282},
+                doi = {10.1093/mnras/stag282},
+      archivePrefix = {arXiv},
+             eprint = {2511.10640},
+       primaryClass = {astro-ph.GA},
+             adsurl = {https://ui.adsabs.harvard.edu/abs/2026MNRAS.547ag282H},
+            adsnote = {Provided by the SAO/NASA Astrophysics Data System}
+      }
 
       @ARTICLE{2025OJAp....8E.152L,
             author = {{Lovell}, Christopher C. and {Roper}, William J. and {Vijayan}, Aswin P. and {Wilkins}, Stephen M. and {Newman}, Sophie and {Seeyave}, Louise},
@@ -54,19 +73,22 @@ Please cite **all** of the following papers if you use Synference in your resear
             adsnote = {Provided by the SAO/NASA Astrophysics Data System}
       }
 
-      @ARTICLE{2025arXiv250615811R,
-         author = {{Roper}, Will J. and {Lovell}, Christopher and {Vijayan}, Aswin and {Wilkins}, Stephen and {Akins}, Hollis and {Berger}, Sabrina and {Sant Fournier}, Connor and {Harvey}, Thomas and {Iyer}, Kartheik and {Leonardi}, Marco and {Newman}, Sophie and {Pautasso}, Borja and {Perry}, Ashley and {Seeyave}, Louise and {Sommovigo}, Laura},
-          title = "{Synthesizer: Synthetic Observables For Modern Astronomy}",
-        journal = {arXiv e-prints},
-       keywords = {Instrumentation and Methods for Astrophysics, Astrophysics of Galaxies},
-           year = 2025,
-          month = jun,
-            eid = {arXiv:2506.15811},
-          pages = {arXiv:2506.15811},
+      @ARTICLE{2026JOSS...11.9436R,
+             author = {{Roper}, Will and {Lovell}, Christopher and {Vijayan}, Aswin and {Wilkins}, Stephen and {Akins}, Hollis and {Berger}, Sabrina and {Sant Fournier}, Connor and {Harvey}, Thomas and {Iyer}, Kartheik and {Leonardi}, Marco and {Newman}, Sophie and {Pautasso}, Borja and {Perry}, Ashley and {Seeyave}, Louise and {Sommovigo}, Laura and {Punyasheel}, Paurush and {Aufan Stoffels d'Hautefort}, Adrien and {Rawlings}, Alex},
+              title = "{Synthesizer: Synthetic Observables for Modern Astronomy}",
+            journal = {The Journal of Open Source Software},
+           keywords = {astronomy, astrophysics, forward modelling, simulations, Python, C++, C, Instrumentation and Methods for Astrophysics, Astrophysics of Galaxies},
+               year = 2026,
+              month = mar,
+             volume = {11},
+             number = {119},
+                eid = {9436},
+              pages = {9436},
+                doi = {10.21105/joss.09436},
       archivePrefix = {arXiv},
              eprint = {2506.15811},
        primaryClass = {astro-ph.IM},
-             adsurl = {https://ui.adsabs.harvard.edu/abs/2025arXiv250615811R},
+             adsurl = {https://ui.adsabs.harvard.edu/abs/2026JOSS...11.9436R},
             adsnote = {Provided by the SAO/NASA Astrophysics Data System}
       }
 
