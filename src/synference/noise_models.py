@@ -1144,9 +1144,7 @@ class _ScoreNetwork(nn.Module):
         layers.append(nn.Linear(hidden_dim, n_filters))
         self.net = nn.Sequential(*layers)
 
-    def forward(
-        self, x: torch.Tensor, t: torch.Tensor, m: torch.Tensor
-    ) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, t: torch.Tensor, m: torch.Tensor) -> torch.Tensor:
         """Compute score estimate sχ(x, t; m).
 
         Args:
@@ -1205,6 +1203,7 @@ class ScoreBasedUncertaintyModel(UncertaintyModel):
         device: Optional[str] = None,
         **kwargs: Any,
     ):
+        """Initializes the score-based uncertainty model."""
         super().__init__(**kwargs)
         self.n_filters = n_filters
         self.hidden_dim = hidden_dim
@@ -1219,9 +1218,7 @@ class ScoreBasedUncertaintyModel(UncertaintyModel):
             device = "cuda" if torch.cuda.is_available() else "cpu"
         self.device = device
 
-        self.score_net = _ScoreNetwork(
-            n_filters, hidden_dim, n_layers, time_embed_dim
-        ).to(device)
+        self.score_net = _ScoreNetwork(n_filters, hidden_dim, n_layers, time_embed_dim).to(device)
 
         # Normalisation statistics (populated during fit)
         self._ln_sigma_mean: Optional[torch.Tensor] = None
@@ -1240,13 +1237,9 @@ class ScoreBasedUncertaintyModel(UncertaintyModel):
 
     def _alpha(self, t: torch.Tensor) -> torch.Tensor:
         """Cumulative noise ∫₀ᵗ β(s)ds."""
-        return self.beta_min * t + (t**2 / (2.0 * self.T)) * (
-            self.beta_max - self.beta_min
-        )
+        return self.beta_min * t + (t**2 / (2.0 * self.T)) * (self.beta_max - self.beta_min)
 
-    def _marginal_params(
-        self, t: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _marginal_params(self, t: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Transition kernel parameters p(xₜ|x₀) = N(s(t)x₀, σ²(t)I).
 
         Returns:
@@ -1281,8 +1274,8 @@ class ScoreBasedUncertaintyModel(UncertaintyModel):
         flux_uncertainties: np.ndarray,
         n_epochs: int = 2000,
         batch_size: int = 512,
-        learning_rate: float = 1e-3,
-        t_eps: float = 1e-3,
+        learning_rate: float = 3e-4,
+        t_eps: float = 1e-2,
         valid_fraction: float = 0.1,
         patience: int = 50,
         verbose: bool = True,
@@ -1311,23 +1304,16 @@ class ScoreBasedUncertaintyModel(UncertaintyModel):
             History dict with keys ``"train_loss"`` and ``"val_loss"``.
         """
         if magnitudes.ndim != 2 or magnitudes.shape[1] != self.n_filters:
-            raise ValueError(
-                f"magnitudes must be (N, {self.n_filters}), got {magnitudes.shape}"
-            )
+            raise ValueError(f"magnitudes must be (N, {self.n_filters}), got {magnitudes.shape}")
         if flux_uncertainties.shape != magnitudes.shape:
-            raise ValueError(
-                "flux_uncertainties must have the same shape as magnitudes."
-            )
+            raise ValueError("flux_uncertainties must have the same shape as magnitudes.")
         if np.any(flux_uncertainties <= 0):
             warnings.warn(
-                "flux_uncertainties contains non-positive values; "
-                "these rows will be discarded."
+                "flux_uncertainties contains non-positive values; these rows will be discarded."
             )
 
         ln_sigma = np.log(flux_uncertainties)
-        valid = np.all(
-            np.isfinite(ln_sigma) & np.isfinite(magnitudes), axis=1
-        )
+        valid = np.all(np.isfinite(ln_sigma) & np.isfinite(magnitudes), axis=1)
         magnitudes = magnitudes[valid]
         ln_sigma = ln_sigma[valid]
 
@@ -1354,20 +1340,15 @@ class ScoreBasedUncertaintyModel(UncertaintyModel):
         idx = rng.permutation(N)
         val_idx, train_idx = idx[:n_val], idx[n_val:]
 
-        x_train = torch.tensor(
-            ln_sigma_norm[train_idx], dtype=torch.float32, device=self.device
-        )
-        m_train = torch.tensor(
-            mag_norm[train_idx], dtype=torch.float32, device=self.device
-        )
-        x_val = torch.tensor(
-            ln_sigma_norm[val_idx], dtype=torch.float32, device=self.device
-        )
-        m_val = torch.tensor(
-            mag_norm[val_idx], dtype=torch.float32, device=self.device
-        )
+        x_train = torch.tensor(ln_sigma_norm[train_idx], dtype=torch.float32, device=self.device)
+        m_train = torch.tensor(mag_norm[train_idx], dtype=torch.float32, device=self.device)
+        x_val = torch.tensor(ln_sigma_norm[val_idx], dtype=torch.float32, device=self.device)
+        m_val = torch.tensor(mag_norm[val_idx], dtype=torch.float32, device=self.device)
 
         optimizer = torch.optim.Adam(self.score_net.parameters(), lr=learning_rate)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, factor=0.5, patience=10, min_lr=1e-5
+        )
 
         history: Dict[str, List[float]] = {"train_loss": [], "val_loss": []}
         best_val_loss = float("inf")
@@ -1392,12 +1373,15 @@ class ScoreBasedUncertaintyModel(UncertaintyModel):
                 x_t = s.unsqueeze(-1) * x0 + sigma.unsqueeze(-1) * eps
 
                 score = self.score_net(x_t, t, m)
-                # DSM loss: E[‖sχ + ε/σ‖²]
+                # σ²-weighted DSM loss (Song et al. 2021 eq. 7); upweights
+                # large-t and bounds the contribution from small-t where
+                # the unweighted target -ε/σ diverges.
                 target = -eps / sigma.unsqueeze(-1)
-                loss = ((score - target) ** 2).mean()
+                loss = (sigma.unsqueeze(-1) ** 2 * (score - target) ** 2).mean()
 
                 optimizer.zero_grad()
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.score_net.parameters(), max_norm=1.0)
                 optimizer.step()
 
                 epoch_loss += loss.item()
@@ -1409,32 +1393,31 @@ class ScoreBasedUncertaintyModel(UncertaintyModel):
             if epoch % 10 == 0:
                 self.score_net.eval()
                 with torch.no_grad():
-                    t_v = (
-                        torch.rand(len(x_val), device=self.device)
-                        * (self.T - t_eps)
-                        + t_eps
-                    )
+                    t_v = torch.rand(len(x_val), device=self.device) * (self.T - t_eps) + t_eps
                     s_v, sigma_v = self._marginal_params(t_v)
                     eps_v = torch.randn_like(x_val)
                     x_t_v = s_v.unsqueeze(-1) * x_val + sigma_v.unsqueeze(-1) * eps_v
                     score_v = self.score_net(x_t_v, t_v, m_val)
                     val_loss = (
-                        ((score_v + eps_v / sigma_v.unsqueeze(-1)) ** 2).mean().item()
+                        (
+                            sigma_v.unsqueeze(-1) ** 2
+                            * (score_v + eps_v / sigma_v.unsqueeze(-1)) ** 2
+                        )
+                        .mean()
+                        .item()
                     )
 
                 history["val_loss"].append(val_loss)
+                scheduler.step(val_loss)
 
                 if verbose:
                     print(
-                        f"Epoch {epoch:5d}/{n_epochs}  "
-                        f"train={train_loss:.4f}  val={val_loss:.4f}"
+                        f"Epoch {epoch:5d}/{n_epochs}  train={train_loss:.4f}  val={val_loss:.4f}"
                     )
 
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
-                    best_state = {
-                        k: v.clone() for k, v in self.score_net.state_dict().items()
-                    }
+                    best_state = {k: v.clone() for k, v in self.score_net.state_dict().items()}
                     patience_counter = 0
                 else:
                     patience_counter += 1
@@ -1475,9 +1458,7 @@ class ScoreBasedUncertaintyModel(UncertaintyModel):
                 scalar (1-row) input with n_samples=1.
         """
         if not self._is_trained:
-            raise RuntimeError(
-                "Model must be trained before sampling. Call fit() first."
-            )
+            raise RuntimeError("Model must be trained before sampling. Call fit() first.")
 
         scalar_input = magnitudes.ndim == 1
         if scalar_input:
@@ -1503,9 +1484,7 @@ class ScoreBasedUncertaintyModel(UncertaintyModel):
 
         for i in range(n_steps):
             t_val = times[i].item()
-            t_tensor = torch.full(
-                (N * n_samples,), t_val, device=self.device, dtype=torch.float32
-            )
+            t_tensor = torch.full((N * n_samples,), t_val, device=self.device, dtype=torch.float32)
             beta_t = self._beta(t_tensor)  # (N*S,)
             score = self.score_net(x, t_tensor, mag_norm)
 
@@ -1539,6 +1518,7 @@ class ScoreBasedUncertaintyModel(UncertaintyModel):
             magnitudes: (N, n_filters) calibrated model AB magnitudes used as
                 the conditioning variable m.
             n_steps: Reverse SDE steps for uncertainty sampling.
+            kwargs: Ignored, but accepted for compatibility with the base class.
 
         Returns:
             noisy_flux of shape (N, n_filters), or (noisy_flux, sigma) when
@@ -1550,9 +1530,7 @@ class ScoreBasedUncertaintyModel(UncertaintyModel):
                 f"keyword arguments {list(kwargs.keys())} which will be ignored."
             )
 
-        sigma = self.sample_uncertainty(
-            magnitudes, n_samples=1, n_steps=n_steps
-        )  # (N, n_filters)
+        sigma = self.sample_uncertainty(magnitudes, n_samples=1, n_steps=n_steps)  # (N, n_filters)
         noise = np.random.normal(0.0, sigma)
         noisy_flux = flux + noise
 
@@ -1582,12 +1560,8 @@ class ScoreBasedUncertaintyModel(UncertaintyModel):
         if not self._is_trained:
             return
 
-        hdf5_group.create_dataset(
-            "ln_sigma_mean", data=self._ln_sigma_mean.cpu().numpy()
-        )
-        hdf5_group.create_dataset(
-            "ln_sigma_std", data=self._ln_sigma_std.cpu().numpy()
-        )
+        hdf5_group.create_dataset("ln_sigma_mean", data=self._ln_sigma_mean.cpu().numpy())
+        hdf5_group.create_dataset("ln_sigma_std", data=self._ln_sigma_std.cpu().numpy())
         hdf5_group.create_dataset("mag_mean", data=self._mag_mean.cpu().numpy())
         hdf5_group.create_dataset("mag_std", data=self._mag_std.cpu().numpy())
 
@@ -1598,9 +1572,7 @@ class ScoreBasedUncertaintyModel(UncertaintyModel):
             weights_group.create_dataset(safe_key, data=tensor.cpu().numpy())
 
     @classmethod
-    def _from_hdf5_group(
-        cls, hdf5_group: h5py.Group
-    ) -> "ScoreBasedUncertaintyModel":
+    def _from_hdf5_group(cls, hdf5_group: h5py.Group) -> "ScoreBasedUncertaintyModel":
         """Loads a ScoreBasedUncertaintyModel from an HDF5 group."""
         attrs = hdf5_group.attrs
         instance = cls(
@@ -1628,17 +1600,13 @@ class ScoreBasedUncertaintyModel(UncertaintyModel):
         instance._mag_mean = torch.tensor(
             hdf5_group["mag_mean"][:], dtype=torch.float32, device=dev
         )
-        instance._mag_std = torch.tensor(
-            hdf5_group["mag_std"][:], dtype=torch.float32, device=dev
-        )
+        instance._mag_std = torch.tensor(hdf5_group["mag_std"][:], dtype=torch.float32, device=dev)
 
         state_dict: Dict[str, torch.Tensor] = {}
         weights_group = hdf5_group["score_network_weights"]
         for safe_key in weights_group.keys():
             original_key = safe_key.replace("__", ".")
-            state_dict[original_key] = torch.tensor(
-                weights_group[safe_key][:], dtype=torch.float32
-            )
+            state_dict[original_key] = torch.tensor(weights_group[safe_key][:], dtype=torch.float32)
         instance.score_net.load_state_dict(state_dict)
         instance.score_net.to(dev)
         instance._is_trained = True
