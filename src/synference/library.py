@@ -1371,7 +1371,7 @@ def create_galaxy(
 
     param_stars = Stars(
         log10ages=grid.log10ages,
-        metallicities=grid.metallicity,
+        metallicities=grid.metallicities,
         sf_hist=sfh,
         metal_dist=metal_dist,
         initial_mass=single_mass,
@@ -5710,7 +5710,7 @@ class GalaxySimulator(object):
 
         stars = Stars(
             log10ages=self.grid.log10ages,
-            metallicities=self.grid.metallicity,
+            metallicities=self.grid.metallicities,
             sf_hist=sfh,
             metal_dist=zdist,
             initial_mass=mass,
