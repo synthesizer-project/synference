@@ -6,11 +6,13 @@ applying various photometric noise models.
 
 import warnings
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import h5py
 import matplotlib.pyplot as plt
 import numpy as np
+import torch
+import torch.nn as nn
 from astropy.table import Table
 from scipy import stats
 from scipy.interpolate import interp1d
@@ -1100,6 +1102,550 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
 
 
 # =============================================================================
+# SCORE-BASED DIFFUSION UNCERTAINTY MODEL
+# =============================================================================
+
+
+class _ScoreNetwork(nn.Module):
+    """Conditional score network sχ(x, t; m) for VP-SDE.
+
+    Five-layer densely-connected network with 256 units per layer and tanh
+    activations (Y. Song et al. 2021). The diffusion time t is embedded via a
+    two-layer MLP and concatenated with the noisy log-uncertainty x and the
+    conditioning magnitudes m before being passed through the main trunk.
+
+    Args:
+        n_filters: Dimensionality of x (and m).
+        hidden_dim: Width of each hidden layer.
+        n_layers: Number of hidden layers (paper: 5).
+        time_embed_dim: Dimension of the time embedding.
+    """
+
+    def __init__(
+        self,
+        n_filters: int,
+        hidden_dim: int = 256,
+        n_layers: int = 5,
+        time_embed_dim: int = 32,
+    ):
+        super().__init__()
+        self.time_embed = nn.Sequential(
+            nn.Linear(1, time_embed_dim),
+            nn.Tanh(),
+            nn.Linear(time_embed_dim, time_embed_dim),
+            nn.Tanh(),
+        )
+        input_dim = n_filters + n_filters + time_embed_dim
+        layers: List[nn.Module] = []
+        in_dim = input_dim
+        for _ in range(n_layers):
+            layers += [nn.Linear(in_dim, hidden_dim), nn.Tanh()]
+            in_dim = hidden_dim
+        layers.append(nn.Linear(hidden_dim, n_filters))
+        self.net = nn.Sequential(*layers)
+
+    def forward(
+        self, x: torch.Tensor, t: torch.Tensor, m: torch.Tensor
+    ) -> torch.Tensor:
+        """Compute score estimate sχ(x, t; m).
+
+        Args:
+            x: Noisy log-uncertainty (batch, n_filters).
+            t: Diffusion time, shape (batch,).
+            m: Conditioning magnitudes (batch, n_filters).
+
+        Returns:
+            Score estimate, shape (batch, n_filters).
+        """
+        t_emb = self.time_embed(t.float().view(-1, 1))
+        return self.net(torch.cat([x, m, t_emb], dim=-1))
+
+
+class ScoreBasedUncertaintyModel(UncertaintyModel):
+    """Multi-filter photometric uncertainty model via VP-SDE score diffusion.
+
+    Implements the model P(ln σ_P | m) from A24, where σ_P is the per-filter
+    flux uncertainty and m is the vector of calibrated model magnitudes.  A
+    conditional score network sχ(x, t; m) is trained by denoising score
+    matching (Y. Song & S. Ermon 2019; Y. Song et al. 2021) using a VP SDE:
+
+        dx = −½ β(t) x dt + √β(t) dw,  β(t) = βmin + (t/T)(βmax − βmin)
+
+    with βmin = 0.1, βmax = 20.0, T = 1.0 (J. Ho et al. 2020).
+
+    The network is a five-layer densely-connected network with 256 units per
+    layer and tanh activations, optimised with Adam (D. P. Kingma & J. Ba 2015).
+
+    Unlike the per-filter empirical models, this model operates on ALL filters
+    jointly, capturing cross-filter correlations in the noise.
+
+    Args:
+        n_filters: Number of photometric filters.
+        hidden_dim: Hidden layer width (paper: 256).
+        n_layers: Number of hidden layers (paper: 5).
+        time_embed_dim: Dimension of the time-embedding MLP output.
+        beta_min: Minimum noise schedule value β_min (paper: 0.1).
+        beta_max: Maximum noise schedule value β_max (paper: 20.0).
+        T: Terminal diffusion time (paper: 1.0).
+        n_sampling_steps: Euler-Maruyama steps for the reverse SDE.
+        device: PyTorch device string. Defaults to CUDA if available.
+        return_noise: If True, apply_noise returns (noisy_flux, sigma).
+    """
+
+    def __init__(
+        self,
+        n_filters: int,
+        hidden_dim: int = 256,
+        n_layers: int = 5,
+        time_embed_dim: int = 32,
+        beta_min: float = 0.1,
+        beta_max: float = 20.0,
+        T: float = 1.0,
+        n_sampling_steps: int = 500,
+        device: Optional[str] = None,
+        **kwargs: Any,
+    ):
+        super().__init__(**kwargs)
+        self.n_filters = n_filters
+        self.hidden_dim = hidden_dim
+        self.n_layers = n_layers
+        self.time_embed_dim = time_embed_dim
+        self.beta_min = beta_min
+        self.beta_max = beta_max
+        self.T = T
+        self.n_sampling_steps = n_sampling_steps
+
+        if device is None:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = device
+
+        self.score_net = _ScoreNetwork(
+            n_filters, hidden_dim, n_layers, time_embed_dim
+        ).to(device)
+
+        # Normalisation statistics (populated during fit)
+        self._ln_sigma_mean: Optional[torch.Tensor] = None
+        self._ln_sigma_std: Optional[torch.Tensor] = None
+        self._mag_mean: Optional[torch.Tensor] = None
+        self._mag_std: Optional[torch.Tensor] = None
+        self._is_trained: bool = False
+
+    # ------------------------------------------------------------------
+    # VP-SDE helpers
+    # ------------------------------------------------------------------
+
+    def _beta(self, t: torch.Tensor) -> torch.Tensor:
+        """Noise schedule β(t) = βmin + (t/T)(βmax − βmin)."""
+        return self.beta_min + (t / self.T) * (self.beta_max - self.beta_min)
+
+    def _alpha(self, t: torch.Tensor) -> torch.Tensor:
+        """Cumulative noise ∫₀ᵗ β(s)ds."""
+        return self.beta_min * t + (t**2 / (2.0 * self.T)) * (
+            self.beta_max - self.beta_min
+        )
+
+    def _marginal_params(
+        self, t: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Transition kernel parameters p(xₜ|x₀) = N(s(t)x₀, σ²(t)I).
+
+        Returns:
+            s: Scale factor exp(−α(t)/2), shape matching t.
+            sigma: Standard deviation √(1 − exp(−α(t))), shape matching t.
+        """
+        A = self._alpha(t)
+        s = torch.exp(-0.5 * A)
+        sigma = torch.sqrt(torch.clamp(1.0 - torch.exp(-A), min=1e-8))
+        return s, sigma
+
+    # ------------------------------------------------------------------
+    # Normalisation helpers
+    # ------------------------------------------------------------------
+
+    def _normalise_ln_sigma(self, ln_sigma: torch.Tensor) -> torch.Tensor:
+        return (ln_sigma - self._ln_sigma_mean) / (self._ln_sigma_std + 1e-8)
+
+    def _denormalise_ln_sigma(self, z: torch.Tensor) -> torch.Tensor:
+        return z * self._ln_sigma_std + self._ln_sigma_mean
+
+    def _normalise_mag(self, mag: torch.Tensor) -> torch.Tensor:
+        return (mag - self._mag_mean) / (self._mag_std + 1e-8)
+
+    # ------------------------------------------------------------------
+    # Training
+    # ------------------------------------------------------------------
+
+    def fit(
+        self,
+        magnitudes: np.ndarray,
+        flux_uncertainties: np.ndarray,
+        n_epochs: int = 2000,
+        batch_size: int = 512,
+        learning_rate: float = 1e-3,
+        t_eps: float = 1e-3,
+        valid_fraction: float = 0.1,
+        patience: int = 50,
+        verbose: bool = True,
+    ) -> Dict[str, List[float]]:
+        """Train the score network on catalog (magnitudes, flux uncertainties).
+
+        The model learns P(ln σ_P | m) via denoising score matching.  Inputs
+        are standardised per-filter before training; the statistics are stored
+        for use at inference time.
+
+        Args:
+            magnitudes: (N, n_filters) AB magnitudes (calibrated model mags).
+            flux_uncertainties: (N, n_filters) flux uncertainties in Jy
+                (must be strictly positive).
+            n_epochs: Maximum number of training epochs.
+            batch_size: Mini-batch size.
+            learning_rate: Adam initial learning rate.
+            t_eps: Minimum diffusion time (avoids t → 0 singularity).
+            valid_fraction: Fraction of data held out for validation /
+                early stopping.
+            patience: Early-stopping patience measured in validation-check
+                intervals (one check every 10 epochs).
+            verbose: Print training progress.
+
+        Returns:
+            History dict with keys ``"train_loss"`` and ``"val_loss"``.
+        """
+        if magnitudes.ndim != 2 or magnitudes.shape[1] != self.n_filters:
+            raise ValueError(
+                f"magnitudes must be (N, {self.n_filters}), got {magnitudes.shape}"
+            )
+        if flux_uncertainties.shape != magnitudes.shape:
+            raise ValueError(
+                "flux_uncertainties must have the same shape as magnitudes."
+            )
+        if np.any(flux_uncertainties <= 0):
+            warnings.warn(
+                "flux_uncertainties contains non-positive values; "
+                "these rows will be discarded."
+            )
+
+        ln_sigma = np.log(flux_uncertainties)
+        valid = np.all(
+            np.isfinite(ln_sigma) & np.isfinite(magnitudes), axis=1
+        )
+        magnitudes = magnitudes[valid]
+        ln_sigma = ln_sigma[valid]
+
+        if len(magnitudes) < 2:
+            raise ValueError("Too few valid training samples after filtering.")
+
+        # Per-filter normalisation statistics
+        ln_sigma_mean = ln_sigma.mean(axis=0).astype(np.float32)
+        ln_sigma_std = ln_sigma.std(axis=0).astype(np.float32)
+        mag_mean = magnitudes.mean(axis=0).astype(np.float32)
+        mag_std = magnitudes.std(axis=0).astype(np.float32)
+
+        self._ln_sigma_mean = torch.tensor(ln_sigma_mean, device=self.device)
+        self._ln_sigma_std = torch.tensor(ln_sigma_std, device=self.device)
+        self._mag_mean = torch.tensor(mag_mean, device=self.device)
+        self._mag_std = torch.tensor(mag_std, device=self.device)
+
+        ln_sigma_norm = (ln_sigma - ln_sigma_mean) / (ln_sigma_std + 1e-8)
+        mag_norm = (magnitudes - mag_mean) / (mag_std + 1e-8)
+
+        N = len(ln_sigma_norm)
+        n_val = max(1, int(N * valid_fraction))
+        rng = np.random.default_rng()
+        idx = rng.permutation(N)
+        val_idx, train_idx = idx[:n_val], idx[n_val:]
+
+        x_train = torch.tensor(
+            ln_sigma_norm[train_idx], dtype=torch.float32, device=self.device
+        )
+        m_train = torch.tensor(
+            mag_norm[train_idx], dtype=torch.float32, device=self.device
+        )
+        x_val = torch.tensor(
+            ln_sigma_norm[val_idx], dtype=torch.float32, device=self.device
+        )
+        m_val = torch.tensor(
+            mag_norm[val_idx], dtype=torch.float32, device=self.device
+        )
+
+        optimizer = torch.optim.Adam(self.score_net.parameters(), lr=learning_rate)
+
+        history: Dict[str, List[float]] = {"train_loss": [], "val_loss": []}
+        best_val_loss = float("inf")
+        best_state: Dict[str, torch.Tensor] = {}
+        patience_counter = 0
+
+        for epoch in range(n_epochs):
+            self.score_net.train()
+            perm = torch.randperm(len(x_train), device=self.device)
+            x_ep, m_ep = x_train[perm], m_train[perm]
+
+            epoch_loss = 0.0
+            n_batches = 0
+            for i in range(0, len(x_ep), batch_size):
+                x0 = x_ep[i : i + batch_size]
+                m = m_ep[i : i + batch_size]
+                B = len(x0)
+
+                t = torch.rand(B, device=self.device) * (self.T - t_eps) + t_eps
+                s, sigma = self._marginal_params(t)
+                eps = torch.randn_like(x0)
+                x_t = s.unsqueeze(-1) * x0 + sigma.unsqueeze(-1) * eps
+
+                score = self.score_net(x_t, t, m)
+                # DSM loss: E[‖sχ + ε/σ‖²]
+                target = -eps / sigma.unsqueeze(-1)
+                loss = ((score - target) ** 2).mean()
+
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+                epoch_loss += loss.item()
+                n_batches += 1
+
+            train_loss = epoch_loss / max(n_batches, 1)
+            history["train_loss"].append(train_loss)
+
+            if epoch % 10 == 0:
+                self.score_net.eval()
+                with torch.no_grad():
+                    t_v = (
+                        torch.rand(len(x_val), device=self.device)
+                        * (self.T - t_eps)
+                        + t_eps
+                    )
+                    s_v, sigma_v = self._marginal_params(t_v)
+                    eps_v = torch.randn_like(x_val)
+                    x_t_v = s_v.unsqueeze(-1) * x_val + sigma_v.unsqueeze(-1) * eps_v
+                    score_v = self.score_net(x_t_v, t_v, m_val)
+                    val_loss = (
+                        ((score_v + eps_v / sigma_v.unsqueeze(-1)) ** 2).mean().item()
+                    )
+
+                history["val_loss"].append(val_loss)
+
+                if verbose:
+                    print(
+                        f"Epoch {epoch:5d}/{n_epochs}  "
+                        f"train={train_loss:.4f}  val={val_loss:.4f}"
+                    )
+
+                if val_loss < best_val_loss:
+                    best_val_loss = val_loss
+                    best_state = {
+                        k: v.clone() for k, v in self.score_net.state_dict().items()
+                    }
+                    patience_counter = 0
+                else:
+                    patience_counter += 1
+                    if patience_counter >= patience:
+                        if verbose:
+                            print(f"Early stopping at epoch {epoch}.")
+                        break
+
+        if best_state:
+            self.score_net.load_state_dict(best_state)
+        self._is_trained = True
+        return history
+
+    # ------------------------------------------------------------------
+    # Inference
+    # ------------------------------------------------------------------
+
+    @torch.no_grad()
+    def sample_uncertainty(
+        self,
+        magnitudes: np.ndarray,
+        n_samples: int = 1,
+        n_steps: Optional[int] = None,
+        t_eps: float = 1e-3,
+    ) -> np.ndarray:
+        """Sample flux uncertainties via the reverse VP-SDE.
+
+        Args:
+            magnitudes: (N, n_filters) or (n_filters,) AB magnitudes.
+            n_samples: Number of independent samples per input row.
+            n_steps: Euler-Maruyama steps (default: self.n_sampling_steps).
+            t_eps: Minimum time to stop the reverse SDE at.
+
+        Returns:
+            sigma: Flux uncertainties in the units used during training.
+                Shape (N, n_samples, n_filters) when n_samples > 1,
+                (N, n_filters) when n_samples=1, or (n_filters,) for a
+                scalar (1-row) input with n_samples=1.
+        """
+        if not self._is_trained:
+            raise RuntimeError(
+                "Model must be trained before sampling. Call fit() first."
+            )
+
+        scalar_input = magnitudes.ndim == 1
+        if scalar_input:
+            magnitudes = magnitudes[np.newaxis]
+
+        N = len(magnitudes)
+        if n_steps is None:
+            n_steps = self.n_sampling_steps
+
+        mag_t = torch.tensor(magnitudes, dtype=torch.float32, device=self.device)
+        mag_norm = self._normalise_mag(mag_t)
+
+        # Tile conditioning for n_samples
+        mag_norm = mag_norm.repeat_interleave(n_samples, dim=0)  # (N*S, F)
+
+        # Initialise from the base density p(x(T)) ≈ N(0, I)
+        x = torch.randn(N * n_samples, self.n_filters, device=self.device)
+
+        self.score_net.eval()
+
+        dt = (self.T - t_eps) / n_steps  # positive step magnitude
+        times = torch.linspace(self.T, t_eps, n_steps + 1, device=self.device)
+
+        for i in range(n_steps):
+            t_val = times[i].item()
+            t_tensor = torch.full(
+                (N * n_samples,), t_val, device=self.device, dtype=torch.float32
+            )
+            beta_t = self._beta(t_tensor)  # (N*S,)
+            score = self.score_net(x, t_tensor, mag_norm)
+
+            # Reverse SDE Euler-Maruyama step (going backward from T to 0):
+            # x_{t−dt} = x + [β/2·x + β·score]·dt + √(β·dt)·z
+            drift = beta_t.unsqueeze(-1) / 2 * x + beta_t.unsqueeze(-1) * score
+            z = torch.randn_like(x)
+            x = x + drift * dt + torch.sqrt(beta_t * dt).unsqueeze(-1) * z
+
+        # Denormalise and exponentiate to recover σ
+        ln_sigma = self._denormalise_ln_sigma(x)
+        sigma = torch.exp(ln_sigma)
+        sigma_np = sigma.cpu().numpy().reshape(N, n_samples, self.n_filters)
+
+        if n_samples == 1:
+            sigma_np = sigma_np[:, 0, :]  # (N, F)
+
+        return sigma_np[0] if scalar_input else sigma_np
+
+    def apply_noise(
+        self,
+        flux: np.ndarray,
+        magnitudes: np.ndarray,
+        n_steps: Optional[int] = None,
+        **kwargs: Any,
+    ) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
+        """Sample uncertainties and apply Gaussian noise to flux.
+
+        Args:
+            flux: (N, n_filters) true flux array in the same units as training.
+            magnitudes: (N, n_filters) calibrated model AB magnitudes used as
+                the conditioning variable m.
+            n_steps: Reverse SDE steps for uncertainty sampling.
+
+        Returns:
+            noisy_flux of shape (N, n_filters), or (noisy_flux, sigma) when
+            self.return_noise is True.
+        """
+        if kwargs:
+            warnings.warn(
+                f"ScoreBasedUncertaintyModel.apply_noise received unexpected "
+                f"keyword arguments {list(kwargs.keys())} which will be ignored."
+            )
+
+        sigma = self.sample_uncertainty(
+            magnitudes, n_samples=1, n_steps=n_steps
+        )  # (N, n_filters)
+        noise = np.random.normal(0.0, sigma)
+        noisy_flux = flux + noise
+
+        if self.return_noise:
+            return noisy_flux, sigma
+        return noisy_flux
+
+    # ------------------------------------------------------------------
+    # Serialisation
+    # ------------------------------------------------------------------
+
+    def serialize_to_hdf5(self, hdf5_group: h5py.Group) -> None:
+        """Saves the model hyperparameters, normalisation stats, and weights."""
+        attrs = hdf5_group.attrs
+        attrs["__class__"] = self.__class__.__name__
+        attrs["n_filters"] = self.n_filters
+        attrs["hidden_dim"] = self.hidden_dim
+        attrs["n_layers"] = self.n_layers
+        attrs["time_embed_dim"] = self.time_embed_dim
+        attrs["beta_min"] = self.beta_min
+        attrs["beta_max"] = self.beta_max
+        attrs["T"] = self.T
+        attrs["n_sampling_steps"] = self.n_sampling_steps
+        attrs["return_noise"] = self.return_noise
+        attrs["is_trained"] = self._is_trained
+
+        if not self._is_trained:
+            return
+
+        hdf5_group.create_dataset(
+            "ln_sigma_mean", data=self._ln_sigma_mean.cpu().numpy()
+        )
+        hdf5_group.create_dataset(
+            "ln_sigma_std", data=self._ln_sigma_std.cpu().numpy()
+        )
+        hdf5_group.create_dataset("mag_mean", data=self._mag_mean.cpu().numpy())
+        hdf5_group.create_dataset("mag_std", data=self._mag_std.cpu().numpy())
+
+        weights_group = hdf5_group.create_group("score_network_weights")
+        for key, tensor in self.score_net.state_dict().items():
+            # Replace "." with "__" so the key is a valid flat HDF5 dataset name
+            safe_key = key.replace(".", "__")
+            weights_group.create_dataset(safe_key, data=tensor.cpu().numpy())
+
+    @classmethod
+    def _from_hdf5_group(
+        cls, hdf5_group: h5py.Group
+    ) -> "ScoreBasedUncertaintyModel":
+        """Loads a ScoreBasedUncertaintyModel from an HDF5 group."""
+        attrs = hdf5_group.attrs
+        instance = cls(
+            n_filters=int(attrs["n_filters"]),
+            hidden_dim=int(attrs["hidden_dim"]),
+            n_layers=int(attrs["n_layers"]),
+            time_embed_dim=int(attrs["time_embed_dim"]),
+            beta_min=float(attrs["beta_min"]),
+            beta_max=float(attrs["beta_max"]),
+            T=float(attrs["T"]),
+            n_sampling_steps=int(attrs["n_sampling_steps"]),
+            return_noise=bool(attrs["return_noise"]),
+        )
+
+        if not attrs.get("is_trained", False):
+            return instance
+
+        dev = instance.device
+        instance._ln_sigma_mean = torch.tensor(
+            hdf5_group["ln_sigma_mean"][:], dtype=torch.float32, device=dev
+        )
+        instance._ln_sigma_std = torch.tensor(
+            hdf5_group["ln_sigma_std"][:], dtype=torch.float32, device=dev
+        )
+        instance._mag_mean = torch.tensor(
+            hdf5_group["mag_mean"][:], dtype=torch.float32, device=dev
+        )
+        instance._mag_std = torch.tensor(
+            hdf5_group["mag_std"][:], dtype=torch.float32, device=dev
+        )
+
+        state_dict: Dict[str, torch.Tensor] = {}
+        weights_group = hdf5_group["score_network_weights"]
+        for safe_key in weights_group.keys():
+            original_key = safe_key.replace("__", ".")
+            state_dict[original_key] = torch.tensor(
+                weights_group[safe_key][:], dtype=torch.float32
+            )
+        instance.score_net.load_state_dict(state_dict)
+        instance.score_net.to(dev)
+        instance._is_trained = True
+        return instance
+
+
+# =============================================================================
 # SERIALIZATION FACTORY FUNCTIONS
 # =============================================================================
 
@@ -1107,6 +1653,7 @@ MODEL_CLASS_REGISTRY = {
     "DepthUncertaintyModel": DepthUncertaintyModel,
     "AsinhEmpiricalUncertaintyModel": AsinhEmpiricalUncertaintyModel,
     "GeneralEmpiricalUncertaintyModel": GeneralEmpiricalUncertaintyModel,
+    "ScoreBasedUncertaintyModel": ScoreBasedUncertaintyModel,
 }
 
 
