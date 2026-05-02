@@ -1393,19 +1393,18 @@ class ScoreBasedUncertaintyModel(UncertaintyModel):
             if epoch % 10 == 0:
                 self.score_net.eval()
                 with torch.no_grad():
-                    t_v = torch.rand(len(x_val), device=self.device) * (self.T - t_eps) + t_eps
-                    s_v, sigma_v = self._marginal_params(t_v)
-                    eps_v = torch.randn_like(x_val)
-                    x_t_v = s_v.unsqueeze(-1) * x_val + sigma_v.unsqueeze(-1) * eps_v
-                    score_v = self.score_net(x_t_v, t_v, m_val)
-                    val_loss = (
-                        (
+                    val_loss = 0.0
+                    for _ in range(5):
+                        t_v = torch.rand(len(x_val), device=self.device) * (self.T - t_eps) + t_eps
+                        s_v, sigma_v = self._marginal_params(t_v)
+                        eps_v = torch.randn_like(x_val)
+                        x_t_v = s_v.unsqueeze(-1) * x_val + sigma_v.unsqueeze(-1) * eps_v
+                        score_v = self.score_net(x_t_v, t_v, m_val)
+                        val_loss += (
                             sigma_v.unsqueeze(-1) ** 2
                             * (score_v + eps_v / sigma_v.unsqueeze(-1)) ** 2
-                        )
-                        .mean()
-                        .item()
-                    )
+                        ).mean().item()
+                    val_loss /= 5
 
                 history["val_loss"].append(val_loss)
                 scheduler.step(val_loss)
