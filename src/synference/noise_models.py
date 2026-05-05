@@ -1192,7 +1192,10 @@ class ScoreBasedUncertaintyModel:
         self.score_net = _RobustScoreNetwork(
             n_filters, hidden_dim, n_layers, time_embed_dim
         ).to(self.device)
-        
+
+        if self.device == "cuda":
+            self.score_net = torch.compile(self.score_net, mode="reduce-overhead")
+
         self.ema_net = AveragedModel(
             self.score_net, multi_avg_fn=get_ema_multi_avg_fn(0.999)
         )
@@ -1229,7 +1232,7 @@ class ScoreBasedUncertaintyModel:
         magnitudes: np.ndarray,
         flux_uncertainties: np.ndarray,
         n_epochs: int = 1000,
-        batch_size: int = 512,
+        batch_size: int = 4096,
         learning_rate: float = 3e-4,
         t_eps: float = 1e-2,
         valid_fraction: float = 0.1,
@@ -1270,6 +1273,7 @@ class ScoreBasedUncertaintyModel:
         m_val = torch.tensor(mag_norm[val_idx], dtype=torch.float32, device=self.device)
 
         optimizer = torch.optim.Adam(self.score_net.parameters(), lr=learning_rate)
+        scaler = torch.amp.GradScaler('cuda', enabled=(self.device == "cuda"))
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer, factor=0.5, patience=10, min_lr=1e-5
         )
@@ -1286,24 +1290,30 @@ class ScoreBasedUncertaintyModel:
 
             epoch_loss = 0.0
             n_batches = 0
-            for i in range(0, len(x_ep), batch_size):
-                x0 = x_ep[i : i + batch_size]
-                m = m_ep[i : i + batch_size]
+            n_full_batches = len(x_ep) // batch_size
+            for i in range(n_full_batches):
+                start = i * batch_size
+                x0 = x_ep[start:start + batch_size]
+                m = m_ep[start:start + batch_size]
                 B = len(x0)
 
                 t = torch.rand(B, device=self.device) * (self.T - t_eps) + t_eps
                 s, sigma = self._marginal_params(t)
                 eps = torch.randn_like(x0)
                 x_t = s.unsqueeze(-1) * x0 + sigma.unsqueeze(-1) * eps
-
-                score = self.score_net(x_t, t, m)
-                target = -eps / sigma.unsqueeze(-1)
-                loss = (sigma.unsqueeze(-1) ** 2 * (score - target) ** 2).mean()
-
+                
                 optimizer.zero_grad()
-                loss.backward()
+
+                with torch.amp.autocast('cuda', enabled=(self.device == "cuda"), dtype=torch.bfloat16):
+                    score = self.score_net(x_t, t, m)
+                    target = -eps / sigma.unsqueeze(-1)
+                    loss = (sigma.unsqueeze(-1) ** 2 * (score - target) ** 2).mean()
+
+                scaler.scale(loss).backward()
+                scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(self.score_net.parameters(), max_norm=1.0)
-                optimizer.step()
+                scaler.step(optimizer)
+                scaler.update()
                 self.ema_net.update_parameters(self.score_net)
 
                 epoch_loss += loss.item()
@@ -1314,7 +1324,7 @@ class ScoreBasedUncertaintyModel:
 
             if epoch % 10 == 0:
                 self.ema_net.eval()
-                with torch.no_grad():
+                with torch.no_grad(), torch.amp.autocast('cuda', enabled=(self.device == "cuda"), dtype=torch.bfloat16):
                     val_loss = 0.0
                     n_val_steps = 0
                     for i in range(0, len(x_val), batch_size):
@@ -1394,21 +1404,22 @@ class ScoreBasedUncertaintyModel:
         dt = (self.T - t_eps) / n_steps
         times = torch.linspace(self.T, t_eps, n_steps + 1, device=self.device)
 
-        for i in range(n_steps):
-            t_val = times[i].item()
-            t_tensor = torch.full((N * n_samples,), t_val, device=self.device, dtype=torch.float32)
-            beta_t = self._beta(t_tensor).unsqueeze(-1)
-            score = self.ema_net(x, t_tensor, mag_norm)
+        with torch.amp.autocast('cuda', enabled=(self.device == "cuda"), dtype=torch.bfloat16):
+            for i in range(n_steps):
+                t_val = times[i].item()
+                t_tensor = torch.full((N * n_samples,), t_val, device=self.device, dtype=torch.float32)
+                beta_t = self._beta(t_tensor).unsqueeze(-1)
+                score = self.ema_net(x, t_tensor, mag_norm)
 
-            if method == 'ode':
-                dx_dt = -0.5 * beta_t * (x + score)
-                x = x - dx_dt * dt
-            elif method == 'sde':
-                drift = (beta_t / 2) * x + beta_t * score
-                z = torch.randn_like(x)
-                x = x + drift * dt + torch.sqrt(beta_t * dt) * z
-            else:
-                raise ValueError(f"Unknown sampling method: {method}")
+                if method == 'ode':
+                    dx_dt = -0.5 * beta_t * (x + score)
+                    x = x - dx_dt * dt
+                elif method == 'sde':
+                    drift = (beta_t / 2) * x + beta_t * score
+                    z = torch.randn_like(x)
+                    x = x + drift * dt + torch.sqrt(beta_t * dt) * z
+                else:
+                    raise ValueError(f"Unknown sampling method: {method}")
 
         ln_sigma = self._denormalise_ln_sigma(x)
         sigma_np = torch.exp(ln_sigma).cpu().numpy().reshape(N, n_samples, self.n_filters)
@@ -1456,7 +1467,12 @@ class ScoreBasedUncertaintyModel:
         hdf5_group.create_dataset("mag_iqr", data=self._mag_iqr.cpu().numpy())
 
         weights_group = hdf5_group.create_group("score_network_weights")
-        for key, tensor in self.ema_net.module.state_dict().items():
+
+        underlying = self.ema_net.module
+        if hasattr(underlying, '_orig_mod'):
+            underlying = underlying._orig_mod
+
+        for key, tensor in underlying.state_dict().items():
             safe_key = key.replace(".", "__")
             weights_group.create_dataset(safe_key, data=tensor.cpu().numpy())
 
@@ -1488,8 +1504,12 @@ class ScoreBasedUncertaintyModel:
         for safe_key in weights_group.keys():
             original_key = safe_key.replace("__", ".")
             state_dict[original_key] = torch.tensor(weights_group[safe_key][:], dtype=torch.float32)
-            
-        instance.score_net.load_state_dict(state_dict)
+        
+        target = instance.score_net
+        if hasattr(target, '_orig_mod'):
+            target = target._orig_mod
+
+        target.load_state_dict(state_dict)
         instance.ema_net.module.load_state_dict(state_dict)
         instance.score_net.to(dev)
         instance.ema_net.to(dev)
