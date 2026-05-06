@@ -4,6 +4,8 @@ This module provides a robust and serializable framework for creating and
 applying various photometric noise models.
 """
 
+import json
+import math
 import warnings
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -12,12 +14,11 @@ import h5py
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-import math
 import torch.nn as nn
-from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
 from astropy.table import Table
 from scipy import stats
 from scipy.interpolate import interp1d
+from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
 from unyt import Jy, Unit, unyt_array
 
 from .utils import f_jy_err_to_asinh, f_jy_to_asinh
@@ -1109,11 +1110,37 @@ class GeneralEmpiricalUncertaintyModel(EmpiricalUncertaintyModel):
 
 
 class GaussianFourierProjection(nn.Module):
+    """Maps a scalar input to a sinusoidal random Fourier feature embedding.
+
+    Used to encode the diffusion time step into a fixed-dimensional vector
+    suitable for conditioning a neural network. Random frequencies are drawn
+    once at construction and kept fixed (non-trainable).
+    """
+
     def __init__(self, embed_dim: int, scale: float = 30.0):
+        """Initializes the projection with random Fourier frequencies.
+
+        Args:
+            embed_dim (int): Output embedding dimension. Must be even; the output
+                is formed by concatenating ``embed_dim // 2`` sin and cos features.
+            scale (float): Standard deviation of the Gaussian from which random
+                frequencies are drawn. Higher values encode higher-frequency
+                variation. Default is 30.0.
+        """
         super().__init__()
         self.W = nn.Parameter(torch.randn(embed_dim // 2) * scale, requires_grad=False)
-        
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Projects x into the sinusoidal embedding space.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape ``(..., 1)`` (e.g. diffusion
+                time steps, one per batch element).
+
+        Returns:
+            torch.Tensor: Embedding of shape ``(..., embed_dim)`` formed by
+                concatenating ``sin`` and ``cos`` projections along the last axis.
+        """
         x_proj = x * self.W[None, :] * 2 * math.pi
         return torch.cat([torch.sin(x_proj), torch.cos(x_proj)], dim=-1)
 
@@ -1123,7 +1150,7 @@ class _ResidualBlock(nn.Module):
         super().__init__()
         self.linear = nn.Linear(dim, dim)
         self.act = nn.SiLU()
-        
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return x + self.linear(self.act(x))
 
@@ -1140,35 +1167,43 @@ class _RobustScoreNetwork(nn.Module):
         self.time_embed = nn.Sequential(
             GaussianFourierProjection(embed_dim=time_embed_dim),
             nn.Linear(time_embed_dim, time_embed_dim),
-            nn.SiLU()
+            nn.SiLU(),
         )
-        
+
         input_dim = n_filters * 2 + time_embed_dim
         self.proj_in = nn.Linear(input_dim, hidden_dim)
-        
-        self.res_blocks = nn.ModuleList([
-            _ResidualBlock(hidden_dim) for _ in range(n_layers)
-        ])
-        
-        self.proj_out = nn.Sequential(
-            nn.SiLU(),
-            nn.Linear(hidden_dim, n_filters)
-        )
+
+        self.res_blocks = nn.ModuleList([_ResidualBlock(hidden_dim) for _ in range(n_layers)])
+
+        self.proj_out = nn.Sequential(nn.SiLU(), nn.Linear(hidden_dim, n_filters))
 
     def forward(self, x: torch.Tensor, t: torch.Tensor, m: torch.Tensor) -> torch.Tensor:
         t_emb = self.time_embed(t.unsqueeze(-1))
         h = self.proj_in(torch.cat([x, m, t_emb], dim=-1))
-        
+
         for block in self.res_blocks:
             h = block(h)
-            
+
         return self.proj_out(h)
 
 
 class ScoreBasedUncertaintyModel:
+    """Score-based diffusion model that learns the conditional uncertainty distribution p(σ|m).
+
+    Trains a neural score network on pairs of observed magnitudes and flux
+    uncertainties using a variance-preserving (VP) SDE with a linear beta
+    schedule. After training, draws photometric uncertainty samples by running
+    the reverse-time ODE or SDE, then uses those samples to corrupt input flux
+    arrays in the same way as the other noise models.
+
+    The model operates internally in log-uncertainty space and applies
+    IQR-based normalisation to both the uncertainty and magnitude features
+    before training, making it robust to outliers.
+    """
+
     def __init__(
         self,
-        n_filters: int,
+        filter_names: List[str],
         hidden_dim: int = 256,
         n_layers: int = 5,
         time_embed_dim: int = 64,
@@ -1178,6 +1213,27 @@ class ScoreBasedUncertaintyModel:
         device: Optional[str] = None,
         return_noise: bool = False,
     ):
+        """Initializes the score network, EMA wrapper, and SDE hyperparameters.
+
+        Args:
+            filter_names (List[str]): Ordered list of photometric band names
+                (e.g. ``["u", "g", "r", "i", "z"]``). The number of filters is
+                inferred as ``len(filter_names)`` and sets the input/output
+                dimensionality of the score network.
+            hidden_dim (int): Width of each hidden layer in the score network. Default 256.
+            n_layers (int): Number of residual blocks in the score network. Default 5.
+            time_embed_dim (int): Dimensionality of the Gaussian Fourier time embedding.
+                Default 64.
+            beta_min (float): Minimum noise schedule coefficient β(0). Default 0.1.
+            beta_max (float): Maximum noise schedule coefficient β(T). Default 20.0.
+            T (float): Total diffusion time horizon. Default 1.0.
+            device (Optional[str]): Torch device string (e.g. ``"cuda"``, ``"cpu"``).
+                Auto-detected from CUDA availability when ``None``.
+            return_noise (bool): If ``True``, ``apply_noise`` returns a tuple
+                ``(noisy_flux, sigma)`` instead of only the noisy flux. Default ``False``.
+        """
+        self.filter_names = list(filter_names)
+        n_filters = len(self.filter_names)
         self.n_filters = n_filters
         self.hidden_dim = hidden_dim
         self.n_layers = n_layers
@@ -1189,16 +1245,14 @@ class ScoreBasedUncertaintyModel:
 
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
 
-        self.score_net = _RobustScoreNetwork(
-            n_filters, hidden_dim, n_layers, time_embed_dim
-        ).to(self.device)
+        self.score_net = _RobustScoreNetwork(n_filters, hidden_dim, n_layers, time_embed_dim).to(
+            self.device
+        )
 
         if self.device == "cuda":
             self.score_net = torch.compile(self.score_net, mode="reduce-overhead")
 
-        self.ema_net = AveragedModel(
-            self.score_net, multi_avg_fn=get_ema_multi_avg_fn(0.999)
-        )
+        self.ema_net = AveragedModel(self.score_net, multi_avg_fn=get_ema_multi_avg_fn(0.999))
 
         self._ln_sigma_median: Optional[torch.Tensor] = None
         self._ln_sigma_iqr: Optional[torch.Tensor] = None
@@ -1243,8 +1297,49 @@ class ScoreBasedUncertaintyModel:
         n_val_t: int = 20,
         verbose: bool = True,
     ) -> Dict[str, List[float]]:
+        """Trains the score network on observed magnitudes and flux uncertainties.
+
+        Rows with non-positive or non-finite uncertainties are dropped before
+        training. Normalisation statistics (median and IQR) are computed from
+        the training set and stored on the instance for use during sampling.
+        An EMA of the score network weights is maintained throughout and used
+        for validation and sampling.
+
+        Args:
+            magnitudes (np.ndarray): Observed AB magnitudes, shape ``(N, n_filters)``.
+            flux_uncertainties (np.ndarray): Observed flux uncertainties (σ) in
+                Janskys, shape ``(N, n_filters)``. Must be positive and finite.
+            n_epochs (int): Maximum number of training epochs. Default 1000.
+            batch_size (int): Number of samples per gradient step. Default 1024.
+            learning_rate (float): Initial Adam learning rate. Default 3e-4.
+            t_eps (float): Minimum diffusion time to avoid numerical instability
+                near t=0. Default 1e-2.
+            valid_fraction (float): Fraction of data held out for validation.
+                Default 0.1.
+            patience (int): Number of validation evaluations without sufficient
+                improvement before early stopping triggers. Default 20.
+            min_epochs (int): Minimum training epochs before early stopping is
+                active; allows EMA to warm up. Default 200.
+            min_delta (float): Minimum relative validation-loss improvement
+                required to reset the patience counter. Default 1e-3.
+            val_freq (int): Epoch interval between validation evaluations.
+                Default 10.
+            n_val_t (int): Number of evenly spaced diffusion times used for
+                deterministic validation loss evaluation. Default 20.
+            verbose (bool): Print epoch-level progress. Default ``True``.
+
+        Returns:
+            Dict[str, List[float]]: Training history with keys ``"train_loss"``
+                (every epoch) and ``"val_loss"`` (every ``val_freq`` epochs).
+
+        Raises:
+            ValueError: If ``magnitudes`` has the wrong shape or no valid samples
+                remain after filtering.
+        """
         if magnitudes.ndim != 2 or magnitudes.shape[1] != self.n_filters:
-            raise ValueError(f"magnitudes must be (N, {self.n_filters})")
+            raise ValueError(
+                f"magnitudes must be (N, {self.n_filters}) for filters {self.filter_names}"
+            )
 
         valid_mask = np.all((flux_uncertainties > 0) & np.isfinite(magnitudes), axis=1)
         if not np.any(valid_mask):
@@ -1254,9 +1349,13 @@ class ScoreBasedUncertaintyModel:
         ln_sigma = np.log(flux_uncertainties[valid_mask])
 
         ln_sigma_median = np.median(ln_sigma, axis=0).astype(np.float32)
-        ln_sigma_iqr = (np.percentile(ln_sigma, 75, axis=0) - np.percentile(ln_sigma, 25, axis=0)).astype(np.float32)
+        ln_sigma_iqr = (
+            np.percentile(ln_sigma, 75, axis=0) - np.percentile(ln_sigma, 25, axis=0)
+        ).astype(np.float32)
         mag_median = np.median(magnitudes, axis=0).astype(np.float32)
-        mag_iqr = (np.percentile(magnitudes, 75, axis=0) - np.percentile(magnitudes, 25, axis=0)).astype(np.float32)
+        mag_iqr = (
+            np.percentile(magnitudes, 75, axis=0) - np.percentile(magnitudes, 25, axis=0)
+        ).astype(np.float32)
 
         self._ln_sigma_median = torch.tensor(ln_sigma_median, device=self.device)
         self._ln_sigma_iqr = torch.tensor(ln_sigma_iqr, device=self.device)
@@ -1352,8 +1451,8 @@ class ScoreBasedUncertaintyModel:
                             score_v = self.ema_net(x_t_v, t_v, m_v_batch)
                             target_v = -eps_v / sigma_v_scalar
                             batch_loss = (
-                                sigma_v_scalar ** 2 * (score_v - target_v) ** 2
-                            ).mean().item()
+                                (sigma_v_scalar**2 * (score_v - target_v) ** 2).mean().item()
+                            )
 
                             val_loss += batch_loss
                             n_val_terms += 1
@@ -1364,7 +1463,9 @@ class ScoreBasedUncertaintyModel:
                 scheduler.step(val_loss)
 
                 if verbose:
-                    print(f"Epoch {epoch:5d}/{n_epochs}  train={train_loss:.4f}  val={val_loss:.4f}")
+                    print(
+                        f"Epoch {epoch:5d}/{n_epochs}  train={train_loss:.4f}  val={val_loss:.4f}"
+                    )
 
                 # Early stopping: only active after min_epochs to allow EMA to warm up
                 # and avoid premature stopping during the initial fluctuating phase.
@@ -1373,7 +1474,9 @@ class ScoreBasedUncertaintyModel:
                     # if training is interrupted, but don't count toward patience.
                     if val_loss < best_val_loss:
                         best_val_loss = val_loss
-                        best_state = {k: v.clone() for k, v in self.ema_net.module.state_dict().items()}
+                        best_state = {
+                            k: v.clone() for k, v in self.ema_net.module.state_dict().items()
+                        }
                     continue
 
                 # Relative improvement threshold: require val_loss to drop by at least
@@ -1398,7 +1501,7 @@ class ScoreBasedUncertaintyModel:
             self.score_net.load_state_dict(best_state)
         self._is_trained = True
         return history
-    
+
     @torch.no_grad()
     def sample_uncertainty(
         self,
@@ -1406,8 +1509,37 @@ class ScoreBasedUncertaintyModel:
         n_samples: int = 1,
         n_steps: int = 50,
         t_eps: float = 1e-2,
-        method: str = 'ode'
+        method: str = "ode",
     ) -> np.ndarray:
+        """Samples flux uncertainties conditioned on observed magnitudes.
+
+        Runs the reverse-time diffusion process (ODE or SDE) from t=T to t=t_eps,
+        then exponentiates the resulting normalised log-uncertainty to recover
+        physical flux uncertainties in Janskys.
+
+        Args:
+            magnitudes (np.ndarray): Observed AB magnitudes. Shape ``(n_filters,)``
+                for a single object or ``(N, n_filters)`` for a batch.
+            n_samples (int): Number of independent uncertainty draws per object.
+                Default 1.
+            n_steps (int): Number of discrete integration steps. Default 50.
+            t_eps (float): Minimum diffusion time; integration runs from T down
+                to this value. Default 1e-2.
+            method (str): Reverse-time solver — ``"ode"`` (probability-flow ODE,
+                deterministic) or ``"sde"`` (Langevin SDE, stochastic).
+                Default ``"ode"``.
+
+        Returns:
+            np.ndarray: Sampled flux uncertainties (σ) in Janskys. Shape is
+                ``(N, n_filters)`` when ``n_samples=1``, ``(N, n_samples, n_filters)``
+                otherwise. A leading batch dimension is stripped when the input
+                was a single-object array.
+
+        Raises:
+            RuntimeError: If called before the model has been trained.
+            ValueError: If ``magnitudes`` has the wrong shape, contains non-finite
+                values, or ``method`` is not recognised.
+        """
         if not self._is_trained:
             raise RuntimeError("Model must be trained before sampling. Call fit() first.")
 
@@ -1417,7 +1549,10 @@ class ScoreBasedUncertaintyModel:
 
         # Check input is finite and has correct shape
         if magnitudes.shape[1] != self.n_filters:
-            raise ValueError(f"Input magnitudes must have shape (N, {self.n_filters})")
+            raise ValueError(
+                f"Input magnitudes must have shape (N, {self.n_filters}) "
+                f"for filters {self.filter_names}"
+            )
         if not np.all(np.isfinite(magnitudes)):
             raise ValueError("Input magnitudes must be finite.")
 
@@ -1431,17 +1566,19 @@ class ScoreBasedUncertaintyModel:
         dt = (self.T - t_eps) / n_steps
         times = torch.linspace(self.T, t_eps, n_steps + 1, device=self.device)
 
-        with torch.amp.autocast('cuda', enabled=(self.device == "cuda"), dtype=torch.bfloat16):
+        with torch.amp.autocast("cuda", enabled=(self.device == "cuda"), dtype=torch.bfloat16):
             for i in range(n_steps):
                 t_val = times[i].item()
-                t_tensor = torch.full((N * n_samples,), t_val, device=self.device, dtype=torch.float32)
+                t_tensor = torch.full(
+                    (N * n_samples,), t_val, device=self.device, dtype=torch.float32
+                )
                 beta_t = self._beta(t_tensor).unsqueeze(-1)
                 score = self.ema_net(x, t_tensor, mag_norm)
 
-                if method == 'ode':
+                if method == "ode":
                     dx_dt = -0.5 * beta_t * (x + score)
                     x = x - dx_dt * dt
-                elif method == 'sde':
+                elif method == "sde":
                     drift = (beta_t / 2) * x + beta_t * score
                     z = torch.randn_like(x)
                     x = x + drift * dt + torch.sqrt(beta_t * dt) * z
@@ -1459,23 +1596,67 @@ class ScoreBasedUncertaintyModel:
     def apply_noise(
         self,
         flux: np.ndarray,
-        magnitudes: np.ndarray,
         n_steps: int = 50,
-        method: str = 'ode',
+        true_flux_units: str = None,
+        method: str = "ode",
         **kwargs: Any,
     ) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
+        """Applies diffusion-model-sampled Gaussian noise to the input flux.
+
+        Converts flux to AB magnitudes, draws one uncertainty sample per object
+        via the reverse diffusion process, then adds zero-mean Gaussian noise
+        with that uncertainty to the original flux.
+
+        Args:
+            flux (np.ndarray or unyt_array): Input flux values. If a plain
+                numpy array, ``true_flux_units`` must be provided.
+            n_steps (int): Number of reverse-diffusion integration steps. Default 50.
+            true_flux_units (str): Units of ``flux`` (e.g. ``"Jy"``, ``"uJy"``).
+                Required when ``flux`` is not a unyt_array. Default ``None``.
+            method (str): Reverse-time solver — ``"ode"`` or ``"sde"``. Default ``"ode"``.
+            **kwargs: Absorbed for interface compatibility; not used.
+
+        Returns:
+            Union[unyt_array, Tuple[unyt_array, unyt_array]]: Noisy flux in
+                Janskys, or ``(noisy_flux_jy, sigma_jy)`` if the model was
+                constructed with ``return_noise=True``.
+
+        Raises:
+            ValueError: If ``flux`` is a plain array and ``true_flux_units``
+                is not provided.
+        """
+        if isinstance(flux, unyt_array):
+            flux_jy = flux.to("Jy").value
+        elif true_flux_units is not None:
+            flux_jy = unyt_array(flux, units=true_flux_units).to("Jy").value
+        else:
+            raise ValueError("true_flux_units must be provided when flux is not a unyt_array.")
+        safe_jy = np.where(flux_jy > 0, flux_jy, np.finfo(np.float32).tiny)
+        magnitudes = (-2.5 * np.log10(safe_jy / 3631.0)).astype(np.float32)
         sigma = self.sample_uncertainty(magnitudes, n_samples=1, n_steps=n_steps, method=method)
         noise = np.random.normal(0.0, sigma)
-        noisy_flux = flux + noise
+        noisy_flux = unyt_array(flux_jy + noise, units="Jy")
+        sigma_jy = unyt_array(sigma, units="Jy")
 
         if self.return_noise:
-            return noisy_flux, sigma
+            return noisy_flux, sigma_jy
         return noisy_flux
 
     def serialize_to_hdf5(self, hdf5_group: h5py.Group) -> None:
+        """Serializes the model's configuration and trained weights to an HDF5 group.
+
+        Hyperparameters (including the ordered filter name list) are stored as
+        HDF5 attributes. When the model has been trained, normalisation
+        statistics and the EMA score-network weights are also written.
+        Compiled-model wrappers (``torch.compile``) are unwrapped before weight
+        extraction.
+
+        Args:
+            hdf5_group (h5py.Group): Open, writable HDF5 group to write into.
+        """
         attrs = hdf5_group.attrs
         attrs["__class__"] = self.__class__.__name__
-        attrs["n_filters"] = self.n_filters
+        attrs["filter_names"] = json.dumps(self.filter_names)
         attrs["hidden_dim"] = self.hidden_dim
         attrs["n_layers"] = self.n_layers
         attrs["time_embed_dim"] = self.time_embed_dim
@@ -1496,7 +1677,7 @@ class ScoreBasedUncertaintyModel:
         weights_group = hdf5_group.create_group("score_network_weights")
 
         underlying = self.ema_net.module
-        if hasattr(underlying, '_orig_mod'):
+        if hasattr(underlying, "_orig_mod"):
             underlying = underlying._orig_mod
 
         for key, tensor in underlying.state_dict().items():
@@ -1505,9 +1686,23 @@ class ScoreBasedUncertaintyModel:
 
     @classmethod
     def _from_hdf5_group(cls, hdf5_group: h5py.Group) -> "ScoreBasedUncertaintyModel":
+        """Loads a ScoreBasedUncertaintyModel from an HDF5 group.
+
+        Reconstructs the model from the hyperparameters stored as HDF5 attributes,
+        then restores the normalisation statistics and score-network weights if
+        the model was trained before serialisation.
+
+        Args:
+            hdf5_group (h5py.Group): Open HDF5 group previously written by
+                ``serialize_to_hdf5``.
+
+        Returns:
+            ScoreBasedUncertaintyModel: Fully restored model instance, ready
+                for sampling if the serialised model was trained.
+        """
         attrs = hdf5_group.attrs
         instance = cls(
-            n_filters=int(attrs["n_filters"]),
+            filter_names=json.loads(attrs["filter_names"]),
             hidden_dim=int(attrs["hidden_dim"]),
             n_layers=int(attrs["n_layers"]),
             time_embed_dim=int(attrs["time_embed_dim"]),
@@ -1521,9 +1716,15 @@ class ScoreBasedUncertaintyModel:
             return instance
 
         dev = instance.device
-        instance._ln_sigma_median = torch.tensor(hdf5_group["ln_sigma_median"][:], dtype=torch.float32, device=dev)
-        instance._ln_sigma_iqr = torch.tensor(hdf5_group["ln_sigma_iqr"][:], dtype=torch.float32, device=dev)
-        instance._mag_median = torch.tensor(hdf5_group["mag_median"][:], dtype=torch.float32, device=dev)
+        instance._ln_sigma_median = torch.tensor(
+            hdf5_group["ln_sigma_median"][:], dtype=torch.float32, device=dev
+        )
+        instance._ln_sigma_iqr = torch.tensor(
+            hdf5_group["ln_sigma_iqr"][:], dtype=torch.float32, device=dev
+        )
+        instance._mag_median = torch.tensor(
+            hdf5_group["mag_median"][:], dtype=torch.float32, device=dev
+        )
         instance._mag_iqr = torch.tensor(hdf5_group["mag_iqr"][:], dtype=torch.float32, device=dev)
 
         state_dict: Dict[str, torch.Tensor] = {}
@@ -1531,9 +1732,9 @@ class ScoreBasedUncertaintyModel:
         for safe_key in weights_group.keys():
             original_key = safe_key.replace("__", ".")
             state_dict[original_key] = torch.tensor(weights_group[safe_key][:], dtype=torch.float32)
-        
+
         target = instance.score_net
-        if hasattr(target, '_orig_mod'):
+        if hasattr(target, "_orig_mod"):
             target = target._orig_mod
 
         target.load_state_dict(state_dict)
@@ -1542,6 +1743,7 @@ class ScoreBasedUncertaintyModel:
         instance.ema_net.to(dev)
         instance._is_trained = True
         return instance
+
 
 # =============================================================================
 # SERIALIZATION FACTORY FUNCTIONS

@@ -6,7 +6,7 @@ import shutil
 
 import numpy as np
 import pytest
-from unyt import Jy, uJy
+from unyt import Jy, uJy, unyt_array
 
 from synference import (
     AsinhEmpiricalUncertaintyModel,
@@ -507,6 +507,357 @@ def test_upper_limit_error_behaviours(mock_data, err_behaviour, expected_error_f
     assert output_error[0] == pytest.approx(expected_error), (
         f"Expected error for {err_behaviour} did not match: {output_error[0]} != {expected_error}"
     )
+
+
+# =============================================================================
+# Tests for ScoreBasedUncertaintyModel
+# =============================================================================
+
+# Minimal training kwargs used throughout — tiny network, very few epochs so
+# the tests run in seconds while still exercising the full code path.
+_SCORE_TRAIN_KWARGS = dict(
+    n_epochs=5,
+    batch_size=64,
+    learning_rate=1e-3,
+    min_epochs=0,
+    patience=3,
+    val_freq=2,
+    verbose=False,
+)
+_SCORE_SAMPLE_KWARGS = dict(n_steps=5)
+
+
+@pytest.fixture(scope="module")
+def score_model_data():
+    """Minimal photometric data (AB mags + flux uncertainties in Jy) for two bands."""
+    rng = np.random.default_rng(42)
+    N = 500
+    filter_names = ["F115W", "F200W"]
+    # AB mags: two bands with realistic scatter
+    mags = np.column_stack(
+        [
+            rng.normal(25.0, 1.5, N),
+            rng.normal(24.5, 1.5, N),
+        ]
+    ).astype(np.float32)
+    # Flux uncertainties in Jy: faint-end power law
+    sigma_jy = 10 ** (-0.4 * (mags - 8.9)) * 0.1 * rng.lognormal(0, 0.3, mags.shape)
+    sigma_jy = sigma_jy.astype(np.float32)
+    return filter_names, mags, sigma_jy
+
+
+@pytest.fixture(scope="module")
+def trained_score_model(score_model_data):
+    """A ScoreBasedUncertaintyModel trained with minimal settings."""
+    from synference.noise_models import ScoreBasedUncertaintyModel
+
+    filter_names, mags, sigma_jy = score_model_data
+    model = ScoreBasedUncertaintyModel(
+        filter_names=filter_names,
+        hidden_dim=32,
+        n_layers=2,
+        time_embed_dim=16,
+        device="cpu",
+    )
+    model.fit(mags, sigma_jy, **_SCORE_TRAIN_KWARGS)
+    return model
+
+
+# --- Construction ---
+
+
+def test_score_model_stores_filter_names():
+    """filter_names is stored and n_filters is derived correctly."""
+    from synference.noise_models import ScoreBasedUncertaintyModel
+
+    names = ["u", "g", "r", "i", "z"]
+    m = ScoreBasedUncertaintyModel(filter_names=names, device="cpu")
+    assert m.filter_names == names
+    assert m.n_filters == len(names)
+
+
+# --- fit() validation ---
+
+
+def test_score_model_fit_wrong_shape(score_model_data):
+    """fit() raises ValueError for wrong number of magnitude columns."""
+    from synference.noise_models import ScoreBasedUncertaintyModel
+
+    filter_names, mags, sigma_jy = score_model_data
+    model = ScoreBasedUncertaintyModel(filter_names=filter_names, device="cpu")
+    bad_mags = mags[:, :1]  # only 1 band, model expects 2
+    with pytest.raises(ValueError, match="magnitudes must be"):
+        model.fit(bad_mags, sigma_jy[:, :1], **_SCORE_TRAIN_KWARGS)
+
+
+def test_score_model_fit_produces_history(trained_score_model):
+    """fit() returns a dict with train_loss and val_loss lists."""
+    from synference.noise_models import ScoreBasedUncertaintyModel
+
+    filter_names = trained_score_model.filter_names
+    mags = np.random.default_rng(7).normal(25, 1, (200, len(filter_names))).astype(np.float32)
+    sigma = np.full_like(mags, 1e-6)
+    model = ScoreBasedUncertaintyModel(filter_names=filter_names, device="cpu")
+    history = model.fit(mags, sigma, **_SCORE_TRAIN_KWARGS)
+    assert "train_loss" in history and "val_loss" in history
+    assert len(history["train_loss"]) > 0
+
+
+# --- sample_uncertainty() ---
+
+
+def test_score_sample_uncertainty_shape_single(trained_score_model, score_model_data):
+    """sample_uncertainty returns (n_filters,) for a single-object input."""
+    filter_names, mags, _ = score_model_data
+    sigma = trained_score_model.sample_uncertainty(mags[0], **_SCORE_SAMPLE_KWARGS)
+    assert sigma.shape == (len(filter_names),)
+    assert np.all(sigma > 0)
+
+
+def test_score_sample_uncertainty_shape_batch(trained_score_model, score_model_data):
+    """sample_uncertainty returns (N, n_filters) for a batch input."""
+    filter_names, mags, _ = score_model_data
+    batch = mags[:10]
+    sigma = trained_score_model.sample_uncertainty(batch, **_SCORE_SAMPLE_KWARGS)
+    assert sigma.shape == (10, len(filter_names))
+    assert np.all(sigma > 0)
+
+
+def test_score_sample_uncertainty_multi_sample(trained_score_model, score_model_data):
+    """n_samples > 1 returns (N, n_samples, n_filters)."""
+    filter_names, mags, _ = score_model_data
+    sigma = trained_score_model.sample_uncertainty(mags[:5], n_samples=3, **_SCORE_SAMPLE_KWARGS)
+    assert sigma.shape == (5, 3, len(filter_names))
+
+
+def test_score_sample_uncertainty_raises_before_fit():
+    """sample_uncertainty raises RuntimeError if called before fit()."""
+    from synference.noise_models import ScoreBasedUncertaintyModel
+
+    model = ScoreBasedUncertaintyModel(filter_names=["F115W"], device="cpu")
+    with pytest.raises(RuntimeError):
+        model.sample_uncertainty(np.array([[25.0]]), **_SCORE_SAMPLE_KWARGS)
+
+
+def test_score_sample_uncertainty_wrong_n_filters(trained_score_model):
+    """sample_uncertainty raises ValueError for wrong number of filters."""
+    bad_mags = np.array([[25.0, 24.0, 23.0]])  # 3 bands, model expects 2
+    with pytest.raises(ValueError, match="filters"):
+        trained_score_model.sample_uncertainty(bad_mags, **_SCORE_SAMPLE_KWARGS)
+
+
+# --- apply_noise() ---
+
+
+def test_score_apply_noise_unyt_input(trained_score_model):
+    """apply_noise works with a unyt_array input and returns a unyt_array in Jy."""
+    from unyt import uJy
+
+    n_filters = trained_score_model.n_filters
+    flux = np.array([1e-6] * n_filters) * uJy
+    result = trained_score_model.apply_noise(flux, **_SCORE_SAMPLE_KWARGS)
+    assert hasattr(result, "units")
+
+
+def test_score_apply_noise_return_noise(trained_score_model):
+    """apply_noise with return_noise=True returns (noisy_flux, sigma) tuple."""
+    from unyt import uJy
+
+    from synference.noise_models import ScoreBasedUncertaintyModel
+
+    filter_names = trained_score_model.filter_names
+    model = ScoreBasedUncertaintyModel(
+        filter_names=filter_names,
+        hidden_dim=32,
+        n_layers=2,
+        time_embed_dim=16,
+        device="cpu",
+        return_noise=True,
+    )
+    # Use trained weights from the fixture model
+    model._is_trained = True
+    model._ln_sigma_median = trained_score_model._ln_sigma_median
+    model._ln_sigma_iqr = trained_score_model._ln_sigma_iqr
+    model._mag_median = trained_score_model._mag_median
+    model._mag_iqr = trained_score_model._mag_iqr
+    model.ema_net = trained_score_model.ema_net
+    model.score_net = trained_score_model.score_net
+
+    flux = np.array([1e-6] * trained_score_model.n_filters) * uJy
+    noisy, sigma = model.apply_noise(flux, **_SCORE_SAMPLE_KWARGS)
+    assert noisy.shape == flux.shape
+    assert sigma.shape == flux.shape
+
+
+def test_score_apply_noise_requires_units(trained_score_model):
+    """apply_noise raises ValueError when flux is plain array with no units arg."""
+    flux = np.array([1e-9] * trained_score_model.n_filters)
+    with pytest.raises(ValueError, match="true_flux_units"):
+        trained_score_model.apply_noise(flux, **_SCORE_SAMPLE_KWARGS)
+
+
+# --- HDF5 serialization ---
+
+
+def test_score_model_hdf5_round_trip(trained_score_model, temp_dir):
+    """Saving and loading a ScoreBasedUncertaintyModel preserves filter_names and weights."""
+    path = os.path.join(temp_dir, "score_model.h5")
+    group = "score_test"
+    save_unc_model_to_hdf5(trained_score_model, path, group, overwrite=True)
+    loaded = load_unc_model_from_hdf5(path, group)
+
+    from synference.noise_models import ScoreBasedUncertaintyModel
+
+    assert isinstance(loaded, ScoreBasedUncertaintyModel)
+    assert loaded.filter_names == trained_score_model.filter_names
+    assert loaded.n_filters == trained_score_model.n_filters
+    assert loaded._is_trained
+
+    # Sampling should work and give finite values
+    mags = np.array([[25.0, 24.5]], dtype=np.float32)
+    sigma_orig = trained_score_model.sample_uncertainty(mags, **_SCORE_SAMPLE_KWARGS)
+    sigma_load = loaded.sample_uncertainty(mags, **_SCORE_SAMPLE_KWARGS)
+    assert np.all(np.isfinite(sigma_orig))
+    assert np.all(np.isfinite(sigma_load))
+    # Both should be in a physically reasonable range (>0)
+    assert np.all(sigma_orig > 0) and np.all(sigma_load > 0)
+
+
+# --- sbi_runner integration ---
+
+
+def test_sbi_runner_apply_score_based_noise_model(trained_score_model):
+    """_apply_score_based_noise_model returns correctly shaped arrays."""
+    from unittest.mock import MagicMock
+
+    from synference.sbi_runner import SBI_Fitter
+
+    # Build a minimal SBI_Fitter-like object with the method available without a library
+    fitter = MagicMock(spec=SBI_Fitter)
+    fitter._apply_score_based_noise_model = SBI_Fitter._apply_score_based_noise_model.__get__(
+        fitter, SBI_Fitter
+    )
+
+    filter_names = trained_score_model.filter_names
+    n_filters = len(filter_names)
+    N = 20
+    N_scatters = 3
+
+    rng = np.random.default_rng(0)
+    phot = unyt_array(rng.uniform(1e-7, 1e-5, (n_filters, N)), units="Jy")
+
+    scattered, errors = fitter._apply_score_based_noise_model(
+        phot,
+        filter_names,
+        trained_score_model,
+        N_scatters=N_scatters,
+        return_errors=True,
+        normed_flux_units="AB",
+    )
+
+    assert scattered.shape == (n_filters, N * N_scatters)
+    assert errors.shape == (n_filters, N * N_scatters)
+    assert np.all(np.isfinite(scattered))
+    assert np.all(np.isfinite(errors))
+    assert np.all(errors > 0)
+
+
+def test_sbi_runner_apply_score_wrong_filter_order(trained_score_model):
+    """_apply_score_based_noise_model raises ValueError on filter order mismatch."""
+    from unittest.mock import MagicMock
+
+    from synference.sbi_runner import SBI_Fitter
+
+    fitter = MagicMock(spec=SBI_Fitter)
+    fitter._apply_score_based_noise_model = SBI_Fitter._apply_score_based_noise_model.__get__(
+        fitter, SBI_Fitter
+    )
+
+    n_filters = trained_score_model.n_filters
+    phot = unyt_array(np.ones((n_filters, 5)), units="Jy")
+    wrong_names = list(reversed(trained_score_model.filter_names))
+
+    with pytest.raises(ValueError, match="mismatch"):
+        fitter._apply_score_based_noise_model(
+            phot, wrong_names, trained_score_model, normed_flux_units="AB"
+        )
+
+
+def test_sbi_runner_apply_score_asinh_raises(trained_score_model):
+    """_apply_score_based_noise_model rejects asinh as normed_flux_units."""
+    from unittest.mock import MagicMock
+
+    from synference.sbi_runner import SBI_Fitter
+
+    fitter = MagicMock(spec=SBI_Fitter)
+    fitter._apply_score_based_noise_model = SBI_Fitter._apply_score_based_noise_model.__get__(
+        fitter, SBI_Fitter
+    )
+
+    n_filters = trained_score_model.n_filters
+    phot = unyt_array(np.ones((n_filters, 5)), units="Jy")
+
+    with pytest.raises(ValueError, match="asinh"):
+        fitter._apply_score_based_noise_model(
+            phot,
+            trained_score_model.filter_names,
+            trained_score_model,
+            normed_flux_units="asinh",
+        )
+
+
+def test_score_model_save_state_sentinel_key(trained_score_model, temp_dir):
+    """save_state stores ScoreBasedUncertaintyModel under the __score_based__ sentinel key."""
+    from unittest.mock import MagicMock, patch
+
+    from synference.noise_models import ScoreBasedUncertaintyModel
+    from synference.sbi_runner import SBI_Fitter
+
+    filter_names = trained_score_model.filter_names
+
+    # Build a minimal fitter-like object with just enough state for save_state
+    fitter = MagicMock(spec=SBI_Fitter)
+    fitter.name = "test_score_save"
+    fitter.feature_names = filter_names
+    fitter.feature_units = ["AB"] * len(filter_names)
+    fitter.fitted_parameter_units = []
+    fitter.fitted_parameter_names = ["mass"]
+    fitter._timestamp = "2026-01-01"
+    fitter._prior = None
+    fitter.library_path = "/tmp/fake.h5"
+    fitter.has_simulator = False
+    fitter.feature_array_flags = {
+        "empirical_noise_models": trained_score_model,
+    }
+    fitter.feature_array = np.zeros((10, len(filter_names)))
+    fitter.fitted_parameter_array = np.zeros((10, 1))
+    fitter.save_state = SBI_Fitter.save_state.__get__(fitter, SBI_Fitter)
+
+    out_dir = temp_dir
+
+    # Patch make_serializable to be a no-op (we're only testing the NM save path)
+    with patch("synference.sbi_runner.make_serializable", side_effect=lambda x, **kw: x):
+        with patch("builtins.open", _ := __import__("io").BytesIO if False else open):
+            # Intercept the joblib dump so we don't need a real file system beyond NM
+            saved_param_dict = {}
+
+            def fake_dump(obj, path, **kw):
+                saved_param_dict.update(obj)
+
+            with patch("synference.sbi_runner.dump", fake_dump):
+                fitter.save_state(out_dir=out_dir, has_grid=True)
+
+    # The HDF5 file for the noise model should have been written
+    expected_h5 = os.path.join(out_dir, "test_score_save_params_empirical_noise_models.h5")
+    assert os.path.exists(expected_h5), f"Expected HDF5 at {expected_h5}"
+
+    # The param_dict should map __score_based__ to the path
+    assert "__score_based__" in saved_param_dict.get("empirical_noise_models", {})
+
+    # The saved model should round-trip back
+    loaded = load_unc_model_from_hdf5(expected_h5, "__score_based__")
+    assert isinstance(loaded, ScoreBasedUncertaintyModel)
+    assert loaded.filter_names == filter_names
 
 
 if __name__ == "__main__":
