@@ -5987,8 +5987,8 @@ class GalaxySimulator(object):
                     out_units=self.out_flux_unit,
                 )
 
-                scattered_fluxes[i] = scattered_flux
-                errors[i] = sigma
+                scattered_fluxes[i] = np.atleast_1d(scattered_flux)[0]
+                errors[i] = np.atleast_1d(sigma)[0]
 
             return scattered_fluxes, errors
 
