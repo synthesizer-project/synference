@@ -2,6 +2,7 @@
 
 import copy
 import glob
+import inspect
 import json
 import logging
 import os
@@ -3034,7 +3035,7 @@ class SBI_Fitter:
             If True, plot the recovered SEDs. This will only work if recover_seds is True.
         check_out_of_distribution : bool
             If True, check if the feature array is in distribution using the
-            robust Mahalanobis method. This will raise an error if any row is out of
+            pyOD library. This will raise an error if any row is out of
             distribution. If False, no check is performed.
         simulator : Optional[GalaxySimulator]
             simulator: A GalaxySimulator object to use for generating the SED. Optional.
@@ -6371,6 +6372,7 @@ class SBI_Fitter:
                 posteriors.
             num_samples: Number of samples to draw from the posterior.
             timeout_seconds_per_test: Timeout in seconds for each test sample.
+                Only implemented for 'direct' sampling method.
 
         Returns:
             A numpy array of samples drawn from the posterior distribution.
@@ -6432,6 +6434,15 @@ class SBI_Fitter:
         # )
         # shape = test_sample.shape
 
+        sampling_kwargs = {}
+        # check if sampler.sample accepts arbitrary keyword arguments,
+        # if so pass them the timeout_seconds_per_test
+        _, _, varkw, _ = inspect.getargspec(sampler.sample)
+        if "kwargs" in varkw:
+            if timeout_seconds_per_test is not None and sample_method == "direct":
+                print(f"{timeout_seconds_per_test}s per sample.")
+                sampling_kwargs["max_sampling_time"] = timeout_seconds_per_test
+
         if log_times:
             times = []
         # Draw samples from the posterior
@@ -6441,14 +6452,16 @@ class SBI_Fitter:
             start_time = time.time()
             try:
                 # print(X_test_array[i])
-                samples[i] = sampler.sample(nsteps=num_samples, x=X_test_array[i], progress=False)
+                samples[i] = sampler.sample(
+                    nsteps=num_samples, x=X_test_array[i], progress=False, **sampling_kwargs
+                )
                 """samples[i] = sample_with_timeout(
                     sampler,
                     num_samples,
                     X_test_array[i],
                     timeout_seconds_per_test,
                 )"""
-            except TimeoutException:
+            except (TimeoutException, RuntimeError):
                 logger.error(
                     f"""Timeout exceeded for sample {i}.
                     Returning empty array for this sample."""
