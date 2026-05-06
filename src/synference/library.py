@@ -101,7 +101,10 @@ tophats = {
     "MUV": {"lam_eff": 1500 * Angstrom, "lam_fwhm": 100 * Angstrom},
 }
 
-muv_filter = FilterCollection(tophat_dict=tophats, verbose=False)
+if synthesizer_available:
+    muv_filter = FilterCollection(tophat_dict=tophats, verbose=False)
+else:
+    muv_filter = None
 
 
 try:
