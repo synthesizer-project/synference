@@ -1232,11 +1232,15 @@ class ScoreBasedUncertaintyModel:
         magnitudes: np.ndarray,
         flux_uncertainties: np.ndarray,
         n_epochs: int = 1000,
-        batch_size: int = 4096,
+        batch_size: int = 1024,
         learning_rate: float = 3e-4,
         t_eps: float = 1e-2,
         valid_fraction: float = 0.1,
-        patience: int = 50,
+        patience: int = 20,
+        min_epochs: int = 200,
+        min_delta: float = 1e-3,
+        val_freq: int = 10,
+        n_val_t: int = 20,
         verbose: bool = True,
     ) -> Dict[str, List[float]]:
         if magnitudes.ndim != 2 or magnitudes.shape[1] != self.n_filters:
@@ -1272,8 +1276,14 @@ class ScoreBasedUncertaintyModel:
         x_val = torch.tensor(ln_sigma_norm[val_idx], dtype=torch.float32, device=self.device)
         m_val = torch.tensor(mag_norm[val_idx], dtype=torch.float32, device=self.device)
 
+        # Pre-generate fixed validation noise. The validation loss becomes a deterministic
+        # function of model parameters: same (t, eps) pairs are reused every eval step.
+        # Using a stratified t grid (linspace) eliminates the variance from t sampling,
+        # which is the dominant source of validation noise in score-based diffusion training.
+        val_t_grid = torch.linspace(t_eps, self.T, n_val_t, device=self.device)
+        val_eps_fixed = torch.randn(n_val_t, len(x_val), self.n_filters, device=self.device)
+
         optimizer = torch.optim.Adam(self.score_net.parameters(), lr=learning_rate)
-        scaler = torch.amp.GradScaler('cuda', enabled=(self.device == "cuda"))
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer, factor=0.5, patience=10, min_lr=1e-5
         )
@@ -1290,30 +1300,24 @@ class ScoreBasedUncertaintyModel:
 
             epoch_loss = 0.0
             n_batches = 0
-            n_full_batches = len(x_ep) // batch_size
-            for i in range(n_full_batches):
-                start = i * batch_size
-                x0 = x_ep[start:start + batch_size]
-                m = m_ep[start:start + batch_size]
+            for i in range(0, len(x_ep), batch_size):
+                x0 = x_ep[i : i + batch_size]
+                m = m_ep[i : i + batch_size]
                 B = len(x0)
 
                 t = torch.rand(B, device=self.device) * (self.T - t_eps) + t_eps
                 s, sigma = self._marginal_params(t)
                 eps = torch.randn_like(x0)
                 x_t = s.unsqueeze(-1) * x0 + sigma.unsqueeze(-1) * eps
-                
+
+                score = self.score_net(x_t, t, m)
+                target = -eps / sigma.unsqueeze(-1)
+                loss = (sigma.unsqueeze(-1) ** 2 * (score - target) ** 2).mean()
+
                 optimizer.zero_grad()
-
-                with torch.amp.autocast('cuda', enabled=(self.device == "cuda"), dtype=torch.bfloat16):
-                    score = self.score_net(x_t, t, m)
-                    target = -eps / sigma.unsqueeze(-1)
-                    loss = (sigma.unsqueeze(-1) ** 2 * (score - target) ** 2).mean()
-
-                scaler.scale(loss).backward()
-                scaler.unscale_(optimizer)
+                loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.score_net.parameters(), max_norm=1.0)
-                scaler.step(optimizer)
-                scaler.update()
+                optimizer.step()
                 self.ema_net.update_parameters(self.score_net)
 
                 epoch_loss += loss.item()
@@ -1322,32 +1326,39 @@ class ScoreBasedUncertaintyModel:
             train_loss = epoch_loss / max(n_batches, 1)
             history["train_loss"].append(train_loss)
 
-            if epoch % 10 == 0:
+            if epoch % val_freq == 0:
                 self.ema_net.eval()
-                with torch.no_grad(), torch.amp.autocast('cuda', enabled=(self.device == "cuda"), dtype=torch.bfloat16):
+                with torch.no_grad():
                     val_loss = 0.0
-                    n_val_steps = 0
-                    for i in range(0, len(x_val), batch_size):
-                        x_v_batch = x_val[i : i + batch_size]
-                        m_v_batch = m_val[i : i + batch_size]
-                        B_val = len(x_v_batch)
-                        
-                        for _ in range(5):
-                            t_v = torch.rand(B_val, device=self.device) * (self.T - t_eps) + t_eps
-                            s_v, sigma_v = self._marginal_params(t_v)
-                            eps_v = torch.randn_like(x_v_batch)
-                            x_t_v = s_v.unsqueeze(-1) * x_v_batch + sigma_v.unsqueeze(-1) * eps_v
-                            
+                    n_val_terms = 0
+                    # Iterate over the fixed t grid; for each t, evaluate the whole
+                    # validation set in mini-batches using the corresponding fixed eps.
+                    for t_idx in range(n_val_t):
+                        t_val = val_t_grid[t_idx]
+                        eps_full = val_eps_fixed[t_idx]
+                        s_v_scalar, sigma_v_scalar = self._marginal_params(t_val.unsqueeze(0))
+                        s_v_scalar = s_v_scalar.item()
+                        sigma_v_scalar = sigma_v_scalar.item()
+
+                        for i in range(0, len(x_val), batch_size):
+                            x_v_batch = x_val[i : i + batch_size]
+                            m_v_batch = m_val[i : i + batch_size]
+                            eps_v = eps_full[i : i + batch_size]
+                            B_val = len(x_v_batch)
+
+                            t_v = t_val.expand(B_val)
+                            x_t_v = s_v_scalar * x_v_batch + sigma_v_scalar * eps_v
+
                             score_v = self.ema_net(x_t_v, t_v, m_v_batch)
+                            target_v = -eps_v / sigma_v_scalar
                             batch_loss = (
-                                sigma_v.unsqueeze(-1) ** 2
-                                * (score_v + eps_v / sigma_v.unsqueeze(-1)) ** 2
+                                sigma_v_scalar ** 2 * (score_v - target_v) ** 2
                             ).mean().item()
-                            
+
                             val_loss += batch_loss
-                            n_val_steps += 1
-                            
-                    val_loss /= n_val_steps
+                            n_val_terms += 1
+
+                    val_loss /= n_val_terms
 
                 history["val_loss"].append(val_loss)
                 scheduler.step(val_loss)
@@ -1355,7 +1366,20 @@ class ScoreBasedUncertaintyModel:
                 if verbose:
                     print(f"Epoch {epoch:5d}/{n_epochs}  train={train_loss:.4f}  val={val_loss:.4f}")
 
-                if val_loss < best_val_loss:
+                # Early stopping: only active after min_epochs to allow EMA to warm up
+                # and avoid premature stopping during the initial fluctuating phase.
+                if epoch < min_epochs:
+                    # Still track best state during warmup so we have something sensible
+                    # if training is interrupted, but don't count toward patience.
+                    if val_loss < best_val_loss:
+                        best_val_loss = val_loss
+                        best_state = {k: v.clone() for k, v in self.ema_net.module.state_dict().items()}
+                    continue
+
+                # Relative improvement threshold: require val_loss to drop by at least
+                # min_delta (fractionally) to count as genuine progress. Avoids resetting
+                # patience on noise-level fluctuations.
+                if val_loss < best_val_loss * (1.0 - min_delta):
                     best_val_loss = val_loss
                     best_state = {k: v.clone() for k, v in self.ema_net.module.state_dict().items()}
                     patience_counter = 0
@@ -1363,7 +1387,10 @@ class ScoreBasedUncertaintyModel:
                     patience_counter += 1
                     if patience_counter >= patience:
                         if verbose:
-                            print(f"Early stopping at epoch {epoch}.")
+                            print(
+                                f"Early stopping at epoch {epoch} "
+                                f"({patience} evals without >{min_delta:.1%} improvement)."
+                            )
                         break
 
         if best_state:
@@ -1371,7 +1398,7 @@ class ScoreBasedUncertaintyModel:
             self.score_net.load_state_dict(best_state)
         self._is_trained = True
         return history
-
+    
     @torch.no_grad()
     def sample_uncertainty(
         self,
