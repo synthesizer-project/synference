@@ -1374,7 +1374,7 @@ def create_galaxy(
 
     param_stars = Stars(
         log10ages=grid.log10ages,
-        metallicities=grid.metallicity,
+        metallicities=grid.metallicities,
         sf_hist=sfh,
         metal_dist=metal_dist,
         initial_mass=single_mass,
@@ -2814,11 +2814,11 @@ class GalaxyBasis:
 
             # Get the SFH
             stars_sfh = galaxy.stars.get_sfh()
-            stars_sfh = stars_sfh / np.diff(10 ** (self.grid.log10age), prepend=0) / yr
+            stars_sfh = stars_sfh / np.diff(10 ** (self.grid.log10ages), prepend=0) / yr
             t, sfh = galaxy.stars.sf_hist_func.calculate_sfh()
 
             ax[1].plot(
-                10 ** (self.grid.log10age - 6),
+                10 ** (self.grid.log10ages - 6),
                 stars_sfh,
                 label=f"{emission_model} SFH",
                 color=colors[emission_model],
@@ -5713,7 +5713,7 @@ class GalaxySimulator(object):
 
         stars = Stars(
             log10ages=self.grid.log10ages,
-            metallicities=self.grid.metallicity,
+            metallicities=self.grid.metallicities,
             sf_hist=sfh,
             metal_dist=zdist,
             initial_mass=mass,
@@ -5737,8 +5737,8 @@ class GalaxySimulator(object):
 
         if "sfh" in self.output_type:
             stars_sfh = stars.get_sfh()
-            stars_sfh = stars_sfh / np.diff(10 ** (self.grid.log10age), prepend=0) / yr
-            time = 10 ** (self.grid.log10age) * yr
+            stars_sfh = stars_sfh / np.diff(10 ** (self.grid.log10ages), prepend=0) / yr
+            time = 10 ** (self.grid.log10ages) * yr
             time = time.to("Myr")
 
             # Check if any NANS in SFH. If there are, print sfh
