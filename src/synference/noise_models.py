@@ -1258,6 +1258,8 @@ class ScoreBasedUncertaintyModel:
         self._ln_sigma_iqr: Optional[torch.Tensor] = None
         self._mag_median: Optional[torch.Tensor] = None
         self._mag_iqr: Optional[torch.Tensor] = None
+        self._mag_max: Optional[torch.Tensor] = None
+        self._mag_min: Optional[torch.Tensor] = None
         self._is_trained: bool = False
 
     def _beta(self, t: torch.Tensor) -> torch.Tensor:
@@ -1357,10 +1359,15 @@ class ScoreBasedUncertaintyModel:
             np.percentile(magnitudes, 75, axis=0) - np.percentile(magnitudes, 25, axis=0)
         ).astype(np.float32)
 
+        mag_max = np.percentile(magnitudes, 99.9, axis=0).astype(np.float32)
+        mag_min = np.percentile(magnitudes, 0.1, axis=0).astype(np.float32)
+
         self._ln_sigma_median = torch.tensor(ln_sigma_median, device=self.device)
         self._ln_sigma_iqr = torch.tensor(ln_sigma_iqr, device=self.device)
         self._mag_median = torch.tensor(mag_median, device=self.device)
         self._mag_iqr = torch.tensor(mag_iqr, device=self.device)
+        self._mag_max = torch.tensor(mag_max, device=self.device)
+        self._mag_min = torch.tensor(mag_min, device=self.device)
 
         ln_sigma_norm = (ln_sigma - ln_sigma_median) / (ln_sigma_iqr + 1e-8)
         mag_norm = (magnitudes - mag_median) / (mag_iqr + 1e-8)
@@ -1557,6 +1564,13 @@ class ScoreBasedUncertaintyModel:
             raise ValueError("Input magnitudes must be finite.")
 
         N = len(magnitudes)
+
+        # Clip to training range to avoid OOD extrapolation for very faint
+        # (large mag) or very bright (small mag) simulated sources.
+        mag_max_np = self._mag_max.cpu().numpy()
+        mag_min_np = self._mag_min.cpu().numpy()
+        magnitudes = np.clip(magnitudes, a_min=mag_min_np, a_max=mag_max_np)
+
         mag_t = torch.tensor(magnitudes, dtype=torch.float32, device=self.device)
         mag_norm = self._normalise_mag(mag_t).repeat_interleave(n_samples, dim=0)
 
@@ -1676,6 +1690,8 @@ class ScoreBasedUncertaintyModel:
         hdf5_group.create_dataset("ln_sigma_iqr", data=self._ln_sigma_iqr.cpu().numpy())
         hdf5_group.create_dataset("mag_median", data=self._mag_median.cpu().numpy())
         hdf5_group.create_dataset("mag_iqr", data=self._mag_iqr.cpu().numpy())
+        hdf5_group.create_dataset("mag_max", data=self._mag_max.cpu().numpy())
+        hdf5_group.create_dataset("mag_min", data=self._mag_min.cpu().numpy())
 
         weights_group = hdf5_group.create_group("score_network_weights")
 
@@ -1729,6 +1745,8 @@ class ScoreBasedUncertaintyModel:
             hdf5_group["mag_median"][:], dtype=torch.float32, device=dev
         )
         instance._mag_iqr = torch.tensor(hdf5_group["mag_iqr"][:], dtype=torch.float32, device=dev)
+        instance._mag_max = torch.tensor(hdf5_group["mag_max"][:], dtype=torch.float32, device=dev)
+        instance._mag_min = torch.tensor(hdf5_group["mag_min"][:], dtype=torch.float32, device=dev)
 
         state_dict: Dict[str, torch.Tensor] = {}
         weights_group = hdf5_group["score_network_weights"]
