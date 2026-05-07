@@ -1586,6 +1586,9 @@ class ScoreBasedUncertaintyModel:
                     raise ValueError(f"Unknown sampling method: {method}")
 
         ln_sigma = self._denormalise_ln_sigma(x)
+        # Clamp to prevent float32 overflow: exp(88) ≈ 1.6e38 ≈ float32 max.
+        # Physical sigma never exceeds ~1e5 Jy; exp(12) ≈ 1.6e5 Jy is a safe ceiling.
+        ln_sigma = torch.clamp(ln_sigma, min=-80.0, max=12.0)
         sigma_np = torch.exp(ln_sigma).cpu().numpy().reshape(N, n_samples, self.n_filters)
 
         if n_samples == 1:

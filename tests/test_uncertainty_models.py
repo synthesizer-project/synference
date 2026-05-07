@@ -516,22 +516,22 @@ def test_upper_limit_error_behaviours(mock_data, err_behaviour, expected_error_f
 # Minimal training kwargs used throughout — tiny network, very few epochs so
 # the tests run in seconds while still exercising the full code path.
 _SCORE_TRAIN_KWARGS = dict(
-    n_epochs=5,
-    batch_size=64,
+    n_epochs=50,
+    batch_size=128,
     learning_rate=1e-3,
-    min_epochs=0,
-    patience=3,
-    val_freq=2,
+    min_epochs=10,
+    patience=15,
+    val_freq=5,
     verbose=False,
 )
-_SCORE_SAMPLE_KWARGS = dict(n_steps=5)
+_SCORE_SAMPLE_KWARGS = dict(n_steps=25)
 
 
 @pytest.fixture(scope="module")
 def score_model_data():
     """Minimal photometric data (AB mags + flux uncertainties in Jy) for two bands."""
     rng = np.random.default_rng(42)
-    N = 500
+    N = 2000
     filter_names = ["F115W", "F200W"]
     # AB mags: two bands with realistic scatter
     mags = np.column_stack(
