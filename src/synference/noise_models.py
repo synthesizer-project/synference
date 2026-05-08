@@ -19,7 +19,7 @@ from astropy.table import Table
 from scipy import stats
 from scipy.interpolate import interp1d
 from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
-from unyt import Jy, Unit, unyt_array
+from unyt import Jy, Unit, uJy, unyt_array, unyt_quantity
 
 from .utils import f_jy_err_to_asinh, f_jy_to_asinh
 
@@ -1261,6 +1261,8 @@ class ScoreBasedUncertaintyModel:
         self._mag_max: Optional[torch.Tensor] = None
         self._mag_min: Optional[torch.Tensor] = None
         self._is_trained: bool = False
+        self._is_asinh_scaled: bool = False
+        self._asinh_b_factor: Optional[torch.Tensor] = None
 
     def _beta(self, t: torch.Tensor) -> torch.Tensor:
         return self.beta_min + (t / self.T) * (self.beta_max - self.beta_min)
@@ -1285,7 +1287,7 @@ class ScoreBasedUncertaintyModel:
 
     def fit(
         self,
-        magnitudes: np.ndarray,
+        photometry: Union[np.ndarray, unyt_array],
         flux_uncertainties: np.ndarray,
         n_epochs: int = 1000,
         batch_size: int = 1024,
@@ -1297,6 +1299,9 @@ class ScoreBasedUncertaintyModel:
         min_delta: float = 1e-3,
         val_freq: int = 10,
         n_val_t: int = 20,
+        asinh_scaling: bool = False,
+        asinh_b_factor: Union[unyt_quantity, List[unyt_quantity]] = 0.01
+        * uJy,  # 28.9 AB mag, typical for deep optical surveys
         verbose: bool = True,
     ) -> Dict[str, List[float]]:
         """Trains the score network on observed magnitudes and flux uncertainties.
@@ -1308,7 +1313,10 @@ class ScoreBasedUncertaintyModel:
         for validation and sampling.
 
         Args:
-            magnitudes (np.ndarray): Observed AB magnitudes, shape ``(N, n_filters)``.
+            photometry (Union[np.ndarray, unyt_array]): Observed photometry,
+                shape ``(N, n_filters)``. If it is a numpy array, it is assumed
+                to be in magnitudes. If it is a unyt_array, the units are
+                converted to magnitudes (or asinh magnitudes if asinh_scaling=True).
             flux_uncertainties (np.ndarray): Observed flux uncertainties (σ) in
                 Janskys, shape ``(N, n_filters)``. Must be positive and finite.
             n_epochs (int): Maximum number of training epochs. Default 1000.
@@ -1328,6 +1336,15 @@ class ScoreBasedUncertaintyModel:
                 Default 10.
             n_val_t (int): Number of evenly spaced diffusion times used for
                 deterministic validation loss evaluation. Default 20.
+            asinh_scaling (bool): If ``True``, uses asinh magnitudes instead of
+                logarithmic (AB) magnitudes. This can be helpful to include
+                sources with low/negative fluxes in the training set. Default ``False``.
+            asinh_b_factor (Union[unyt_quantity, List[unyt_quantity]]):
+                The b factor(s) for asinh scaling, in the same units as the input photometry.
+                If a single unyt quantity is provided, it is applied to all filters.
+                If a list is provided, it must have the same length as the number of filters.
+                Ignored if ``asinh_scaling`` is ``False``.
+
             verbose (bool): Print epoch-level progress. Default ``True``.
 
         Returns:
@@ -1335,19 +1352,40 @@ class ScoreBasedUncertaintyModel:
                 (every epoch) and ``"val_loss"`` (every ``val_freq`` epochs).
 
         Raises:
-            ValueError: If ``magnitudes`` has the wrong shape or no valid samples
+            ValueError: If ``photometry`` has the wrong shape or no valid samples
                 remain after filtering.
         """
-        if magnitudes.ndim != 2 or magnitudes.shape[1] != self.n_filters:
+        if photometry.ndim != 2 or photometry.shape[1] != self.n_filters:
             raise ValueError(
-                f"magnitudes must be (N, {self.n_filters}) for filters {self.filter_names}"
+                f"photometry must be (N, {self.n_filters}) for filters {self.filter_names}"
             )
 
-        valid_mask = np.all((flux_uncertainties > 0) & np.isfinite(magnitudes), axis=1)
+        # handle conversions and unit checks
+        if asinh_scaling:
+            assert asinh_b_factor is not None, (
+                "asinh_b_factor must be provided when asinh_scaling is True"
+            )
+            assert isinstance(asinh_b_factor, (unyt_quantity, list)), (
+                "asinh_b_factor must be a unyt quantity or a list of unyt quantities"
+            )
+            assert not isinstance(asinh_b_factor, list) or len(asinh_b_factor) == self.n_filters
+            assert isinstance(photometry, unyt_array), (
+                "photometry must be a unyt_array when asinh_scaling is True"
+            )
+            photometry = f_jy_to_asinh(photometry, b=asinh_b_factor)
+
+        elif isinstance(photometry, unyt_array):
+            photometry = (
+                -2.5 * np.log10(photometry.to_value("Jy")) + 8.90
+            )  # Convert to AB magnitudes
+        else:
+            print("Assuming photometry is already in magnitudes.")
+
+        valid_mask = np.all((flux_uncertainties > 0) & np.isfinite(photometry), axis=1)
         if not np.any(valid_mask):
             raise ValueError("No valid training samples after filtering.")
 
-        magnitudes = magnitudes[valid_mask]
+        magnitudes = photometry[valid_mask]
         ln_sigma = np.log(flux_uncertainties[valid_mask])
 
         ln_sigma_median = np.median(ln_sigma, axis=0).astype(np.float32)
@@ -1368,6 +1406,8 @@ class ScoreBasedUncertaintyModel:
         self._mag_iqr = torch.tensor(mag_iqr, device=self.device)
         self._mag_max = torch.tensor(mag_max, device=self.device)
         self._mag_min = torch.tensor(mag_min, device=self.device)
+        self._asinh_b_factor = asinh_b_factor if asinh_scaling else None
+        self._is_asinh_scaled = asinh_scaling
 
         ln_sigma_norm = (ln_sigma - ln_sigma_median) / (ln_sigma_iqr + 1e-8)
         mag_norm = (magnitudes - mag_median) / (mag_iqr + 1e-8)
@@ -1570,6 +1610,7 @@ class ScoreBasedUncertaintyModel:
         mag_max_np = self._mag_max.cpu().numpy()
         mag_min_np = self._mag_min.cpu().numpy()
         magnitudes = np.clip(magnitudes, a_min=mag_min_np, a_max=mag_max_np)
+        print("clipped mag", magnitudes)
 
         mag_t = torch.tensor(magnitudes, dtype=torch.float32, device=self.device)
         mag_norm = self._normalise_mag(mag_t).repeat_interleave(n_samples, dim=0)
@@ -1608,6 +1649,7 @@ class ScoreBasedUncertaintyModel:
         if n_samples == 1:
             sigma_np = sigma_np[:, 0, :]
 
+        print("sigma", sigma_np)
         return sigma_np[0] if scalar_input else sigma_np
 
     def apply_noise(
@@ -1650,10 +1692,14 @@ class ScoreBasedUncertaintyModel:
             raise ValueError("true_flux_units must be provided when flux is not a unyt_array.")
         safe_jy = np.where(flux_jy > 0, flux_jy, np.finfo(np.float32).tiny)
         magnitudes = (-2.5 * np.log10(safe_jy / 3631.0)).astype(np.float32)
+
         sigma = self.sample_uncertainty(magnitudes, n_samples=1, n_steps=n_steps, method=method)
-        noise = np.random.normal(0.0, sigma)
+        # sigma is in uJy; convert to Jy for noise sampling
+        sigma_jy = sigma * 1e-6
+        noise = np.random.normal(0.0, sigma_jy)
+
         noisy_flux = unyt_array(flux_jy + noise, units="Jy")
-        sigma_jy = unyt_array(sigma, units="Jy")
+        sigma_jy = unyt_array(sigma_jy, units="Jy")
 
         if self.return_noise:
             return noisy_flux, sigma_jy
@@ -1692,6 +1738,12 @@ class ScoreBasedUncertaintyModel:
         hdf5_group.create_dataset("mag_iqr", data=self._mag_iqr.cpu().numpy())
         hdf5_group.create_dataset("mag_max", data=self._mag_max.cpu().numpy())
         hdf5_group.create_dataset("mag_min", data=self._mag_min.cpu().numpy())
+
+        attrs["is_asinh_scaled"] = self._is_asinh_scaled
+        if self._is_asinh_scaled:
+            attrs["asinh_b_factor"] = (
+                self._asinh_b_factor.to_value("Jy") if self._asinh_b_factor is not None else None
+            )
 
         weights_group = hdf5_group.create_group("score_network_weights")
 
@@ -1747,6 +1799,14 @@ class ScoreBasedUncertaintyModel:
         instance._mag_iqr = torch.tensor(hdf5_group["mag_iqr"][:], dtype=torch.float32, device=dev)
         instance._mag_max = torch.tensor(hdf5_group["mag_max"][:], dtype=torch.float32, device=dev)
         instance._mag_min = torch.tensor(hdf5_group["mag_min"][:], dtype=torch.float32, device=dev)
+
+        instance._is_asinh_scaled = bool(attrs.get("is_asinh_scaled", False))
+        if instance._is_asinh_scaled:
+            b_factor_value = attrs.get("asinh_b_factor")
+            if b_factor_value is not None:
+                instance._asinh_b_factor = unyt_quantity(b_factor_value, units="Jy")
+            else:
+                instance._asinh_b_factor = None
 
         state_dict: Dict[str, torch.Tensor] = {}
         weights_group = hdf5_group["score_network_weights"]
