@@ -1611,10 +1611,11 @@ class ScoreBasedUncertaintyModel:
 
         # Clip to training range to avoid OOD extrapolation for very faint
         # (large mag) or very bright (small mag) simulated sources.
-        mag_max_np = self._mag_max.cpu().numpy()
-        mag_min_np = self._mag_min.cpu().numpy()
-        photometry = np.clip(photometry, a_min=mag_min_np, a_max=mag_max_np)
-        print("clipped mag", photometry)
+        if self._mag_max is not None and self._mag_min is not None:
+            mag_max_np = self._mag_max.cpu().numpy()
+            mag_min_np = self._mag_min.cpu().numpy()
+            photometry = np.clip(photometry, a_min=mag_min_np, a_max=mag_max_np)
+            print("clipped mag", photometry)
 
         mag_t = torch.tensor(photometry, dtype=torch.float32, device=self.device)
         mag_norm = self._normalise_mag(mag_t).repeat_interleave(n_samples, dim=0)
