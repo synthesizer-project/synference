@@ -1372,7 +1372,7 @@ class ScoreBasedUncertaintyModel:
             assert isinstance(photometry, unyt_array), (
                 "photometry must be a unyt_array when asinh_scaling is True"
             )
-            photometry = f_jy_to_asinh(photometry, b=asinh_b_factor)
+            photometry = f_jy_to_asinh(photometry, f_b=asinh_b_factor)
 
         elif isinstance(photometry, unyt_array):
             photometry = (
@@ -1552,20 +1552,20 @@ class ScoreBasedUncertaintyModel:
     @torch.no_grad()
     def sample_uncertainty(
         self,
-        magnitudes: np.ndarray,
+        photometry: np.ndarray,
         n_samples: int = 1,
         n_steps: int = 50,
         t_eps: float = 1e-2,
         method: str = "ode",
     ) -> np.ndarray:
-        """Samples flux uncertainties conditioned on observed magnitudes.
+        """Samples flux uncertainties conditioned on observed photometry.
 
         Runs the reverse-time diffusion process (ODE or SDE) from t=T to t=t_eps,
         then exponentiates the resulting normalised log-uncertainty to recover
         physical flux uncertainties in Janskys.
 
         Args:
-            magnitudes (np.ndarray): Observed AB magnitudes. Shape ``(n_filters,)``
+            photometry (np.ndarray): Observed AB magnitudes/photometry with units. Shape ``(n_filters,)``
                 for a single object or ``(N, n_filters)`` for a batch.
             n_samples (int): Number of independent uncertainty draws per object.
                 Default 1.
@@ -1584,35 +1584,39 @@ class ScoreBasedUncertaintyModel:
 
         Raises:
             RuntimeError: If called before the model has been trained.
-            ValueError: If ``magnitudes`` has the wrong shape, contains non-finite
+            ValueError: If ``photometry`` has the wrong shape, contains non-finite
                 values, or ``method`` is not recognised.
         """
         if not self._is_trained:
             raise RuntimeError("Model must be trained before sampling. Call fit() first.")
 
-        scalar_input = magnitudes.ndim == 1
+        scalar_input = photometry.ndim == 1
         if scalar_input:
-            magnitudes = magnitudes[np.newaxis]
+            photometry = photometry[np.newaxis]
 
         # Check input is finite and has correct shape
-        if magnitudes.shape[1] != self.n_filters:
+        if photometry.shape[1] != self.n_filters:
             raise ValueError(
-                f"Input magnitudes must have shape (N, {self.n_filters}) "
+                f"Input photometry must have shape (N, {self.n_filters}) "
                 f"for filters {self.filter_names}"
             )
-        if not np.all(np.isfinite(magnitudes)):
-            raise ValueError("Input magnitudes must be finite.")
+        if not np.all(np.isfinite(photometry)):
+            raise ValueError("Input photometry must be finite.")
 
-        N = len(magnitudes)
+        N = len(photometry)
+
+        if self._is_asinh_scaled:
+            assert self._asinh_b_factor is not None
+            photometry = f_jy_to_asinh(photometry, f_b=self._asinh_b_factor)
 
         # Clip to training range to avoid OOD extrapolation for very faint
         # (large mag) or very bright (small mag) simulated sources.
         mag_max_np = self._mag_max.cpu().numpy()
         mag_min_np = self._mag_min.cpu().numpy()
-        magnitudes = np.clip(magnitudes, a_min=mag_min_np, a_max=mag_max_np)
-        print("clipped mag", magnitudes)
+        photometry = np.clip(photometry, a_min=mag_min_np, a_max=mag_max_np)
+        print("clipped mag", photometry)
 
-        mag_t = torch.tensor(magnitudes, dtype=torch.float32, device=self.device)
+        mag_t = torch.tensor(photometry, dtype=torch.float32, device=self.device)
         mag_norm = self._normalise_mag(mag_t).repeat_interleave(n_samples, dim=0)
 
         x = torch.randn(N * n_samples, self.n_filters, device=self.device)
@@ -1662,7 +1666,7 @@ class ScoreBasedUncertaintyModel:
     ) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
         """Applies diffusion-model-sampled Gaussian noise to the input flux.
 
-        Converts flux to AB magnitudes, draws one uncertainty sample per object
+        Converts flux to AB magnitudes/model photometry, draws one uncertainty sample per object
         via the reverse diffusion process, then adds zero-mean Gaussian noise
         with that uncertainty to the original flux.
 
@@ -1690,8 +1694,12 @@ class ScoreBasedUncertaintyModel:
             flux_jy = unyt_array(flux, units=true_flux_units).to("Jy").value
         else:
             raise ValueError("true_flux_units must be provided when flux is not a unyt_array.")
-        safe_jy = np.where(flux_jy > 0, flux_jy, np.finfo(np.float32).tiny)
-        magnitudes = (-2.5 * np.log10(safe_jy / 3631.0)).astype(np.float32)
+        
+        if not self._is_asinh_scaled:
+            safe_jy = np.where(flux_jy > 0, flux_jy, np.finfo(np.float32).tiny)
+            magnitudes = (-2.5 * np.log10(safe_jy / 3631.0)).astype(np.float32)
+        else:
+            magnitudes = f_jy_to_asinh(flux_jy, f_b=self._asinh_b_factor)
 
         sigma = self.sample_uncertainty(magnitudes, n_samples=1, n_steps=n_steps, method=method)
         # sigma is in uJy; convert to Jy for noise sampling
@@ -1819,7 +1827,12 @@ class ScoreBasedUncertaintyModel:
             target = target._orig_mod
 
         target.load_state_dict(state_dict)
-        instance.ema_net.module.load_state_dict(state_dict)
+
+        ema_target = instance.ema_net.module                                                                                      
+        if hasattr(ema_target, "_orig_mod"):                                                                                      
+            ema_target = ema_target._orig_mod                                                                                     
+            ema_target.load_state_dict(state_dict)
+        ema_target.load_state_dict(state_dict)
         instance.score_net.to(dev)
         instance.ema_net.to(dev)
         instance._is_trained = True

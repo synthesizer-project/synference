@@ -953,20 +953,35 @@ class SBI_Fitter:
                 ``normed_flux_units="asinh"`` is requested.
         """
         if normed_flux_units == "asinh":
-            raise ValueError(
-                "ScoreBasedUncertaintyModel does not support asinh normalisation. "
-                "Use normed_flux_units='AB' or a physical flux unit (e.g. 'nJy')."
+            assert score_model._is_asinh_scaled, (
+                "asinh-scaled output requested but score model is not asinh-scaled."
             )
 
         expected = score_model.filter_names
         actual = list(phot_names)
+        reset_order = False
         if actual != expected:
-            raise ValueError(
-                f"Filter name order mismatch between photometry and "
-                f"ScoreBasedUncertaintyModel.\n"
-                f"  Model expects : {expected}\n"
-                f"  Received      : {actual}"
-            )
+            # reorder photometry_array to match expected filter order
+            # we will revert to the original order before returning
+
+            # check same filters in both, ignoring order (set seems broken)
+            if not set(actual).issubset(set(expected)):
+                raise ValueError(
+                    f"Filter names in phot_names do not match score model filter names. "
+                    f"Expected: {set(expected)}, actual: {set(actual)}"
+                )
+
+            reset_order = True
+            actual_lower = [f.lower() for f in actual]
+            expected_lower = [f.lower() for f in expected]
+            print(expected_lower)
+            print(actual_lower)
+           
+            new_indices = [actual_lower.index(filter) for filter in expected_lower]
+    
+            photometry_array = photometry_array[new_indices, :]
+            phot_names = [phot_names[i] for i in new_indices]
+            resetting_indices = np.argsort(new_indices)
 
         # Ensure we have a unyt_array in Jy
         if isinstance(photometry_array, unyt_array):
@@ -979,22 +994,53 @@ class SBI_Fitter:
             )
 
         n_filters, N = phot_jy.shape
+        
+        print('nfilters, N')
+        print(n_filters, N)
 
         # Repeat each galaxy N_scatters times: (n_filters, N*N_scatters)
         phot_jy_rep = np.repeat(phot_jy, N_scatters, axis=1)
 
         # AB magnitudes for the score model: shape (N*N_scatters, n_filters)
-        safe_jy = np.where(phot_jy_rep > 0, phot_jy_rep, np.finfo(np.float32).tiny)
-        phot_mag = (-2.5 * np.log10(safe_jy / 3631.0)).T.astype(np.float32)
+        # check if this is an asinh score model - if so, we should provide flux directly
+        if score_model._is_asinh_scaled:
+            # For asinh-scaled models, we provide flux directly
+            phot_mag = phot_jy_rep.T * Jy
+        else:
+            safe_jy = np.where(phot_jy_rep > 0, phot_jy_rep, np.finfo(np.float32).tiny)
+            phot_mag = (-2.5 * np.log10(safe_jy / 3631.0)).T.astype(np.float32)
 
         # Sample per-band uncertainties: (N*N_scatters, n_filters) in Jy
-        sigma_jy = score_model.sample_uncertainty(phot_mag, n_samples=1)
+        print(phot_mag.shape)
+        sigma_jy = score_model.sample_uncertainty(phot_mag, n_samples=1) * 1e-6 # convert from uJy to Jy
 
+        print('sigma_jy shape')
+        print(sigma_jy.shape)
         # Gaussian noise in Jy, then noisy flux: (N*N_scatters, n_filters)
         noise = np.random.normal(0.0, sigma_jy)
         noisy_jy = phot_jy_rep.T + noise  # (N*N_scatters, n_filters)
+        print('noisy_jy shape')
+        print(noisy_jy.shape)
 
-        if normed_flux_units == "AB":
+        if normed_flux_units == "asinh":
+            print('asinh')
+            # Noisy asinh magnitudes
+            asinh_softening_parameter = score_model._asinh_b_factor
+
+            errors = f_jy_err_to_asinh(
+                    noisy_jy*Jy,
+                    sigma_jy*Jy,
+                    f_b=asinh_softening_parameter,
+                ).T
+
+            scattered = f_jy_to_asinh(
+                noisy_jy*Jy,
+                f_b=asinh_softening_parameter,
+            ).T
+            
+
+        elif normed_flux_units == "AB":
+            print('AB')
             # Noisy AB magnitudes
             safe_noisy = np.where(noisy_jy > 0, noisy_jy, np.finfo(np.float32).tiny)
             scattered = (-2.5 * np.log10(safe_noisy / 3631.0)).T  # (n_filters, N*N_scatters)
@@ -1006,6 +1052,13 @@ class SBI_Fitter:
             scattered = (noisy_jy * scale).T
             errors = (sigma_jy * scale).T
 
+        if reset_order:
+            # revert to original filter order
+            scattered = scattered[resetting_indices]
+            errors = errors[resetting_indices]
+
+        print('shapes')
+        print(scattered.shape)
         if return_errors:
             return scattered, errors
         return scattered
@@ -1705,6 +1758,8 @@ class SBI_Fitter:
                     for model in empirical_noise_models.values()
                 ]
             )
+            if isinstance(empirical_noise_models, ScoreBasedUncertaintyModel) and empirical_noise_models._is_asinh_scaled:
+                err_is_asinh = True
             assert asinh_softening_parameters is not None or err_is_asinh, (
                 "asinh_softening_parameters must be provided for asinh normalization."
             )
@@ -3557,7 +3612,7 @@ class SBI_Fitter:
 
         if verbose:
             logger.info(
-                f"""Splitting dataset with {num_samples} samples into training"""
+                f"""Splitting dataset with {num_samples} samples into training """
                 f"""and testing sets with {train_fraction:.2f} train fraction."""
             )
         indices = np.arange(num_samples)
