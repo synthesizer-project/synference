@@ -30,6 +30,7 @@ try:
     from synthesizer.emissions import plot_spectra
     from synthesizer.grid import Grid
     from synthesizer.instruments import UVJ, FilterCollection, Instrument
+    from synthesizer.instruments.instrument_base import InstrumentBase
     from synthesizer.parametric import SFH, Galaxy, Stars, ZDist
     from synthesizer.particle.stars import sample_sfzh
     from synthesizer.pipeline import Pipeline
@@ -5073,7 +5074,9 @@ class GalaxySimulator(object):
         assert isinstance(grid, Grid), f"Grid must be a subclass of Grid. Got {type(grid)} instead."
         self.grid = grid
 
-        assert isinstance(instrument, Instrument), f"""Instrument must be a subclass of Instrument.
+        assert isinstance(
+            instrument, InstrumentBase
+        ), f"""Instrument must be a subclass of InstrumentBase.
             Got {type(instrument)} instead."""
         assert isinstance(
             emission_model, EmissionModel
@@ -5999,8 +6002,9 @@ class GalaxySimulator(object):
                     out_units=self.out_flux_unit,
                 )
 
-                scattered_fluxes[i] = scattered_flux
-                errors[i] = sigma
+                # need to drop any extra dimensions and get a scalar
+                scattered_fluxes[i] = scattered_flux.item()
+                errors[i] = sigma.item()
 
             return scattered_fluxes, errors
 
