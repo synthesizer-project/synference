@@ -1372,7 +1372,7 @@ class ScoreBasedUncertaintyModel:
             assert isinstance(photometry, unyt_array), (
                 "photometry must be a unyt_array when asinh_scaling is True"
             )
-            photometry = f_jy_to_asinh(photometry, b=asinh_b_factor)
+            photometry = f_jy_to_asinh(photometry, f_b=asinh_b_factor)
 
         elif isinstance(photometry, unyt_array):
             photometry = (
@@ -1658,6 +1658,7 @@ class ScoreBasedUncertaintyModel:
         n_steps: int = 50,
         true_flux_units: str = None,
         method: str = "ode",
+        max_sigma_jy: Optional[float] = None,
         **kwargs: Any,
     ) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
         """Applies diffusion-model-sampled Gaussian noise to the input flux.
@@ -1673,6 +1674,8 @@ class ScoreBasedUncertaintyModel:
             true_flux_units (str): Units of ``flux`` (e.g. ``"Jy"``, ``"uJy"``).
                 Required when ``flux`` is not a unyt_array. Default ``None``.
             method (str): Reverse-time solver — ``"ode"`` or ``"sde"``. Default ``"ode"``.
+            max_sigma_jy (float, optional): Maximum allowed uncertainty in Jy.
+                If provided, uncertainties will be clipped to this value.
             **kwargs: Absorbed for interface compatibility; not used.
 
         Returns:
@@ -1693,9 +1696,31 @@ class ScoreBasedUncertaintyModel:
         safe_jy = np.where(flux_jy > 0, flux_jy, np.finfo(np.float32).tiny)
         magnitudes = (-2.5 * np.log10(safe_jy / 3631.0)).astype(np.float32)
 
+        # Check input dimensions match number of filters
+        if magnitudes.ndim == 1:
+            if magnitudes.shape[0] != self.n_filters:
+                raise ValueError(
+                    f"Input flux has {magnitudes.shape[0]} filters"
+                    " but model was trained with {self.n_filters} filters: {self.filter_names}"
+                )
+        elif magnitudes.ndim == 2:
+            if magnitudes.shape[1] != self.n_filters:
+                raise ValueError(
+                    f"Input flux has {magnitudes.shape[1]} filters, "
+                    "but model was trained with {self.n_filters} filters: {self.filter_names}"
+                )
+
         sigma = self.sample_uncertainty(magnitudes, n_samples=1, n_steps=n_steps, method=method)
         # sigma is in uJy; convert to Jy for noise sampling
         sigma_jy = sigma * 1e-6
+        if max_sigma_jy is not None:
+            max_sigma_jy = (
+                max_sigma_jy.to_value("Jy")
+                if isinstance(max_sigma_jy, unyt_quantity)
+                else max_sigma_jy
+            )
+            sigma_jy = np.clip(sigma_jy, a_min=None, a_max=max_sigma_jy)
+
         noise = np.random.normal(0.0, sigma_jy)
 
         noisy_flux = unyt_array(flux_jy + noise, units="Jy")
@@ -1819,7 +1844,10 @@ class ScoreBasedUncertaintyModel:
             target = target._orig_mod
 
         target.load_state_dict(state_dict)
-        instance.ema_net.module.load_state_dict(state_dict)
+        ema_target = instance.ema_net.module
+        if hasattr(ema_target, "_orig_mod"):
+            ema_target = ema_target._orig_mod
+        ema_target.load_state_dict(state_dict)
         instance.score_net.to(dev)
         instance.ema_net.to(dev)
         instance._is_trained = True
