@@ -5268,7 +5268,7 @@ class GalaxySimulator(object):
                 f"Library path {library_path} does not exist. Cannot create GalaxySimulator."
             )
 
-        with h5py.File(library_path, "r") as f:
+        with h5py.File(library_path, "r+") as f:
             if "Model" not in f:
                 raise ValueError(
                     f"""Library file {library_path} does not contain 'Model' group.
@@ -5316,6 +5316,8 @@ class GalaxySimulator(object):
             grid = Grid(grid_name, grid_dir)  # new_lam=lam)
 
             # Step 2. Make instrument
+            if model_group["Instrument"].attrs.get("instrument_type", None) is None:
+                model_group["Instrument"].attrs["instrument_type"] = "photometric"
             instrument = Instrument._from_hdf5(model_group["Instrument"])
 
             # Step 3 - recreate cosmology
