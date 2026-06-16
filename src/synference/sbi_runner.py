@@ -6437,7 +6437,7 @@ class SBI_Fitter:
         sampling_kwargs = {}
         # check if sampler.sample accepts arbitrary keyword arguments,
         # if so pass them the timeout_seconds_per_test
-        _, _, varkw, _ = inspect.getfullargspec(sampler.sample)
+        varkw = inspect.getfullargspec(sampler.sample).varkw
         if "kwargs" in varkw:
             if timeout_seconds_per_test is not None and sample_method == "direct":
                 print(f"{timeout_seconds_per_test}s per sample.")
