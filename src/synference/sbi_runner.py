@@ -2447,8 +2447,17 @@ class SBI_Fitter:
             nm = isinstance(nm, dict) and all(
                 isinstance(m, AsinhEmpiricalUncertaintyModel) for m in nm.values()
             )
-        else:
-            nm = False
+            if nm:
+                f_b = self.feature_array_flags["empirical_noise_models"][feature_name].b.to("Jy")
+            
+            if isinstance(self.feature_array_flags.get("empirical_noise_models"), ScoreBasedUncertaintyModel):
+                if self.feature_array_flags["empirical_noise_models"]._is_asinh_scaled:
+                    nm = True
+                    f_b = self.feature_array_flags["empirical_noise_models"]._asinh_b_factor.to("Jy")
+                else:
+                    nm = False
+            else:
+                nm = False
 
         snrs = []
         for feature_name in snr_feature_names or self.feature_names:
@@ -2458,7 +2467,6 @@ class SBI_Fitter:
                 feature_index = self.feature_names.index(feature_name)
                 err_index = self.feature_names.index(f"unc_{feature_name}")
                 # Need to know SNR from asinh magnitudes.
-                f_b = self.feature_array_flags["empirical_noise_models"][feature_name].b.to("Jy")
                 snr = asinh_to_snr(
                     X_test[:, feature_index],
                     X_test[:, err_index],
