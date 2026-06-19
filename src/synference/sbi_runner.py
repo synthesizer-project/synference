@@ -1791,7 +1791,9 @@ class SBI_Fitter:
 
         phot = unyt_array(phot_grid, units=raw_observation_units)
         converted = False
-
+        print("here")
+        print(phot.units)
+        print(phot_grid)
         if scatter_fluxes:
             assert depths is not None or empirical_noise_models is not None, (
                 "If scattering fluxes, depths or empirical noise models must be provided."

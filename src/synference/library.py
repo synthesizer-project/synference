@@ -2065,11 +2065,15 @@ class GalaxyBasis:
 
                 if em_model_params["dust_law"] is not None:
                     em_group.attrs["dust_law"] = em_model_params["dust_law"]
-                    em_group.attrs["dust_attenuation_keys"] = em_model_params["dust_attenuation_keys"]
+                    em_group.attrs["dust_attenuation_keys"] = em_model_params[
+                        "dust_attenuation_keys"
+                    ]
                     em_group.attrs["dust_attenuation_values"] = em_model_params[
                         "dust_attenuation_values"
                     ]
-                    em_group.attrs["dust_attenuation_units"] = em_model_params["dust_attenuation_units"]
+                    em_group.attrs["dust_attenuation_units"] = em_model_params[
+                        "dust_attenuation_units"
+                    ]
 
                 if em_model_params["dust_emission"] is not None:
                     em_group.attrs["dust_emission"] = em_model_params["dust_emission"]
@@ -2077,8 +2081,10 @@ class GalaxyBasis:
                     em_group.attrs["dust_emission_values"] = em_model_params["dust_emission_values"]
                     em_group.attrs["dust_emission_units"] = em_model_params["dust_emission_units"]
             except Exception as e:
-                print(em_model_params["dust_emission_keys"],  em_model_params["dust_emission_values"])
-                logger.critical(f'Error saving emission model to library: {e}, {em_model_params}')
+                print(
+                    em_model_params["dust_emission_keys"], em_model_params["dust_emission_values"]
+                )
+                logger.critical(f"Error saving emission model to library: {e}, {em_model_params}")
 
             # Store a version of astropy cosmo
             cosmo_yaml = self.cosmo.to_format("yaml")
@@ -5772,6 +5778,12 @@ class GalaxySimulator(object):
                 fluxes = galaxy.stars.spectra[self.emission_model_key].get_photo_fnu(
                     self.instrument.filters
                 )
+                print("check")
+                print(galaxy.redshift)
+                print(type(fluxes))
+                print(fluxes)
+                print(fluxes.__dict__)
+                print(fluxes.__class__.__dict__["photo_fnu"].unit)
                 outputs["photo_fnu"] = fluxes.photo_fnu
                 outputs["photo_wav"] = fluxes.filters.pivot_lams
 
