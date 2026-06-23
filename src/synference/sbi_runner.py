@@ -2,6 +2,7 @@
 
 import copy
 import glob
+import inspect
 import json
 import logging
 import os
@@ -974,8 +975,8 @@ class SBI_Fitter:
             reset_order = True
             actual_lower = [f.lower() for f in actual]
             expected_lower = [f.lower() for f in expected]
-            print(expected_lower)
-            print(actual_lower)
+            #print(expected_lower)
+            #print(actual_lower)
            
             new_indices = [actual_lower.index(filter) for filter in expected_lower]
     
@@ -994,9 +995,6 @@ class SBI_Fitter:
             )
 
         n_filters, N = phot_jy.shape
-        
-        print('nfilters, N')
-        print(n_filters, N)
 
         # Repeat each galaxy N_scatters times: (n_filters, N*N_scatters)
         phot_jy_rep = np.repeat(phot_jy, N_scatters, axis=1)
@@ -1011,19 +1009,14 @@ class SBI_Fitter:
             phot_mag = (-2.5 * np.log10(safe_jy / 3631.0)).T.astype(np.float32)
 
         # Sample per-band uncertainties: (N*N_scatters, n_filters) in Jy
-        print(phot_mag.shape)
         sigma_jy = score_model.sample_uncertainty(phot_mag, n_samples=1) * 1e-6 # convert from uJy to Jy
 
-        print('sigma_jy shape')
-        print(sigma_jy.shape)
         # Gaussian noise in Jy, then noisy flux: (N*N_scatters, n_filters)
         noise = np.random.normal(0.0, sigma_jy)
         noisy_jy = phot_jy_rep.T + noise  # (N*N_scatters, n_filters)
-        print('noisy_jy shape')
-        print(noisy_jy.shape)
+
 
         if normed_flux_units == "asinh":
-            print('asinh')
             # Noisy asinh magnitudes
             asinh_softening_parameter = score_model._asinh_b_factor
 
@@ -6621,6 +6614,16 @@ class SBI_Fitter:
         # )
         # shape = test_sample.shape
 
+
+        sampling_kwargs = {}
+        # check if sampler.sample accepts arbitrary keyword arguments,
+        # if so pass them the timeout_seconds_per_test
+        varkw = inspect.signature(sampler.sample).parameters
+        if "kwargs" in varkw:
+            if timeout_seconds_per_test is not None and sample_method == "direct":
+                print(f"{timeout_seconds_per_test}s per sample.")
+                sampling_kwargs["max_sampling_time"] = timeout_seconds_per_test
+
         if log_times:
             times = []
         # Draw samples from the posterior
@@ -6630,7 +6633,8 @@ class SBI_Fitter:
             start_time = time.time()
             try:
                 # print(X_test_array[i])
-                samples[i] = sampler.sample(nsteps=num_samples, x=X_test_array[i], progress=False)
+                samples[i] = sampler.sample(nsteps=num_samples, x=X_test_array[i], progress=False, 
+                                            **sampling_kwargs)
                 """samples[i] = sample_with_timeout(
                     sampler,
                     num_samples,

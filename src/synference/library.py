@@ -5778,12 +5778,7 @@ class GalaxySimulator(object):
                 fluxes = galaxy.stars.spectra[self.emission_model_key].get_photo_fnu(
                     self.instrument.filters
                 )
-                print("check")
-                print(galaxy.redshift)
-                print(type(fluxes))
-                print(fluxes)
-                print(fluxes.__dict__)
-                print(fluxes.__class__.__dict__["photo_fnu"].unit)
+
                 outputs["photo_fnu"] = fluxes.photo_fnu
                 outputs["photo_wav"] = fluxes.filters.pivot_lams
 

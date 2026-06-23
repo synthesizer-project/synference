@@ -1654,7 +1654,7 @@ class ScoreBasedUncertaintyModel:
         if n_samples == 1:
             sigma_np = sigma_np[:, 0, :]
 
-        print("sigma", sigma_np)
+        #print("sigma", sigma_np)
         return sigma_np[0] if scalar_input else sigma_np
 
     def apply_noise(
