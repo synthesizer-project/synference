@@ -36,6 +36,8 @@ from .noise_models import (
 
 from .custom_runner import SBICustomRunner
 
+from .simformer import SimformerModel, UniformBoxPrior, train_simformer
+
 try:
     from .sbi_runner import SBI_Fitter, MissingPhotometryHandler, Simformer_Fitter
 except ImportError as e:
@@ -43,7 +45,6 @@ except ImportError as e:
     print('Dependencies for SBI not installed. Only the library generation functions will be available.')
 
 
-#from .simformer import UncertainityModelTask
 warnings.filterwarnings('ignore')
 
 __all__ = [
@@ -78,6 +79,9 @@ __all__ = [
     "SBI_Fitter",
     "MissingPhotometryHandler",
     "Simformer_Fitter",
+    "SimformerModel",
+    "UniformBoxPrior",
+    "train_simformer",
     "GalaxySimulator",
     "generate_random_DB_sfh",
     "EmpiricalUncertaintyModel",

@@ -392,7 +392,6 @@ def main_task(args: Args) -> None:
         )
     else:
         args = dict(
-            backend="jax",
             num_training_simulations=10_000,
             train_test_fraction=args.train_test_fraction,
             random_seed=42,
@@ -401,7 +400,6 @@ def main_task(args: Args) -> None:
             load_existing_model=True,
             name_append=args.name_append,
             save_method="joblib",
-            task_func=None,
         )
 
     print("Running SBI training.")
