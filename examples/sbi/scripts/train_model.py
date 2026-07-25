@@ -12,8 +12,8 @@ from simple_parsing import ArgumentParser
 
 from synference import (
     AsinhEmpiricalUncertaintyModel,
-    ScoreBasedUncertaintyModel,
     SBI_Fitter,
+    ScoreBasedUncertaintyModel,
     Simformer_Fitter,
     create_uncertainty_models_from_EPOCHS_cat,
 )
@@ -89,7 +89,8 @@ class Args:
     custom_config_yaml: str = None
     sql_db_path: str = None  # Path to SQLite database for storing results
     precomputed_noise_model_path: str = None  # Path saved HDF5 file with noise
-    
+
+
 parser.add_arguments(Args, dest="args")
 
 
@@ -121,13 +122,16 @@ def main_task(args: Args) -> None:
         phot_to_remove = ""
     phot_to_remove = phot_to_remove.split(",")
     hst_bands = ["F435W", "F606W", "F775W", "F814W", "F850LP"]
-    
+
     if args.scatter_fluxes > 0:
         if (args.data_err_file is None and args.precomputed_noise_model_path is None) or (
             args.data_err_file is not None and args.precomputed_noise_model_path is not None
         ):
-            raise ValueError("When scatter_fluxes > 0, exactly one of data_err_file or precomputed_noise_model_path must be provided.")
-    
+            raise ValueError(
+                "When scatter_fluxes > 0, exactly one of data_err_file or "
+                "precomputed_noise_model_path must be provided."
+            )
+
     if args.scatter_fluxes > 0 and args.data_err_file:
         table = Table.read(args.data_err_file, format="fits", hdu=args.data_err_hdu)
         bands = [i.split("_")[-1] for i in table.colnames if i.startswith("loc_depth")]
@@ -157,8 +161,10 @@ def main_task(args: Args) -> None:
         )
     elif args.scatter_fluxes > 0 and args.precomputed_noise_model_path:
         from synference.noise_models import load_unc_model_from_hdf5
-        empirical_noise_models = load_unc_model_from_hdf5(args.precomputed_noise_model_path)['noise_model']
-        
+
+        empirical_noise_models = load_unc_model_from_hdf5(args.precomputed_noise_model_path)[
+            "noise_model"
+        ]
 
     else:
         empirical_noise_models = {}
@@ -289,33 +295,40 @@ def main_task(args: Args) -> None:
                 unused_filters.append(band_name)
 
     print("Photometry in grid:", empirical_model_fitter.raw_observation_names, file=sys.stdout)
+    use_noise_models = args.scatter_fluxes > 0 and args.include_errors_in_feature_array
+    is_score_model = isinstance(empirical_noise_models, ScoreBasedUncertaintyModel)
+
     for filt in empirical_model_fitter.raw_observation_names:
-        if args.scatter_fluxes > 0 and args.include_errors_in_feature_array and isinstance(empirical_noise_models, ScoreBasedUncertaintyModel):
+        if not use_noise_models:
+            continue
+        if is_score_model:
+            # The score model conditions on all of its bands at once, so any
+            # filter it was not trained on cannot be used.
             check_names = [i.lower() for i in empirical_noise_models.filter_names]
             if filt.lower() not in check_names:
-                print(f"Filter {filt} not in empirical noise models. Adding to unused filters.", file=sys.stdout)
+                print(
+                    f"Filter {filt} not in the score-based noise model. Adding to unused filters.",
+                    file=sys.stdout,
+                )
                 unused_filters.append(filt)
-            continue
-        if (
-            args.scatter_fluxes > 0
-            and args.include_errors_in_feature_array
-            and filt not in empirical_noise_models
-        ):
+        elif filt not in empirical_noise_models:
             unused_filters.append(filt)
 
     print(f"Unused filters: {unused_filters}", file=sys.stdout)
 
     # flux_units is "AB" unless scatter_fluxes and include_errors_in_feature_array
-    # and all noise models are AsinhUncertaintyModels
+    # and the noise model(s) work in asinh magnitudes
     flux_units = "AB"
-    if args.scatter_fluxes > 0 and args.include_errors_in_feature_array and not isinstance(empirical_noise_models, ScoreBasedUncertaintyModel):
-        if all(
-            isinstance(model, AsinhEmpiricalUncertaintyModel)
-            for model in empirical_noise_models.values()
-        ):
+    if use_noise_models:
+        if is_score_model:
+            asinh = empirical_noise_models.is_asinh_scaled
+        else:
+            asinh = all(
+                isinstance(model, AsinhEmpiricalUncertaintyModel)
+                for model in empirical_noise_models.values()
+            )
+        if asinh:
             flux_units = "asinh"
-    elif args.scatter_fluxes > 0 and args.include_errors_in_feature_array and isinstance(empirical_noise_models, ScoreBasedUncertaintyModel) and empirical_noise_models._is_asinh_scaled:
-        flux_units = "asinh"
 
     empirical_model_fitter.create_feature_array_from_raw_photometry(
         extra_features=list(args.model_features[0].split(",")) if args.model_features else [],
@@ -461,5 +474,5 @@ if __name__ == "__main__":
             main_task(args)
 
 
-# python synference/examples/sbi/scripts/train_model.py --scatter_fluxes=1 --include_errors_in_feature_array=True --photometry_to_remove=HST/ACS_WFC.F606W,HST/ACS_WFC.F775W,HST/ACS_WFC.F814W,HST/ACS_WFC.F850LP,JWST/NIRCam.F070,HST/WFC3_IR.F105W,HST/WFC3_IR.F110W,HST/WFC3_IR.F110W,HST/WFC3_IR.F125W,HST/WFC3_IR.F140W,HST/WFC3_IR.F160W,JWST/NIRCam.F070W,JWST/NIRCam.F090W,JWST/NIRCam.F115W,JWST/NIRCam.F140M,JWST/NIRCam.F150W,JWST/NIRCam.F162M,JWST/NIRCam.F182M,JWST/NIRCam.F200W,JWST/NIRCam.F210M,JWST/NIRCam.F250M,JWST/NIRCam.F277W,JWST/NIRCam.F300M,JWST/NIRCam.F335M,JWST/NIRCam.F356W,JWST/NIRCam.F360M,JWST/NIRCam.F410M,JWST/NIRCam.F430M,JWST/NIRCam.F444W,JWST/NIRCam.F460M,JWST/NIRCam.F480M,HST/ACS_WFC/F475W,JWST/MIRI.F560W,JWST/MIRI.F770W,JWST/MIRI.F1000W,JWST/MIRI.F1130W,JWST/MIRI.F1280W,JWST/MIRI.F1500W,JWST/MIRI.F1800W,JWST/MIRI.F2100W,JWST/MIRI.F2550W,Spitzer/IRAC.I3,Spitzer/IRAC.I4,CTIO/DECam.u,CTIO/DECam.g,CTIO/DECam.r,CTIO/DECam.i,CTIO/DECam.z,CTIO/DECam.Y,LSST/LSST.u,LSST/LSST.g,LSST/LSST.r,LSST/LSST.i,LSST/LSST.z,LSST/LSST.Y,PAN-STARRS/PS1.g,PAN-STARRS/PS1.r,PAN-STARRS/PS1.i,PAN-STARRS/PS1.w,PAN-STARRS/PS1.z,PAN-STARRS/PS1.y,Paranal/VISTA.Z,CFHT/MegaCam.g,CFHT/MegaCam.r,CFHT/MegaCam.i,CFHT/MegaCam.z,HST/ACS_WFC.F435W,HST/ACS_WFC.F475W,Euclid/NISP.Y,Euclid/NISP.J/Euclid/NISP.H --grid_path=/cosma/apps/dp276/dc-harv3/synference/libraries/grid_BPASS_Chab_DenseBasis_SFH_0.01_z_14_logN_5.0_Calzetti_v4_multinode.hdf5 --model_name=BPASS_DenseBasis_COSMOS2020 --name_append=nsf --train_test_fraction=0.90 --parameter_transformations="Av=log10,sfr_10=log10_floor,mass_weighted_age=log10" --parameters_to_add="mass_weighted_age,sfr_10,log_surviving_mass,beta" --model_types=nsf --custom_config_yaml=/cosma/apps/dp276/dc-harv3/synference/examples/sbi/configs/best_params_2101.yaml --precomputed_noise_model_path=/cosma/apps/dp276/dc-harv3/synference/priv/COSMOS2020_noise_model_asinh.h5
-
+# Example invocation with a pre-trained score-based noise model:
+# python synference/examples/sbi/scripts/train_model.py --scatter_fluxes=1 --include_errors_in_feature_array=True --photometry_to_remove=HST/ACS_WFC.F606W,HST/ACS_WFC.F775W,HST/ACS_WFC.F814W,HST/ACS_WFC.F850LP,JWST/NIRCam.F070,HST/WFC3_IR.F105W,HST/WFC3_IR.F110W,HST/WFC3_IR.F110W,HST/WFC3_IR.F125W,HST/WFC3_IR.F140W,HST/WFC3_IR.F160W,JWST/NIRCam.F070W,JWST/NIRCam.F090W,JWST/NIRCam.F115W,JWST/NIRCam.F140M,JWST/NIRCam.F150W,JWST/NIRCam.F162M,JWST/NIRCam.F182M,JWST/NIRCam.F200W,JWST/NIRCam.F210M,JWST/NIRCam.F250M,JWST/NIRCam.F277W,JWST/NIRCam.F300M,JWST/NIRCam.F335M,JWST/NIRCam.F356W,JWST/NIRCam.F360M,JWST/NIRCam.F410M,JWST/NIRCam.F430M,JWST/NIRCam.F444W,JWST/NIRCam.F460M,JWST/NIRCam.F480M,HST/ACS_WFC/F475W,JWST/MIRI.F560W,JWST/MIRI.F770W,JWST/MIRI.F1000W,JWST/MIRI.F1130W,JWST/MIRI.F1280W,JWST/MIRI.F1500W,JWST/MIRI.F1800W,JWST/MIRI.F2100W,JWST/MIRI.F2550W,Spitzer/IRAC.I3,Spitzer/IRAC.I4,CTIO/DECam.u,CTIO/DECam.g,CTIO/DECam.r,CTIO/DECam.i,CTIO/DECam.z,CTIO/DECam.Y,LSST/LSST.u,LSST/LSST.g,LSST/LSST.r,LSST/LSST.i,LSST/LSST.z,LSST/LSST.Y,PAN-STARRS/PS1.g,PAN-STARRS/PS1.r,PAN-STARRS/PS1.i,PAN-STARRS/PS1.w,PAN-STARRS/PS1.z,PAN-STARRS/PS1.y,Paranal/VISTA.Z,CFHT/MegaCam.g,CFHT/MegaCam.r,CFHT/MegaCam.i,CFHT/MegaCam.z,HST/ACS_WFC.F435W,HST/ACS_WFC.F475W,Euclid/NISP.Y,Euclid/NISP.J/Euclid/NISP.H --grid_path=/cosma/apps/dp276/dc-harv3/synference/libraries/grid_BPASS_Chab_DenseBasis_SFH_0.01_z_14_logN_5.0_Calzetti_v4_multinode.hdf5 --model_name=BPASS_DenseBasis_COSMOS2020 --name_append=nsf --train_test_fraction=0.90 --parameter_transformations="Av=log10,sfr_10=log10_floor,mass_weighted_age=log10" --parameters_to_add="mass_weighted_age,sfr_10,log_surviving_mass,beta" --model_types=nsf --custom_config_yaml=/cosma/apps/dp276/dc-harv3/synference/examples/sbi/configs/best_params_2101.yaml --precomputed_noise_model_path=/cosma/apps/dp276/dc-harv3/synference/priv/COSMOS2020_noise_model_asinh.h5  # noqa: E501

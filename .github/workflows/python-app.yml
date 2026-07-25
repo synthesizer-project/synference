@@ -31,16 +31,25 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
+        # syntillate (score-based diffusion noise model) is a hard dependency but
+        # is not yet on PyPI, so install it before resolving synference itself.
+        pip install "syntillate@git+https://github.com/synthesizer-project/syntillate.git"
         pip install .
         pip install ruff pytest
         pip install "ltu_ili@git+https://github.com/maho3/ltu-ili.git"
         pip install "cosmos-synthesizer@git+https://github.com/synthesizer-project/synthesizer.git#egg=synthesizer"
         python -c "from synference.utils import download_test_data; download_test_data()"
-    
+
+    - name: Download SVO filter cache
+      run: |
+        # Pre-fetch cached SVO filter responses so the tests never hit the live
+        # SVO service, which is intermittently unavailable.
+        synthesizer-download --svo-filter-cache
+
     - name: Test import
       run: |
-        python -c "import synference" 
-    
+        python -c "import synference"
+
     - name: Test with pytest
       run: |
         pytest

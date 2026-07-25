@@ -931,18 +931,20 @@ class SBI_Fitter:
         Parameters:
             photometry_array: Flux array of shape ``(n_filters, N)``, as a
                 ``unyt_array`` in any flux unit.
-            phot_names: Ordered list of filter names, length ``n_filters``.
-                Must match ``score_model.filter_names`` exactly.
+            phot_names: List of filter names, length ``n_filters``. Must contain
+                the same filters as ``score_model.filter_names``; any ordering
+                is accepted and the output is returned in this order.
             score_model: Trained :class:`ScoreBasedUncertaintyModel`.
             N_scatters: Number of independent noise realisations per galaxy.
             flux_units: Input flux units (used only if ``photometry_array`` is
                 not a unyt_array; ignored otherwise).
             return_errors: If ``True`` returns ``(scattered, errors)``.
             normed_flux_units: Target units for the returned scattered
-                photometry. ``"AB"`` returns AB magnitudes and AB-mag errors.
-                Any other string is treated as a physical flux unit (e.g.
-                ``"nJy"``) and the values are converted accordingly.
-                ``"asinh"`` is not supported.
+                photometry. ``"AB"`` returns AB magnitudes and AB-mag errors,
+                ``"asinh"`` returns asinh magnitudes using the score model's own
+                softening parameter (and requires an asinh-scaled model). Any
+                other string is treated as a physical flux unit (e.g. ``"nJy"``)
+                and the values are converted accordingly.
 
         Returns:
             ``np.ndarray`` of shape ``(n_filters, N*N_scatters)`` when
@@ -951,37 +953,29 @@ class SBI_Fitter:
 
         Raises:
             ValueError: If the filter names do not match the model, or if
-                ``normed_flux_units="asinh"`` is requested.
+                ``photometry_array`` carries no units and ``flux_units`` is not
+                given.
         """
         if normed_flux_units == "asinh":
-            assert score_model._is_asinh_scaled, (
+            assert score_model.is_asinh_scaled, (
                 "asinh-scaled output requested but score model is not asinh-scaled."
             )
 
-        expected = score_model.filter_names
-        actual = list(phot_names)
+        expected = [f.lower() for f in score_model.filter_names]
+        actual = [f.lower() for f in phot_names]
         reset_order = False
         if actual != expected:
-            # reorder photometry_array to match expected filter order
-            # we will revert to the original order before returning
-
-            # check same filters in both, ignoring order (set seems broken)
-            if not set(actual).issubset(set(expected)):
+            # Reorder photometry_array to the model's filter order, reverting
+            # to the caller's order before returning.
+            if sorted(actual) != sorted(expected):
                 raise ValueError(
                     f"Filter names in phot_names do not match score model filter names. "
-                    f"Expected: {set(expected)}, actual: {set(actual)}"
+                    f"Expected: {sorted(set(expected))}, actual: {sorted(set(actual))}"
                 )
 
             reset_order = True
-            actual_lower = [f.lower() for f in actual]
-            expected_lower = [f.lower() for f in expected]
-            #print(expected_lower)
-            #print(actual_lower)
-           
-            new_indices = [actual_lower.index(filter) for filter in expected_lower]
-    
+            new_indices = [actual.index(filt) for filt in expected]
             photometry_array = photometry_array[new_indices, :]
-            phot_names = [phot_names[i] for i in new_indices]
             resetting_indices = np.argsort(new_indices)
 
         # Ensure we have a unyt_array in Jy
@@ -994,52 +988,33 @@ class SBI_Fitter:
                 "flux_units must be provided when photometry_array is not a unyt_array."
             )
 
-        n_filters, N = phot_jy.shape
-
         # Repeat each galaxy N_scatters times: (n_filters, N*N_scatters)
         phot_jy_rep = np.repeat(phot_jy, N_scatters, axis=1)
 
-        # AB magnitudes for the score model: shape (N*N_scatters, n_filters)
-        # check if this is an asinh score model - if so, we should provide flux directly
-        if score_model._is_asinh_scaled:
-            # For asinh-scaled models, we provide flux directly
-            phot_mag = phot_jy_rep.T * Jy
-        else:
-            safe_jy = np.where(phot_jy_rep > 0, phot_jy_rep, np.finfo(np.float32).tiny)
-            phot_mag = (-2.5 * np.log10(safe_jy / 3631.0)).T.astype(np.float32)
-
-        # Sample per-band uncertainties: (N*N_scatters, n_filters) in Jy
-        sigma_jy = score_model.sample_uncertainty(phot_mag, n_samples=1) * 1e-6 # convert from uJy to Jy
+        # Sample per-band uncertainties: (N*N_scatters, n_filters). The model
+        # applies its own AB/asinh conversion, so pass fluxes with units.
+        sigma = score_model.sample_uncertainty(unyt_array(phot_jy_rep.T, units=Jy), n_samples=1)
+        sigma_jy = unyt_array(sigma, units=score_model.sigma_units).to_value(Jy)
 
         # Gaussian noise in Jy, then noisy flux: (N*N_scatters, n_filters)
         noise = np.random.normal(0.0, sigma_jy)
         noisy_jy = phot_jy_rep.T + noise  # (N*N_scatters, n_filters)
 
-
         if normed_flux_units == "asinh":
-            # Noisy asinh magnitudes
-            asinh_softening_parameter = score_model._asinh_b_factor
-
-            errors = f_jy_err_to_asinh(
-                    noisy_jy*Jy,
-                    sigma_jy*Jy,
-                    f_b=asinh_softening_parameter,
-                ).T
-
-            scattered = f_jy_to_asinh(
-                noisy_jy*Jy,
-                f_b=asinh_softening_parameter,
-            ).T
-            
-
+            # f_b is stored per filter; broadcast it over the object axis so the
+            # (N, n_filters) layout used here matches the utility's expectations.
+            f_b = unyt_array(
+                np.broadcast_to(score_model.asinh_b_factor.to_value(Jy), noisy_jy.shape).copy(),
+                units=Jy,
+            )
+            errors = f_jy_err_to_asinh(noisy_jy * Jy, sigma_jy * Jy, f_b=f_b).T
+            scattered = f_jy_to_asinh(noisy_jy * Jy, f_b=f_b).T
         elif normed_flux_units == "AB":
-            print('AB')
             # Noisy AB magnitudes
             safe_noisy = np.where(noisy_jy > 0, noisy_jy, np.finfo(np.float32).tiny)
             scattered = (-2.5 * np.log10(safe_noisy / 3631.0)).T  # (n_filters, N*N_scatters)
             # AB magnitude error: σ_AB = (2.5/ln10) * σ_Jy / F_Jy
-            ref_jy = np.where(noisy_jy > 0, noisy_jy, np.finfo(np.float32).tiny)
-            errors = ((2.5 / np.log(10)) * sigma_jy / ref_jy).T
+            errors = ((2.5 / np.log(10)) * sigma_jy / safe_noisy).T
         else:
             scale = unyt_array(1.0, "Jy").to(normed_flux_units).value
             scattered = (noisy_jy * scale).T
@@ -1050,8 +1025,6 @@ class SBI_Fitter:
             scattered = scattered[resetting_indices]
             errors = errors[resetting_indices]
 
-        print('shapes')
-        print(scattered.shape)
         if return_errors:
             return scattered, errors
         return scattered
@@ -1751,8 +1724,8 @@ class SBI_Fitter:
                     for model in empirical_noise_models.values()
                 ]
             )
-            if isinstance(empirical_noise_models, ScoreBasedUncertaintyModel) and empirical_noise_models._is_asinh_scaled:
-                err_is_asinh = True
+            if isinstance(empirical_noise_models, ScoreBasedUncertaintyModel):
+                err_is_asinh = empirical_noise_models.is_asinh_scaled
             assert asinh_softening_parameters is not None or err_is_asinh, (
                 "asinh_softening_parameters must be provided for asinh normalization."
             )
@@ -2437,35 +2410,35 @@ class SBI_Fitter:
             return X_test, y_test
 
         phot_units = self.feature_array_flags["normed_flux_units"]
-        if self.feature_array_flags.get("empirical_noise_models", None) is not None:
-            nm = self.feature_array_flags["empirical_noise_models"]
-            nm = isinstance(nm, dict) and all(
-                isinstance(m, AsinhEmpiricalUncertaintyModel) for m in nm.values()
-            )
+        # `nm` records whether the features are in asinh magnitudes, in which case
+        # `asinh_b_factors` maps each feature to the softening parameter used.
+        nm = False
+        asinh_b_factors = {}
+        noise_models = self.feature_array_flags.get("empirical_noise_models", None)
+        if isinstance(noise_models, ScoreBasedUncertaintyModel):
+            nm = noise_models.is_asinh_scaled
             if nm:
-                f_b = self.feature_array_flags["empirical_noise_models"][feature_name].b.to("Jy")
-            
-            if isinstance(self.feature_array_flags.get("empirical_noise_models"), ScoreBasedUncertaintyModel):
-                if self.feature_array_flags["empirical_noise_models"]._is_asinh_scaled:
-                    nm = True
-                    f_b = self.feature_array_flags["empirical_noise_models"]._asinh_b_factor.to("Jy")
-                else:
-                    nm = False
-            else:
-                nm = False
+                b_factor = noise_models.asinh_b_factor.to("Jy")
+                asinh_b_factors = {
+                    name.lower(): b_factor[i] for i, name in enumerate(noise_models.filter_names)
+                }
+        elif isinstance(noise_models, dict) and noise_models:
+            nm = all(isinstance(m, AsinhEmpiricalUncertaintyModel) for m in noise_models.values())
+            if nm:
+                asinh_b_factors = {name.lower(): m.b.to("Jy") for name, m in noise_models.items()}
 
         snrs = []
         for feature_name in snr_feature_names or self.feature_names:
             if feature_name.startswith("unc_"):
                 break
-            elif nm:
+            elif nm and feature_name.lower() in asinh_b_factors:
                 feature_index = self.feature_names.index(feature_name)
                 err_index = self.feature_names.index(f"unc_{feature_name}")
                 # Need to know SNR from asinh magnitudes.
                 snr = asinh_to_snr(
                     X_test[:, feature_index],
                     X_test[:, err_index],
-                    f_b=f_b,
+                    f_b=asinh_b_factors[feature_name.lower()],
                 )
 
             elif phot_units == "AB":
@@ -6614,7 +6587,6 @@ class SBI_Fitter:
         # )
         # shape = test_sample.shape
 
-
         sampling_kwargs = {}
         # check if sampler.sample accepts arbitrary keyword arguments,
         # if so pass them the timeout_seconds_per_test
@@ -6633,8 +6605,9 @@ class SBI_Fitter:
             start_time = time.time()
             try:
                 # print(X_test_array[i])
-                samples[i] = sampler.sample(nsteps=num_samples, x=X_test_array[i], progress=False, 
-                                            **sampling_kwargs)
+                samples[i] = sampler.sample(
+                    nsteps=num_samples, x=X_test_array[i], progress=False, **sampling_kwargs
+                )
                 """samples[i] = sample_with_timeout(
                     sampler,
                     num_samples,

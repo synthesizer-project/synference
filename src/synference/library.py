@@ -5077,7 +5077,9 @@ class GalaxySimulator(object):
         assert isinstance(grid, Grid), f"Grid must be a subclass of Grid. Got {type(grid)} instead."
         self.grid = grid
 
-        assert isinstance(instrument, InstrumentBase), f"""Instrument must be a subclass of InstrumentBase.
+        assert isinstance(
+            instrument, InstrumentBase
+        ), f"""Instrument must be a subclass of InstrumentBase.
             Got {type(instrument)} instead."""
         assert isinstance(
             emission_model, EmissionModel
