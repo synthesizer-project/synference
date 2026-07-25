@@ -68,8 +68,6 @@ dependencies = [
     "matplotlib",
     "numba",
     # Score-based diffusion noise model (ScoreBasedUncertaintyModel).
-    # Until syntillate is on PyPI, install it first with:
-    #   pip install git+https://github.com/synthesizer-project/syntillate.git
     "syntillate",
 ]
 
