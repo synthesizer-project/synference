@@ -60,6 +60,7 @@ from .library import GalaxySimulator
 from .noise_models import (
     AsinhEmpiricalUncertaintyModel,
     EmpiricalUncertaintyModel,
+    ScoreBasedUncertaintyModel,
     UncertaintyModel,
     load_unc_model_from_hdf5,
     save_unc_model_to_hdf5,
@@ -740,10 +741,16 @@ class SBI_Fitter:
             ):
                 noise_models = param_dict["feature_array_flags"].pop("empirical_noise_models")
                 noise_model_path = save_path.replace(".pkl", "_empirical_noise_models.h5")
-                param_dict["empirical_noise_models"] = {}
-                for key, model in noise_models.items():
-                    save_unc_model_to_hdf5(model, noise_model_path, key, overwrite=True)
-                    param_dict["empirical_noise_models"][key] = noise_model_path
+                if isinstance(noise_models, ScoreBasedUncertaintyModel):
+                    save_unc_model_to_hdf5(
+                        noise_models, noise_model_path, "__score_based__", overwrite=True
+                    )
+                    param_dict["empirical_noise_models"] = {"__score_based__": noise_model_path}
+                else:
+                    param_dict["empirical_noise_models"] = {}
+                    for key, model in noise_models.items():
+                        save_unc_model_to_hdf5(model, noise_model_path, key, overwrite=True)
+                        param_dict["empirical_noise_models"][key] = noise_model_path
 
         if "stats" in param_dict:
             stats_path = f"{out_dir}/{self.name}{name_append}_summary.json"
@@ -902,6 +909,125 @@ class SBI_Fitter:
             return scattered_photometry, errors
 
         return scattered_photometry
+
+    def _apply_score_based_noise_model(
+        self,
+        photometry_array,
+        phot_names: List[str],
+        score_model: "ScoreBasedUncertaintyModel",
+        N_scatters: int = 5,
+        flux_units=None,
+        return_errors: bool = False,
+        normed_flux_units: str = "AB",
+    ):
+        """Apply a ScoreBasedUncertaintyModel to the full multi-band photometry array.
+
+        Unlike the per-filter empirical path, the score model conditions on all
+        bands simultaneously and returns per-band uncertainties in a single call.
+        The returned arrays match the shape contract of
+        ``_apply_empirical_noise_models`` so the caller can treat both paths
+        identically (set ``converted=True`` after calling this method).
+
+        Parameters:
+            photometry_array: Flux array of shape ``(n_filters, N)``, as a
+                ``unyt_array`` in any flux unit.
+            phot_names: List of filter names, length ``n_filters``. Must contain
+                the same filters as ``score_model.filter_names``; any ordering
+                is accepted and the output is returned in this order.
+            score_model: Trained :class:`ScoreBasedUncertaintyModel`.
+            N_scatters: Number of independent noise realisations per galaxy.
+            flux_units: Input flux units (used only if ``photometry_array`` is
+                not a unyt_array; ignored otherwise).
+            return_errors: If ``True`` returns ``(scattered, errors)``.
+            normed_flux_units: Target units for the returned scattered
+                photometry. ``"AB"`` returns AB magnitudes and AB-mag errors,
+                ``"asinh"`` returns asinh magnitudes using the score model's own
+                softening parameter (and requires an asinh-scaled model). Any
+                other string is treated as a physical flux unit (e.g. ``"nJy"``)
+                and the values are converted accordingly.
+
+        Returns:
+            ``np.ndarray`` of shape ``(n_filters, N*N_scatters)`` when
+            ``return_errors=False``, or a tuple of two such arrays
+            ``(scattered_photometry, errors)`` when ``return_errors=True``.
+
+        Raises:
+            ValueError: If the filter names do not match the model, or if
+                ``photometry_array`` carries no units and ``flux_units`` is not
+                given.
+        """
+        if normed_flux_units == "asinh":
+            assert score_model.is_asinh_scaled, (
+                "asinh-scaled output requested but score model is not asinh-scaled."
+            )
+
+        expected = [f.lower() for f in score_model.filter_names]
+        actual = [f.lower() for f in phot_names]
+        reset_order = False
+        if actual != expected:
+            # Reorder photometry_array to the model's filter order, reverting
+            # to the caller's order before returning.
+            if sorted(actual) != sorted(expected):
+                raise ValueError(
+                    f"Filter names in phot_names do not match score model filter names. "
+                    f"Expected: {sorted(set(expected))}, actual: {sorted(set(actual))}"
+                )
+
+            reset_order = True
+            new_indices = [actual.index(filt) for filt in expected]
+            photometry_array = photometry_array[new_indices, :]
+            resetting_indices = np.argsort(new_indices)
+
+        # Ensure we have a unyt_array in Jy
+        if isinstance(photometry_array, unyt_array):
+            phot_jy = photometry_array.to("Jy").value  # (n_filters, N)
+        elif flux_units is not None:
+            phot_jy = unyt_array(photometry_array, units=flux_units).to("Jy").value
+        else:
+            raise ValueError(
+                "flux_units must be provided when photometry_array is not a unyt_array."
+            )
+
+        # Repeat each galaxy N_scatters times: (n_filters, N*N_scatters)
+        phot_jy_rep = np.repeat(phot_jy, N_scatters, axis=1)
+
+        # Sample per-band uncertainties: (N*N_scatters, n_filters). The model
+        # applies its own AB/asinh conversion, so pass fluxes with units.
+        sigma = score_model.sample_uncertainty(unyt_array(phot_jy_rep.T, units=Jy), n_samples=1)
+        sigma_jy = unyt_array(sigma, units=score_model.sigma_units).to_value(Jy)
+
+        # Gaussian noise in Jy, then noisy flux: (N*N_scatters, n_filters)
+        noise = np.random.normal(0.0, sigma_jy)
+        noisy_jy = phot_jy_rep.T + noise  # (N*N_scatters, n_filters)
+
+        if normed_flux_units == "asinh":
+            # f_b is stored per filter; broadcast it over the object axis so the
+            # (N, n_filters) layout used here matches the utility's expectations.
+            f_b = unyt_array(
+                np.broadcast_to(score_model.asinh_b_factor.to_value(Jy), noisy_jy.shape).copy(),
+                units=Jy,
+            )
+            errors = f_jy_err_to_asinh(noisy_jy * Jy, sigma_jy * Jy, f_b=f_b).T
+            scattered = f_jy_to_asinh(noisy_jy * Jy, f_b=f_b).T
+        elif normed_flux_units == "AB":
+            # Noisy AB magnitudes
+            safe_noisy = np.where(noisy_jy > 0, noisy_jy, np.finfo(np.float32).tiny)
+            scattered = (-2.5 * np.log10(safe_noisy / 3631.0)).T  # (n_filters, N*N_scatters)
+            # AB magnitude error: σ_AB = (2.5/ln10) * σ_Jy / F_Jy
+            errors = ((2.5 / np.log(10)) * sigma_jy / safe_noisy).T
+        else:
+            scale = unyt_array(1.0, "Jy").to(normed_flux_units).value
+            scattered = (noisy_jy * scale).T
+            errors = (sigma_jy * scale).T
+
+        if reset_order:
+            # revert to original filter order
+            scattered = scattered[resetting_indices]
+            errors = errors[resetting_indices]
+
+        if return_errors:
+            return scattered, errors
+        return scattered
 
     def detect_misspecification(self, x_obs, X_train=None, retrain=False):
         """Tests misspecification of the model using the MarginalTrainer from sbi.
@@ -1435,7 +1561,9 @@ class SBI_Fitter:
         normalization_unit: str = "AB",
         verbose: bool = True,
         scatter_fluxes: Union[int, bool] = False,
-        empirical_noise_models: Optional[Dict[str, EmpiricalUncertaintyModel]] = None,
+        empirical_noise_models: Optional[
+            Union[Dict[str, EmpiricalUncertaintyModel], "ScoreBasedUncertaintyModel"]
+        ] = None,
         depths: Optional[unyt_array] = None,
         include_errors_in_feature_array: bool = False,
         min_flux_pc_error: float = 0.0,
@@ -1596,6 +1724,8 @@ class SBI_Fitter:
                     for model in empirical_noise_models.values()
                 ]
             )
+            if isinstance(empirical_noise_models, ScoreBasedUncertaintyModel):
+                err_is_asinh = empirical_noise_models.is_asinh_scaled
             assert asinh_softening_parameters is not None or err_is_asinh, (
                 "asinh_softening_parameters must be provided for asinh normalization."
             )
@@ -1677,6 +1807,20 @@ class SBI_Fitter:
                     )
 
                 converted = False
+            elif isinstance(empirical_noise_models, ScoreBasedUncertaintyModel):
+                logger.info(
+                    f"Using ScoreBasedUncertaintyModel with {scatter_fluxes} scatters per row."
+                )
+                self.empirical_noise_models = empirical_noise_models
+                phot, phot_errors = self._apply_score_based_noise_model(
+                    phot,
+                    raw_observation_names,
+                    empirical_noise_models,
+                    N_scatters=scatter_fluxes,
+                    return_errors=True,
+                    normed_flux_units=normed_flux_units,
+                )
+                converted = True
             elif empirical_noise_models is not None:
                 logger.info(f"Using empirical noise models with {scatter_fluxes} scatters per row.")
                 self.empirical_noise_models = empirical_noise_models
@@ -2264,25 +2408,35 @@ class SBI_Fitter:
             return X_test, y_test
 
         phot_units = self.feature_array_flags["normed_flux_units"]
-        if self.feature_array_flags.get("empirical_noise_models", None) is not None:
-            nm = self.feature_array_flags["empirical_noise_models"]
-            nm = all([isinstance(nm, AsinhEmpiricalUncertaintyModel) for nm in nm.values()])
-        else:
-            nm = False
+        # `nm` records whether the features are in asinh magnitudes, in which case
+        # `asinh_b_factors` maps each feature to the softening parameter used.
+        nm = False
+        asinh_b_factors = {}
+        noise_models = self.feature_array_flags.get("empirical_noise_models", None)
+        if isinstance(noise_models, ScoreBasedUncertaintyModel):
+            nm = noise_models.is_asinh_scaled
+            if nm:
+                b_factor = noise_models.asinh_b_factor.to("Jy")
+                asinh_b_factors = {
+                    name.lower(): b_factor[i] for i, name in enumerate(noise_models.filter_names)
+                }
+        elif isinstance(noise_models, dict) and noise_models:
+            nm = all(isinstance(m, AsinhEmpiricalUncertaintyModel) for m in noise_models.values())
+            if nm:
+                asinh_b_factors = {name.lower(): m.b.to("Jy") for name, m in noise_models.items()}
 
         snrs = []
         for feature_name in snr_feature_names or self.feature_names:
             if feature_name.startswith("unc_"):
                 break
-            elif nm:
+            elif nm and feature_name.lower() in asinh_b_factors:
                 feature_index = self.feature_names.index(feature_name)
                 err_index = self.feature_names.index(f"unc_{feature_name}")
                 # Need to know SNR from asinh magnitudes.
-                f_b = self.feature_array_flags["empirical_noise_models"][feature_name].b.to("Jy")
                 snr = asinh_to_snr(
                     X_test[:, feature_index],
                     X_test[:, err_index],
-                    f_b=f_b,
+                    f_b=asinh_b_factors[feature_name.lower()],
                 )
 
             elif phot_units == "AB":
@@ -2608,9 +2762,9 @@ class SBI_Fitter:
             "empirical_noise_models" in feature_array_flags
             and feature_array_flags["empirical_noise_models"] is not None
         ):
-            if all(
-                isinstance(model, AsinhEmpiricalUncertaintyModel)
-                for model in feature_array_flags["empirical_noise_models"]
+            nm_obs = feature_array_flags["empirical_noise_models"]
+            if isinstance(nm_obs, dict) and all(
+                isinstance(model, AsinhEmpiricalUncertaintyModel) for model in nm_obs.values()
             ):
                 training_flux_units = "asinh"
         else:
@@ -2765,7 +2919,9 @@ class SBI_Fitter:
         # Check if the flux units match the training data
         training_flux_units = feature_array_flags["normed_flux_units"]
 
-        if feature_array_flags["empirical_noise_models"] is not None:
+        if feature_array_flags["empirical_noise_models"] is not None and isinstance(
+            feature_array_flags["empirical_noise_models"], dict
+        ):
             for pos, (model_name, val) in enumerate(
                 feature_array_flags["empirical_noise_models"].items()
             ):
@@ -3430,7 +3586,7 @@ class SBI_Fitter:
 
         if verbose:
             logger.info(
-                f"""Splitting dataset with {num_samples} samples into training"""
+                f"""Splitting dataset with {num_samples} samples into training """
                 f"""and testing sets with {train_fraction:.2f} train fraction."""
             )
         indices = np.arange(num_samples)
@@ -5233,15 +5389,13 @@ class SBI_Fitter:
         # convert to nJy if needed
 
         # Check asinh errors
-        if self.feature_array_flags.get("empirical_noise_models", False) and all(
-            [
-                isinstance(nm, AsinhEmpiricalUncertaintyModel)
-                for nm in self.feature_array_flags["empirical_noise_models"].values()
-            ]
-        ):  # noqa: E501
+        _enm = self.feature_array_flags.get("empirical_noise_models", None)
+        if isinstance(_enm, dict) and all(
+            isinstance(nm, AsinhEmpiricalUncertaintyModel) for nm in _enm.values()
+        ):
             logger.info("Converting asinh photometry and errors to f_nu.")
             filters = self.feature_array_flags.get("raw_observation_names", [])
-            nms = self.feature_array_flags["empirical_noise_models"]
+            nms = _enm
             if phot_err is not None:
                 phot_err = [
                     asinh_err_to_f_jy(phot_obs[i], phot_err[i], nms[filters[i]].b).to("nJy").value
@@ -6065,7 +6219,7 @@ class SBI_Fitter:
                     unit = self.feature_array_flags.get("normed_flux_units", "AB")
 
                     noise_models = self.feature_array_flags.get("empirical_noise_models", None)
-                    if noise_models is not None:
+                    if isinstance(noise_models, dict) and filter in noise_models:
                         if isinstance(noise_models[filter], AsinhEmpiricalUncertaintyModel):
                             unit = "asinh"
                     if phot_unit != unit:
@@ -6435,7 +6589,7 @@ class SBI_Fitter:
         sampling_kwargs = {}
         # check if sampler.sample accepts arbitrary keyword arguments,
         # if so pass them the timeout_seconds_per_test
-        varkw = inspect.getfullargspec(sampler.sample).varkw
+        varkw = inspect.signature(sampler.sample).parameters
         if "kwargs" in varkw:
             if timeout_seconds_per_test is not None and sample_method == "direct":
                 print(f"{timeout_seconds_per_test}s per sample.")
@@ -7591,6 +7745,20 @@ class SBI_Fitter:
                         self.feature_array_flags["empirical_noise_models"] = params[
                             "empirical_noise_models"
                         ]
+                    # Restore ScoreBasedUncertaintyModel from its HDF5 sentinel key
+                    _nm = self.feature_array_flags.get("empirical_noise_models")
+                    if isinstance(_nm, dict) and set(_nm.keys()) == {"__score_based__"}:
+                        _path = _nm["__score_based__"]
+                        try:
+                            self.feature_array_flags["empirical_noise_models"] = (
+                                load_unc_model_from_hdf5(
+                                    filepath=_path, group_name="__score_based__"
+                                )
+                            )
+                        except (FileNotFoundError, KeyError) as e:
+                            logger.warning(
+                                f"Could not restore ScoreBasedUncertaintyModel from {_path}: {e}"
+                            )
 
                 if learning_type == "offline":
                     self.feature_names = params["feature_names"]
@@ -7998,11 +8166,10 @@ class MissingPhotometryHandler:
         units = feature_array_flags.get("normed_flux_units", "AB")
 
         # Swap units to asinh if all uncertainty models are asinh
-        if uncertainty_models is not None:
-            if all(
-                isinstance(m, AsinhEmpiricalUncertaintyModel) for m in uncertainty_models.values()
-            ):
-                units = "asinh"
+        if isinstance(uncertainty_models, dict) and all(
+            isinstance(m, AsinhEmpiricalUncertaintyModel) for m in uncertainty_models.values()
+        ):
+            units = "asinh"
 
         # Need to figure out unit conversions here.
         return cls(

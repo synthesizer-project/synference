@@ -31,7 +31,8 @@ from .library import (
 from .noise_models import (
     EmpiricalUncertaintyModel, create_uncertainty_models_from_EPOCHS_cat,
     DepthUncertaintyModel, UncertaintyModel, AsinhEmpiricalUncertaintyModel,
-    GeneralEmpiricalUncertaintyModel, save_unc_model_to_hdf5, load_unc_model_from_hdf5
+    GeneralEmpiricalUncertaintyModel, save_unc_model_to_hdf5, load_unc_model_from_hdf5,
+    ScoreBasedUncertaintyModel
 )
 
 from .custom_runner import SBICustomRunner
@@ -103,6 +104,7 @@ __all__ = [
     "DepthUncertaintyModel",
     "UncertaintyModel",
     "GeneralEmpiricalUncertaintyModel",
+    "ScoreBasedUncertaintyModel",
     "save_unc_model_to_hdf5",
     "load_unc_model_from_hdf5",
     "optimize_sfh_xlimit",

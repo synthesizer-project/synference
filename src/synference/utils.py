@@ -26,7 +26,9 @@ except (ImportError, RuntimeError):
 try:
     from synthesizer import get_data_dir
 except ImportError:
-    get_data_dir = lambda: os.path.dirname(__file__)  # noqa: E731
+    from pathlib import Path as _Path
+
+    get_data_dir = lambda: _Path(os.path.dirname(__file__))  # noqa: E731
 
 try:
     import plotext as plo
@@ -855,7 +857,9 @@ def save_emission_model(model):
     if "dust_emission" in model._models:
         dust_em = model._models["dust_emission"].generator
         settable_params = dust_em.__annotations__
-        dust_emission_keys.update({param:getattr(dust_em, param) for param in settable_params.keys()})
+        dust_emission_keys.update(
+            {param: getattr(dust_em, param) for param in settable_params.keys()}
+        )
         dust_emission_model = type(dust_em).__name__
     else:
         dust_emission_model = None

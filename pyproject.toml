@@ -67,6 +67,8 @@ dependencies = [
     "plotext",
     "matplotlib",
     "numba",
+    # Score-based diffusion noise model (ScoreBasedUncertaintyModel).
+    "syntillate",
 ]
 
 [project.optional-dependencies]

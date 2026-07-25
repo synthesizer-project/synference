@@ -7,4 +7,5 @@ Here we detail the various ways to create noise models in Synference. Noise mode
    :maxdepth: 1
 
    noise_models
+   diffusion_noise_models
 
