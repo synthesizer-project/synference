@@ -35,7 +35,6 @@ Synference requires Python 3.10 or higher. It has the following dependencies:
 - [unyt](https://unyt.readthedocs.io/) for unit handling
 - [matplotlib](https://matplotlib.org/) for plotting and visualization
 - [tqdm](https://tqdm.github.io/) for progress bars
-- [jax](https://jax.readthedocs.io/) for GPU acceleration (optional, for some inference models)
 
 These dependencies will be automatically installed when you install Synference using pip.
 

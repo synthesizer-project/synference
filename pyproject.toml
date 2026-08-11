@@ -61,7 +61,6 @@ dependencies = [
     "numpy",
     "scipy",
     "unyt",
-    "jax",
     "simple_parsing",
     "corner",
     "plotext",

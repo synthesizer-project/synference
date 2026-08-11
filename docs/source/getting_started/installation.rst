@@ -71,7 +71,6 @@ The available groups are:
 - **Development** (``dev``): Tools to help developing including linting and formatting.
 - **Testing** (``test``): Frameworks and utilities for running tests.
 - **Documentation** (``docs``): Packages required to build the project documentation.
-- **simformer** (``simformer``): Dependencies for using the Simformer model within Synference.
 
 
 For example, to install with development dependencies, run:
