@@ -151,6 +151,8 @@ class SimformerModel:
     # ------------------------------------------------------------------ helpers
     def _as_condition_mask(self, condition_mask) -> torch.Tensor:
         mask = torch.as_tensor(np.asarray(condition_mask), dtype=torch.bool)
+        # make sure mask on the correct device for the score network
+        mask = mask.to(self.device)
         if mask.shape != (self.num_nodes,):
             raise ValueError(
                 f"condition_mask must have shape ({self.num_nodes},), got {tuple(mask.shape)}."

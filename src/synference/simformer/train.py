@@ -276,6 +276,8 @@ def train_simformer(
 
     # Validation split (first fraction of rows, as in the original implementation).
     n_val = max(int(train_config["validation_fraction"] * data.shape[0]), 0)
+    perm = torch.randperm(data.shape[0], generator=generator).numpy()  
+    data = data[perm] 
     data_t = torch.as_tensor(data, device=device)
     data_val = data_t[:n_val].repeat(train_config["val_repeat"], 1) if n_val > 0 else None
     data_train = data_t[n_val:]
@@ -390,7 +392,7 @@ def train_simformer(
                 step, train_loss_ema, stats["val_loss"][-1] if stats["val_loss"] else None
             )
 
-    if stats["early_stopped"] and best_state is not None:
+    if best_state is not None:
         net.load_state_dict(best_state)
 
     stats["steps_run"] = len(stats["train_loss"])
