@@ -33,21 +33,21 @@ print(f"Rank {rank} with {size} processes available.")
 from synference import (
     GalaxyBasis,
     calculate_beta,
+    calculate_burstiness,
     calculate_colour,
     calculate_d4000,
+    calculate_line_ew,
+    calculate_line_flux,
     calculate_mass_weighted_age,
     calculate_muv,
+    calculate_Ndot_ion,
     calculate_sfh_quantile,
     calculate_surviving_mass,
+    calculate_xi_ion0,
     draw_from_hypercube,
     generate_constant_R,
     generate_random_DB_sfh,
     generate_sfh_basis,
-    calculate_line_ew,
-    calculate_line_flux,
-    calculate_xi_ion0,
-    calculate_burstiness,
-    calculate_Ndot_ion,
 )
 
 # Filters

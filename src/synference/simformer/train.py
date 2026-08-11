@@ -276,8 +276,8 @@ def train_simformer(
 
     # Validation split (first fraction of rows, as in the original implementation).
     n_val = max(int(train_config["validation_fraction"] * data.shape[0]), 0)
-    perm = torch.randperm(data.shape[0], generator=generator).numpy()  
-    data = data[perm] 
+    perm = torch.randperm(data.shape[0], generator=generator).numpy()
+    data = data[perm]
     data_t = torch.as_tensor(data, device=device)
     data_val = data_t[:n_val].repeat(train_config["val_repeat"], 1) if n_val > 0 else None
     data_train = data_t[n_val:]

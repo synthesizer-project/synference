@@ -855,7 +855,7 @@ def save_emission_model(model):
     if "dust_emission" in model._models:
         dust_em = model._models["dust_emission"].generator
         settable_params = dust_em.__annotations__
-        dust_emission_keys.update({param:getattr(dust_em, param) for param in settable_params.keys()})
+        dust_emission_keys.update({p:getattr(dust_em, p) for p in settable_params.keys()})
         dust_emission_model = type(dust_em).__name__
     else:
         dust_emission_model = None

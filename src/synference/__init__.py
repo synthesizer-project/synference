@@ -28,6 +28,18 @@ from .library import (
 
 
 
+from .priors_beta import (
+    beta_agebins,
+    delta_t_dex,
+    expected_logsfr_ratios,
+    loc_massmet,
+    mass_func_at_z,
+    sample_prospector_beta_prior,
+    scale_massmet,
+    setup_dynamic_z_prior,
+    setup_mass_normalization,
+)
+
 from .noise_models import (
     EmpiricalUncertaintyModel, create_uncertainty_models_from_EPOCHS_cat,
     DepthUncertaintyModel, UncertaintyModel, AsinhEmpiricalUncertaintyModel,
@@ -116,4 +128,13 @@ __all__ = [
     "create_database_universal",
     "download_test_data",
     "test_data_dir",
+    "sample_prospector_beta_prior",
+    "loc_massmet",
+    "scale_massmet",
+    "mass_func_at_z",
+    "delta_t_dex",
+    "expected_logsfr_ratios",
+    "beta_agebins",
+    "setup_mass_normalization",
+    "setup_dynamic_z_prior",
 ]
