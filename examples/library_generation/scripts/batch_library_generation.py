@@ -333,6 +333,7 @@ for sfh_name, sfh_params in sfhs.items():
         "bpass-2.2.1-bin_chabrier03-0.1,300.0_cloudy-c23.01-sps.hdf5",
         grid_dir=grid_dir,
         new_lam=new_wav,
+        use_precision=np.float32
     )
     # Metallicity
     Z_dists = [ZDist.DeltaConstant(log10metallicity=log_z) for log_z in all_param_dict["log_zmet"]]

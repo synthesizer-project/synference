@@ -40,6 +40,12 @@ from .priors_beta import (
     setup_mass_normalization,
 )
 
+from .priors_alpha import (
+    dirichlet_zfraction_beta_params,
+    sample_dirichlet_sfr_fractions,
+    sample_dust_ratio,
+)
+
 from .noise_models import (
     EmpiricalUncertaintyModel, create_uncertainty_models_from_EPOCHS_cat,
     DepthUncertaintyModel, UncertaintyModel, AsinhEmpiricalUncertaintyModel,
@@ -137,4 +143,7 @@ __all__ = [
     "beta_agebins",
     "setup_mass_normalization",
     "setup_dynamic_z_prior",
+    "dirichlet_zfraction_beta_params",
+    "sample_dirichlet_sfr_fractions",
+    "sample_dust_ratio",
 ]

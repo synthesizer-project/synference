@@ -5313,7 +5313,7 @@ class GalaxySimulator(object):
                 logger.info("Overriding internal library name from provided file path.")
                 grid_name = os.path.basename(grid_dir).replace(".hdf5", "").replace(".h5", "")
                 grid_dir = os.path.dirname(grid_dir)
-            grid = Grid(grid_name, grid_dir)  # new_lam=lam)
+            grid = Grid(grid_name, grid_dir, use_precision=np.float32)  # new_lam=lam)
 
             # Step 2. Make instrument
             if model_group["Instrument"].attrs.get("instrument_type", None) is None:

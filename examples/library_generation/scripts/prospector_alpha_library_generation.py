@@ -1,18 +1,20 @@
 # ignore warnings for readability
-"""Prospector-Beta-like library generation for synference.
+"""Prospector-alpha-like library generation for synference.
 
-Redshift, log stellar mass, log stellar metallicity, and the Continuity-SFH
-``logsfr_ratios``/age bins are drawn jointly from
-``synference.sample_prospector_beta_prior``, which replicates the
-Prospector-Beta conditional priors (Wang, Leja, et al. 2023, ApJL 944, L58):
-a redshift-evolving stellar mass function, a dynamic p(z) ~ N(z) dV/dz, the
-Gallazzi et al. (2005) mass-metallicity relation, and a mass/redshift-shifted
-Student-t Continuity-SFH prior tied to the Behroozi et al. (2019) cosmic
-SFRD. See ``synference/src/synference/priors_beta.py`` for the implementation
-and ``.claude/plans/`` for design notes.
+Prospector-alpha (Leja et al. 2017) predates Prospector-Beta
+(``prospector_beta_library_generation.py`` in this directory) and, unlike
+it, has no hierarchical/parameter-dependent priors: total stellar mass and
+stellar metallicity are drawn independently (no mass-metallicity relation,
+no stellar-mass-function weighting), and the non-parametric Dirichlet-SFH
+uses a *fixed* set of 6 age bins (not conditioned on redshift, unlike
+Beta's Continuity-SFH). The one non-trivial piece is the Dirichlet-SFH
+prior itself, drawn via ``synference.sample_dirichlet_sfr_fractions``
+(``src/synference/priors_alpha.py``), which reproduces the Betancourt
+(2010)/Leja et al. (2017) stick-breaking construction and is passed
+directly to ``synthesizer.parametric.SFH.Dirichlet``.
 
 Dust (Av/slope/dust_bump_amplitude/fesc_lya) is drawn independently via
-``draw_from_hypercube``, matching Prospector-Beta's own (non-conditional)
+``draw_from_hypercube``, matching Prospector-alpha's own (non-conditional)
 dust priors: the diffuse-ISM screen (Av/slope/dust_bump_amplitude) maps onto
 FSPS's ``dust_type=4`` (Kriek & Conroy 2013) curve, i.e. this repo's
 ``Calzetti2000(slope, ampl)``. The birth-cloud/diffuse split
@@ -22,10 +24,14 @@ FSPS's ``dust_type=4`` (Kriek & Conroy 2013) curve, i.e. this repo's
 the birth-cloud curve, matching FSPS's fixed ``dust1_index=-1.0`` default and
 ``dust_tesc=7.0`` [10 Myr] age pivot); ``dust_ratio`` is drawn from
 Prospector's own ``ClippedNormal(mean=1.0, sigma=0.3, 0-2)`` prior via
-``synference.sample_dust_ratio``.
+``synference.sample_dust_ratio``. Prospector-alpha's AGN torus
+(``fagn``/``agn_tau``) and Draine & Li (2007) dust-emission
+(``duste_umin``/``duste_qpah``/``duste_gamma``) parameters are also not
+drawn: this pipeline's dust emission uses a fixed ``Greybody`` model (as in
+every other script in this directory), not the Draine & Li templates or an
+AGN torus component, so those parameters would have nothing to attach to.
 """
 
-import copy  # noqa
 import os
 import sys
 
@@ -43,7 +49,7 @@ from synthesizer.grid import Grid
 from synthesizer.instruments import FilterCollection, Instrument
 from synthesizer.parametric import SFH, ZDist
 from tqdm import tqdm
-from unyt import K, dimensionless
+from unyt import K, Myr, dimensionless, unyt_array
 
 try:
     from mpi4py import MPI
@@ -71,8 +77,8 @@ from synference import (
     calculate_xi_ion0,
     draw_from_hypercube,
     generate_constant_R,
+    sample_dirichlet_sfr_fractions,
     sample_dust_ratio,
-    sample_prospector_beta_prior,
 )
 
 # Filters
@@ -176,24 +182,24 @@ print(f"Number of processes/task: {n_proc}")
 
 av_to_tau_v = 1.086  # conversion factor from Av to tau_v for the dust attenuation curve
 overwrite = False  # whether to overwrite existing grids
-Nmodels = 500_000  # number of models to generate
+Nmodels = 100_000  # number of models to generate
 grid_name = "BPASS"  # name for the grid
-cat_type = "photometry"  # spectra or photometry
+cat_type = "spectra"  # spectra or photometry
 cosmo = Planck18  # cosmology to use for age calculations
 emission_key = "total"  # 'attenuated' if no dust emission or 'emergent' if fesc > 0
 seed = 42  # Seed for reproducibility
 
-# --- Prospector-Beta prior hyperparameters (Wang, Leja, et al. 2023) ---
-nbins_sfh = 7  # number of Continuity-SFH bins
-zred_range = (1e-3, 15.0)
-mass_range = (7.0, 12.5)  # log10(M*/Msun)
-met_range = (-1.98, 0.19)  # log10(Z/Zsun), Gallazzi+05 grid limits
-logsfr_ratio_range = (-5.0, 5.0)
-logsfr_ratio_tscale = 0.3
-const_phi = True  # clamp the SMF to its [0.2, 3.0] validity range (matches TemplateLibrary["beta"])
+# --- Prospector-alpha prior hyperparameters (Leja et al. 2017) ---
+redshift_range = (0.01, 14.0)  # not part of the alpha template itself (usually fixed to spec-z)
+log_mass_range = (8.0, 12.0)  # log10(M*/Msun), matches total_mass ~ LogUniform(1e8, 1e12)
+logzsol_range = (-2.0, 0.19)  # independent (no mass-metallicity relation, unlike Beta)
+
+# Fixed Dirichlet-SFH age bins (Gyr lookback time), identical for every galaxy.
+alpha_agelims_gyr = np.array([1e-9, 0.1, 0.3, 1.0, 3.0, 6.0, 13.6])
+nbins_sfh = len(alpha_agelims_gyr) - 1  # 6 bins -> 5 z_fraction latent variables
 
 # --- Independent (non-conditional) dust priors ---
-# Prospector-Beta's dust2/dust_index map onto this repo's existing Av/slope
+# Prospector-alpha's dust2/dust_index map onto this repo's existing Av/slope
 # Calzetti-attenuation parametrization (diffuse ISM screen, FSPS dust_type=4
 # / Kriek & Conroy 2013). The birth-cloud/diffuse split is replicated via
 # dust_ratio (dust1 = dust2 * dust_ratio, Prospector's own ClippedNormal
@@ -201,14 +207,14 @@ const_phi = True  # clamp the SMF to its [0.2, 3.0] validity range (matches Temp
 # default) below, applied only to stars younger than the age_pivot passed to
 # BimodalPacmanEmission (FSPS dust_tesc=7.0 [10 Myr] default).
 logAv = (-3, 0.7)  # log-uniform between 0.001 and ~5.0 magnitudes
-slope_range = (-2.0, 0.5)  # Prospector-Beta's dust_index prior (TopHat)
+slope_range = (-2.0, 0.5)  # Prospector-alpha's dust_index prior (TopHat)
 fesc_lya_range = (0.0, 1.0)
 dust_bump_amplitude_range = (0.0, 5.0)
-dust_ratio_mean, dust_ratio_sigma = 1.0, 0.3  # Prospector-Beta's dust_ratio prior (ClippedNormal)
+dust_ratio_mean, dust_ratio_sigma = 1.0, 0.3  # Prospector-alpha's dust_ratio prior (ClippedNormal)
 dust_ratio_range = (0.0, 2.0)
 
 name = (
-    f"{grid_name}_Chab_beta_SFH_{zred_range[0]}_z_{zred_range[1]}_"
+    f"{grid_name}_Chab_alpha_SFH_{redshift_range[0]}_z_{redshift_range[1]}_"
     f"logN_{np.log10(Nmodels):.1f}_CF00_v1"
 )
 print(f"{out_dir}/library_{name}.hdf5")
@@ -234,32 +240,13 @@ grid_dict = {
     "BPASS": "bpass-2.2.1-bin_chabrier03-0.1,300.0_cloudy-c23.01-sps",
 }
 
-# --- Draw the Prospector-Beta-conditioned parameters ---
-# Every rank draws the same full-size, seeded hypercube for reproducibility,
-# but `mask` restricts the expensive per-galaxy mass/met/SFH quantile
-# transform to this rank's slice (same idiom as the SFH masking in
-# final_library_generation_multinode.py).
-print("Drawing samples from the Prospector-Beta prior.")
-beta_params = sample_prospector_beta_prior(
-    Nmodels,
-    nbins_sfh=nbins_sfh,
-    zred_range=zred_range,
-    mass_range=mass_range,
-    met_range=met_range,
-    logsfr_ratio_range=logsfr_ratio_range,
-    logsfr_ratio_tscale=logsfr_ratio_tscale,
-    const_phi=const_phi,
-    cosmo=cosmo,
-    rng=seed,
-    mask=mask,
-    verbose=rank == 0,
-)
-redshifts = beta_params["redshift"]
-
-# --- Independent dust priors (plain joint Latin Hypercube) ---
-print("Drawing dust parameters from Latin Hypercube.")
-dust_params = draw_from_hypercube(
+# --- Draw the independent Prospector-alpha parameters (plain joint LHC) ---
+print("Drawing samples from Latin Hypercube.")
+alpha_params = draw_from_hypercube(
     {
+        "redshift": redshift_range,
+        "log_mass": log_mass_range,
+        "log_zmet": logzsol_range,
         "log_Av": logAv,
         "slope": slope_range,
         "fesc_lya": fesc_lya_range,
@@ -269,10 +256,11 @@ dust_params = draw_from_hypercube(
     rng=seed,
     unlog_keys=["log_Av"],
 )
+redshifts = alpha_params["redshift"]
 
 # dust_ratio's ClippedNormal prior isn't expressible via draw_from_hypercube
 # (uniform/log-uniform ranges only), so it gets its own truncated-normal draw.
-dust_params["dust_ratio"] = sample_dust_ratio(
+alpha_params["dust_ratio"] = sample_dust_ratio(
     Nmodels,
     mean=dust_ratio_mean,
     sigma=dust_ratio_sigma,
@@ -280,6 +268,19 @@ dust_params["dust_ratio"] = sample_dust_ratio(
     maxi=dust_ratio_range[1],
     rng=seed,
 )
+
+# --- Draw the Dirichlet-SFH stick-breaking z_fraction latent variables ---
+# Not expressible via draw_from_hypercube: each of the (nbins_sfh - 1)
+# components needs its own, position-dependent Beta marginal for the
+# stick-breaking construction to yield a symmetric Dirichlet(1,...,1) prior
+# over the nbins_sfh SFR fractions (see priors_alpha.py).
+print("Drawing Dirichlet-SFH z_fraction parameters.")
+z_fraction = sample_dirichlet_sfr_fractions(Nmodels, nbins_sfh, rng=seed)
+
+# Fixed age bins (identical for every galaxy, unlike Beta's redshift-dependent bins).
+agebins = unyt_array(
+    np.column_stack([alpha_agelims_gyr[:-1], alpha_agelims_gyr[1:]]), "Gyr"
+).to(Myr)
 
 # Create the grid
 grid = Grid(
@@ -290,24 +291,18 @@ grid = Grid(
 )
 print(grid.available_lines)
 
-# Metallicity: one DeltaConstant ZDist per galaxy, from the MZR-conditioned draw.
+# Metallicity: one DeltaConstant ZDist per galaxy, independently drawn (no MZR).
 Z_dists = [
     ZDist.DeltaConstant(log10metallicity=log_z)
-    for log_z in tqdm(beta_params["log_zmet"], desc="Creating ZDist", disable=rank != 0)
+    for log_z in tqdm(alpha_params["log_zmet"], desc="Creating ZDist", disable=rank != 0)
 ]
 
-# SFH: Continuity SFH built directly from the mass/redshift-conditioned
-# logsfr_ratios and redshift-dependent age bins (no init_from_prior needed,
-# since the ratios have already been drawn by sample_prospector_beta_prior).
+# SFH: Dirichlet SFH built directly from the drawn z_fraction and the fixed
+# alpha age bins (shared by every galaxy).
 sfh_models = []
-for i in tqdm(range(Nmodels), desc="Building Continuity SFHs", disable=rank != 0):
+for i in tqdm(range(Nmodels), desc="Building Dirichlet SFHs", disable=rank != 0):
     if mask[i]:
-        sfh_models.append(
-            SFH.Continuity(
-                logsfr_ratios=beta_params["logsfr_ratios"][i],
-                agebins=beta_params["agebins"][i],
-            )
-        )
+        sfh_models.append(SFH.Dirichlet(z_fraction=z_fraction[i], agebins=agebins))
     else:
         sfh_models.append(None)
 
@@ -333,11 +328,11 @@ emission_model = BimodalPacmanEmission(
 )
 
 galaxy_params = {
-    "tau_v_ism": dust_params["Av"] / av_to_tau_v,
-    "tau_v_birth": (dust_params["Av"] / av_to_tau_v) * dust_params["dust_ratio"],
-    "slope": dust_params["slope"],
-    "fesc_lya": dust_params["fesc_lya"],
-    "dust_bump_amplitude": dust_params["dust_bump_amplitude"],
+    "tau_v_ism": alpha_params["Av"] / av_to_tau_v,
+    "tau_v_birth": (alpha_params["Av"] / av_to_tau_v) * alpha_params["dust_ratio"],
+    "slope": alpha_params["slope"],
+    "fesc_lya": alpha_params["fesc_lya"],
+    "dust_bump_amplitude": alpha_params["dust_bump_amplitude"],
 }
 
 alt_parametrizations = {
@@ -345,7 +340,7 @@ alt_parametrizations = {
     "tau_v_birth": ("dust_ratio", lambda x: x["tau_v_birth"] / x["tau_v_ism"]),
 }
 
-print(f"Creating basis for {name} with Continuity SFH (Prospector-Beta priors).")
+print(f"Creating basis for {name} with Dirichlet SFH (Prospector-alpha priors).")
 basis = GalaxyBasis(
     model_name=f"sps_{name}",
     redshifts=redshifts,
@@ -357,10 +352,9 @@ basis = GalaxyBasis(
     metal_dists=Z_dists,
     galaxy_params=galaxy_params,
     alt_parametrizations=alt_parametrizations,
-    redshift_dependent_sfh=True,
-    params_to_ignore=["agebins"],
+    redshift_dependent_sfh=False,  # alpha's age bins are fixed, not redshift-dependent
     build_library=False,
-    log_stellar_masses=beta_params["log_mass"],
+    log_stellar_masses=alpha_params["log_mass"],
 )
 
 multinode = True if sys.argv[2] == "0" else False  # Check if running in multinode mode
