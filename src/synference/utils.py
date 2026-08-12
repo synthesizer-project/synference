@@ -26,7 +26,9 @@ except (ImportError, RuntimeError):
 try:
     from synthesizer import get_data_dir
 except ImportError:
-    get_data_dir = lambda: os.path.dirname(__file__)  # noqa: E731
+    from pathlib import Path as _Path
+
+    get_data_dir = lambda: _Path(os.path.dirname(__file__))  # noqa: E731
 
 try:
     import plotext as plo

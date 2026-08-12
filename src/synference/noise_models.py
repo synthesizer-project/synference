@@ -2,6 +2,11 @@
 
 This module provides a robust and serializable framework for creating and
 applying various photometric noise models.
+
+The score-based diffusion noise model lives in the standalone `syntillate
+<https://github.com/synthesizer-project/syntillate>`_ package;
+``ScoreBasedUncertaintyModel`` is re-exported here so it can be used and
+serialized alongside Synference's own uncertainty models.
 """
 
 import warnings
@@ -14,9 +19,24 @@ import numpy as np
 from astropy.table import Table
 from scipy import stats
 from scipy.interpolate import interp1d
+from syntillate import ScoreBasedUncertaintyModel
 from unyt import Jy, Unit, unyt_array
 
 from .utils import f_jy_err_to_asinh, f_jy_to_asinh
+
+__all__ = [
+    "UncertaintyModel",
+    "DepthUncertaintyModel",
+    "SpectralUncertaintyModel",
+    "EmpiricalUncertaintyModel",
+    "AsinhEmpiricalUncertaintyModel",
+    "GeneralEmpiricalUncertaintyModel",
+    "ScoreBasedUncertaintyModel",
+    "MODEL_CLASS_REGISTRY",
+    "save_unc_model_to_hdf5",
+    "load_unc_model_from_hdf5",
+    "create_uncertainty_models_from_EPOCHS_cat",
+]
 
 # =============================================================================
 # BASE CLASSES
@@ -1107,6 +1127,7 @@ MODEL_CLASS_REGISTRY = {
     "DepthUncertaintyModel": DepthUncertaintyModel,
     "AsinhEmpiricalUncertaintyModel": AsinhEmpiricalUncertaintyModel,
     "GeneralEmpiricalUncertaintyModel": GeneralEmpiricalUncertaintyModel,
+    "ScoreBasedUncertaintyModel": ScoreBasedUncertaintyModel,
 }
 
 
