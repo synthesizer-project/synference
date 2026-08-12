@@ -14,6 +14,7 @@ from typing import Callable, Optional, Union
 
 import numpy as np
 import torch
+from scipy.stats import beta as _beta_dist
 
 
 def _fix_all_true_rows(condition_mask: torch.Tensor) -> torch.Tensor:
@@ -63,8 +64,11 @@ def random_condition_mask(
     beta: float = 4.0,
 ) -> torch.Tensor:
     """Bernoulli masks with per-batch probability drawn from ``Beta(alpha, beta)``."""
-    beta_dist = torch.distributions.Beta(alpha, beta)
-    prob = beta_dist.sample()
+    # torch.distributions.Beta.sample() cannot accept a generator, so the
+    # Beta draw is done via inverse-CDF from a generator-seeded uniform
+    # instead — otherwise a seeded `generator` wouldn't make this reproducible.
+    u = torch.rand((), generator=generator).item()
+    prob = float(_beta_dist.ppf(u, alpha, beta))
     mask = torch.rand(num_samples, theta_dim + x_dim, generator=generator) < prob
     return _fix_all_true_rows(mask)
 

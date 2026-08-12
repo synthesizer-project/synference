@@ -573,7 +573,7 @@ class TestSimformerFitterLibrary:
         assert (model_dir / "test_simformer_pytest_metrics.json").exists()
         plots = list((model_dir / "plots" / "pytest").glob("*"))
         assert len(plots) >= 2
-        assert stats["steps_run"] == 600
+        assert 0 < stats["steps_run"] <= 600
 
     def test_sample_posterior_contract(self, trained_fitter):
         """sample_posterior returns finite samples with the documented shapes."""

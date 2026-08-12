@@ -400,7 +400,9 @@ class SimformerModel:
             (i.e. constrained nodes are included in the output).
         """
         condition_mask = self._as_condition_mask(condition_mask)
-        constraint_mask = torch.as_tensor(np.asarray(constraint_mask), dtype=torch.bool)
+        constraint_mask = torch.as_tensor(
+            np.asarray(constraint_mask), dtype=torch.bool, device=self.device
+        )
         if constraint_mask.shape != (self.num_nodes,):
             raise ValueError(f"constraint_mask must have shape ({self.num_nodes},).")
         effective_condition = condition_mask & ~constraint_mask
@@ -413,11 +415,10 @@ class SimformerModel:
         x_o_z = self._prepare_x_o(x_o, effective_condition)
         x_T = self._init_x_T(num_samples, x_o_z, effective_condition, generator)
         score_fn = self._score_fn(effective_condition, edge_mask=edge_mask)
-        constraint_mask_dev = constraint_mask.to(self.device)
 
         def constraint_score_fn(x0_hat: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
             scale = 1.0 / (self.sde.transition_var(t) + scale_bias)
-            return interval_constraint_score(x0_hat, scale, constraint_mask_dev, a=a_full, b=b_full)
+            return interval_constraint_score(x0_hat, scale, constraint_mask, a=a_full, b=b_full)
 
         x_final = guided_euler_maruyama(
             score_fn,
@@ -549,9 +550,19 @@ class SimformerModel:
             The reconstructed model.
 
         Raises:
-            ValueError: If the file has an unknown format version.
+            ValueError: If the file is not a payload produced by :meth:`save`, or
+                has an unknown format version.
+
+        Warning:
+            This loads with ``torch.load(..., weights_only=False)``, which can
+            execute arbitrary code when deserializing a malicious file. Only
+            call this on ``path`` values you trust (e.g. files produced by
+            :meth:`save` on this machine or received from a trusted source) —
+            never on checkpoints from an untrusted or unauthenticated origin.
         """
         payload = torch.load(path, map_location="cpu", weights_only=False)
+        if not isinstance(payload, dict):
+            raise ValueError(f"Unsupported Simformer save format version: {payload!r}.")
         version = payload.get("format_version")
         if version != SAVE_FORMAT_VERSION:
             raise ValueError(f"Unsupported Simformer save format version: {version}.")

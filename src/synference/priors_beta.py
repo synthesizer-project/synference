@@ -7,8 +7,9 @@ Prospector-Beta (Wang, Leja, et al. 2023, ApJL 944, L58) from
 generate ``synference`` training libraries. Four pieces are implemented:
 
 1.  **Stellar mass function (SMF)** mass prior, ``p(log_mass | zred)``:
-    Leja et al. (2020) continuity-model double-Schechter fit for z <= 3,
-    blended with Tacchella et al. (2018) for z >= 4.
+    Leja et al. (2020) continuity-model double-Schechter fit, clamped to its
+    [0.2, 3.0] validity range (matches Prospector-Beta's default
+    ``TemplateLibrary["beta"]`` configuration; no high-z blend is applied).
 2.  **Mass-metallicity relation (MZR)**, ``p(log_zmet | log_mass)``: a
     truncated Gaussian whose mean/sigma are interpolated from the tabulated
     Gallazzi et al. (2005) relation.
@@ -66,12 +67,6 @@ _LEJA_20_PARS = {
     "alpha2": -1.48,
 }
 
-# Tacchella et al. (2018) Table 2 Schechter fits, integer redshift bins z=4..12.
-_Z_T18 = np.arange(4, 13, 1)
-_PHI_T18 = np.array([261.9, 201.2, 140.5, 78.0, 38.4, 37.3, 8.1, 3.9, 1.1]) * 1e-5
-_LOGM_T18 = np.array([10.16, 9.89, 9.62, 9.38, 9.18, 8.74, 8.79, 8.50, 8.50])
-_ALPHA_T18 = np.array([-1.54, -1.59, -1.64, -1.70, -1.76, -1.80, -1.92, -2.00, -2.10])
-
 
 # ---------------------------------------------------------------------------
 # Mass-metallicity relation (Gallazzi et al. 2005)
@@ -91,7 +86,7 @@ def scale_massmet(log_mass):
 
 
 # ---------------------------------------------------------------------------
-# Stellar mass function: Leja et al. (2020) + Tacchella et al. (2018)
+# Stellar mass function: Leja et al. (2020)
 # ---------------------------------------------------------------------------
 
 
@@ -127,13 +122,12 @@ def _low_z_mass_func(z0, logm):
     return phi1 + phi2
 
 
-def mass_func_at_z(z, log_mass, const_phi=True, bounds=(6.0, 12.5)):
+def mass_func_at_z(z, log_mass, bounds=(6.0, 12.5)):
     """GSMF at redshift z, evaluated on a sorted mass grid.
 
-    Composite stellar mass function Phi(log_mass, z) (Leja+20; const_phi=True
-    clamps the fit to its [0.2, 3.0] validity range rather than extrapolating
-    or blending in the Tacchella+18 high-z fit, matching Prospector-Beta's
-    default ``TemplateLibrary["beta"]`` configuration).
+    Composite stellar mass function Phi(log_mass, z) (Leja+20, clamped to its
+    [0.2, 3.0] validity range rather than extrapolated, matching
+    Prospector-Beta's default ``TemplateLibrary["beta"]`` configuration).
     """
     log_mass = np.asarray(log_mass, dtype=float)
     phi = _low_z_mass_func(z, log_mass)
@@ -141,15 +135,15 @@ def mass_func_at_z(z, log_mass, const_phi=True, bounds=(6.0, 12.5)):
     return phi
 
 
-def _pdf_mass_func_at_z(z, log_mass_grid, const_phi, bounds):
-    phi = mass_func_at_z(z, log_mass_grid, const_phi=const_phi, bounds=bounds)
+def _pdf_mass_func_at_z(z, log_mass_grid, bounds):
+    phi = mass_func_at_z(z, log_mass_grid, bounds=bounds)
     norm = simpson(y=phi, x=log_mass_grid)
     return phi / norm
 
 
-def cdf_mass_func_at_z(z, log_mass_grid, const_phi=True, bounds=(6.0, 12.5)):
+def cdf_mass_func_at_z(z, log_mass_grid, bounds=(6.0, 12.5)):
     """CDF of the stellar mass function at redshift z, evaluated on a sorted mass grid."""
-    pdf = _pdf_mass_func_at_z(z, log_mass_grid, const_phi, bounds)
+    pdf = _pdf_mass_func_at_z(z, log_mass_grid, bounds)
     cdf = np.cumsum(pdf)
     cdf /= cdf[-1]
     cdf[cdf < 0] = 0.0
@@ -174,7 +168,6 @@ def setup_mass_normalization(
     zred_max,
     mass_max,
     mass_min=7.0,
-    const_phi=True,
     zred_grid_len=4000,
     mass_integ_grid=100,
 ):
@@ -186,7 +179,7 @@ def setup_mass_normalization(
     n_gal_z = np.zeros_like(z_grid)
     m_grid = np.linspace(mass_min, mass_max, mass_integ_grid)
     for i, z in enumerate(z_grid):
-        phi = mass_func_at_z(z, m_grid, const_phi=const_phi, bounds=(mass_min, mass_max))
+        phi = mass_func_at_z(z, m_grid, bounds=(mass_min, mass_max))
         n_gal_z[i] = simpson(y=phi, x=m_grid)
     finterp_mass_norm = interp1d(z_grid, n_gal_z, bounds_error=False, fill_value=0.0)
     return z_grid, n_gal_z, finterp_mass_norm
@@ -391,7 +384,6 @@ def sample_prospector_beta_prior(
     met_range=(-1.98, 0.19),
     logsfr_ratio_range=(-5.0, 5.0),
     logsfr_ratio_tscale=0.3,
-    const_phi=True,
     cosmo=Planck18,
     rng=None,
     zred_grid_len=4000,
@@ -443,7 +435,6 @@ def sample_prospector_beta_prior(
         zred_max,
         mass_max,
         mass_min=mass_min,
-        const_phi=const_phi,
         zred_grid_len=zred_grid_len,
         mass_integ_grid=mass_integ_grid,
     )
@@ -467,9 +458,7 @@ def sample_prospector_beta_prior(
         z_i = redshift[i]
 
         # Mass | redshift, via the SMF CDF.
-        cdf_mass = cdf_mass_func_at_z(
-            z_i, m_subgrid, const_phi=const_phi, bounds=(mass_min, mass_max)
-        )
+        cdf_mass = cdf_mass_func_at_z(z_i, m_subgrid, bounds=(mass_min, mass_max))
         m_i = float(_ppf_from_grid(u[i, 1], m_subgrid, cdf_mass))
         log_mass[i] = m_i
 

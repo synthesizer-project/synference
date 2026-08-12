@@ -364,7 +364,13 @@ def train_simformer(
         if data_val is not None and step > 50 and (step % val_every) == 0:
             net.eval()
             with torch.no_grad():
-                val_loss = float(compute_loss(data_val).detach())
+                # Chunked so a large validation set (n_val * val_repeat rows)
+                # doesn't run as a single oversized attention forward pass.
+                val_chunks = torch.split(data_val, batch_size)
+                chunk_losses = torch.stack(
+                    [compute_loss(chunk).detach() * chunk.shape[0] for chunk in val_chunks]
+                )
+                val_loss = float(chunk_losses.sum() / data_val.shape[0])
             net.train()
             stats["val_loss"].append(val_loss)
             stats["val_steps"].append(step)

@@ -7894,6 +7894,17 @@ class Simformer_Fitter(SBI_Fitter):
         """Initialize the Simformer Fitter."""
         super().__init__(name=name, **kwargs)
 
+    @staticmethod
+    def _resolve_name_placeholder(path: str, name: str) -> str:
+        """Substitute the ``{name}`` placeholder in a default path template.
+
+        Only the literal ``{name}`` token is substituted, so caller-supplied
+        paths (e.g. the already-resolved absolute paths ``run_single_sbi``
+        builds from ``out_dir``) pass through unchanged instead of having
+        every occurrence of the substring "name" rewritten.
+        """
+        return path.replace("{name}", name) if "{name}" in path else path
+
     @classmethod
     def init_from_hdf5(
         cls, model_name, hdf5_path: str = None, return_output: bool = False, **kwargs
@@ -8148,7 +8159,7 @@ class Simformer_Fitter(SBI_Fitter):
 
                 setattr(self, item, val)
 
-            self.has_features = True
+            self.has_features = getattr(self, "feature_array", None) is not None
 
         return model, meta
 
@@ -8156,7 +8167,7 @@ class Simformer_Fitter(SBI_Fitter):
         self,
         posteriors=None,
         name_append: str = "",
-        out_dir: str = f"{code_path}/models/name/",
+        out_dir: str = f"{code_path}/models/{{name}}/",
         save_method: str = "joblib",
         stats=None,
         extras: Optional[dict] = None,
@@ -8171,7 +8182,7 @@ class Simformer_Fitter(SBI_Fitter):
             posteriors: The :class:`synference.simformer.SimformerModel` to save.
                 If None, uses ``self.posteriors``.
             name_append: String appended to the model name in the output files.
-            out_dir: Output directory ("name" is replaced by ``self.name``).
+            out_dir: Output directory (``{name}`` replaced by ``self.name``).
             save_method: Serialization method for the sidecar params file.
             stats: Training stats dictionary (loss traces are summarized).
             extras: Additional entries stored in the params file.
@@ -8181,7 +8192,7 @@ class Simformer_Fitter(SBI_Fitter):
         if posteriors is None:
             raise ValueError("A trained model must be provided.")
 
-        out_dir = out_dir.replace("name", self.name)
+        out_dir = self._resolve_name_placeholder(out_dir, self.name)
         os.makedirs(out_dir, exist_ok=True)
 
         if len(name_append) > 0 and name_append[0] != "_":
@@ -8224,8 +8235,8 @@ class Simformer_Fitter(SBI_Fitter):
         num_samples: int = 1000,
         posteriors=None,
         rng_seed: int = 42,
-        plots_dir: str = f"{code_path}/models/name/plots/",
-        metric_path: str = f"{code_path}/models/name/name_metrics.json",
+        plots_dir: str = f"{code_path}/models/{{name}}/plots/",
+        metric_path: str = f"{code_path}/models/{{name}}/{{name}}_metrics.json",
         overwrite: bool = False,
     ):
         """Evaluate the model on test data and save diagnostic plots and metrics.
@@ -8268,7 +8279,7 @@ class Simformer_Fitter(SBI_Fitter):
             samples=samples,
             num_samples=num_samples,
         )
-        metrics_path = metric_path.replace("name", self.name)
+        metrics_path = self._resolve_name_placeholder(metric_path, self.name)
         os.makedirs(os.path.dirname(metrics_path), exist_ok=True)
 
         try:
@@ -8299,7 +8310,7 @@ class Simformer_Fitter(SBI_Fitter):
         y_test=None,
         posteriors=None,
         rng_seed: int = 42,
-        plots_dir: str = f"{code_path}/models/name/plots/",
+        plots_dir: str = f"{code_path}/models/{{name}}/plots/",
         samples=None,
     ):
         """Plot recovered posterior quantiles against the true parameter values.
@@ -8329,6 +8340,8 @@ class Simformer_Fitter(SBI_Fitter):
                 samples = samples[None, ...]
 
         y_test = np.asarray(y_test)
+        if y_test.ndim == 1:
+            y_test = y_test[:, None]
         param_names = list(self.simple_fitted_parameter_names)
         fig, ax = plt.subplots(
             nrows=1,
@@ -8361,7 +8374,7 @@ class Simformer_Fitter(SBI_Fitter):
                 ax[i].set_ylabel("Predicted")
 
         plt.tight_layout()
-        plots_dir = plots_dir.replace("name", self.name)
+        plots_dir = self._resolve_name_placeholder(plots_dir, self.name)
         os.makedirs(plots_dir, exist_ok=True)
         fig.savefig(os.path.join(plots_dir, "plot_sample_predictions.jpg"))
         plt.close(fig)
@@ -8374,9 +8387,17 @@ class Simformer_Fitter(SBI_Fitter):
         num_samples: int = 1000,
         posteriors=None,
         rng_seed: int = 42,
-        plots_dir: str = f"{code_path}/models/name/plots/",
+        plots_dir: str = f"{code_path}/models/{{name}}/plots/",
     ):
         """Plot TARP coverage and SBC rank histograms for the posterior.
+
+        Note:
+            This override is intentionally not signature-compatible with
+            :meth:`SBI_Fitter.plot_coverage` (which takes ``X``/``y``,
+            ``sample_method``, ``plot_list``, etc.): the Simformer diffusion
+            sampler is driven directly through ``X_test``/``y_test`` and
+            precomputed ``samples`` instead. Callers using the base
+            ``SBI_Fitter`` API must adapt to these keyword names.
 
         Parameters:
             y_test: True test parameters. Defaults to ``self._y_test``.
@@ -8386,7 +8407,7 @@ class Simformer_Fitter(SBI_Fitter):
             num_samples: Posterior draws per observation if sampling here.
             posteriors: Model to sample from. Defaults to ``self.posteriors``.
             rng_seed: Random seed.
-            plots_dir: Directory for the plots ("name" replaced by ``self.name``).
+            plots_dir: Directory for the plots (``{name}`` replaced by ``self.name``).
         """
         if y_test is None:
             y_test = self._y_test
@@ -8403,7 +8424,9 @@ class Simformer_Fitter(SBI_Fitter):
                 samples = samples[None, ...]
 
         y_test = np.asarray(y_test)
-        plots_dir = plots_dir.replace("name", self.name)
+        if y_test.ndim == 1:
+            y_test = y_test[:, None]
+        plots_dir = self._resolve_name_placeholder(plots_dir, self.name)
         os.makedirs(plots_dir, exist_ok=True)
 
         # TARP expects (num_samples, num_sims, num_dims).

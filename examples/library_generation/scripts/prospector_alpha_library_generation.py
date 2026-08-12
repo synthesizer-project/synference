@@ -178,9 +178,34 @@ try:
 except Exception:
     n_proc = 6
 
+try:
+    run_mode = int(sys.argv[2])
+except Exception:
+    run_mode = 2  # default: single-node, no grid compilation
+
 print(f"Number of processes/task: {n_proc}")
 
 av_to_tau_v = 1.086  # conversion factor from Av to tau_v for the dust attenuation curve
+
+
+# Module-level (picklable) parameter transforms used by GalaxyBasis/create_mock_library,
+# which run with n_proc worker processes and an optional multi_node path.
+def _tau_v_ism_to_av(x):
+    return x["tau_v_ism"] * av_to_tau_v
+
+
+def _tau_v_birth_to_dust_ratio(x):
+    return x["tau_v_birth"] / x["tau_v_ism"]
+
+
+def _av_to_tau_v_ism(x):
+    return x["Av"] / av_to_tau_v
+
+
+def _av_to_tau_v_birth(x):
+    return (x["Av"] / av_to_tau_v) * x["dust_ratio"]
+
+
 overwrite = False  # whether to overwrite existing grids
 Nmodels = 100_000  # number of models to generate
 grid_name = "BPASS"  # name for the grid
@@ -230,7 +255,7 @@ if rank == size - 1:  # Last node gets the remainder
     end_idx = Nmodels
 mask[start_idx:end_idx] = True
 
-if int(sys.argv[2]) == 1:
+if run_mode == 1:
     mask = np.ones(Nmodels, dtype=bool)
 
 batch_size = np.sum(mask) + 1
@@ -336,8 +361,8 @@ galaxy_params = {
 }
 
 alt_parametrizations = {
-    "tau_v_ism": ("Av", lambda x: x["tau_v_ism"] * av_to_tau_v),
-    "tau_v_birth": ("dust_ratio", lambda x: x["tau_v_birth"] / x["tau_v_ism"]),
+    "tau_v_ism": ("Av", _tau_v_ism_to_av),
+    "tau_v_birth": ("dust_ratio", _tau_v_birth_to_dust_ratio),
 }
 
 print(f"Creating basis for {name} with Dirichlet SFH (Prospector-alpha priors).")
@@ -357,13 +382,12 @@ basis = GalaxyBasis(
     log_stellar_masses=alpha_params["log_mass"],
 )
 
-multinode = True if sys.argv[2] == "0" else False  # Check if running in multinode mode
-compile_grid = True if sys.argv[2] == "1" else False  # Check if running in multinode mode
+multinode = run_mode == 0  # Check if running in multinode mode
+compile_grid = run_mode == 1  # Check if compiling the grid
 
 param_transforms_to_save = {
-    "tau_v_ism": lambda x: x["Av"] / av_to_tau_v,  # Save Av instead of tau_v_ism
-    "tau_v_birth": lambda x: (x["Av"] / av_to_tau_v)
-    * x["dust_ratio"],  # Save dust_ratio instead of tau_v_birth
+    "tau_v_ism": _av_to_tau_v_ism,  # Save Av instead of tau_v_ism
+    "tau_v_birth": _av_to_tau_v_birth,  # Save dust_ratio instead of tau_v_birth
 }
 
 basis.create_mock_library(

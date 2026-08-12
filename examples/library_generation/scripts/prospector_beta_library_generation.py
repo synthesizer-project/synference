@@ -8,8 +8,7 @@ Prospector-Beta conditional priors (Wang, Leja, et al. 2023, ApJL 944, L58):
 a redshift-evolving stellar mass function, a dynamic p(z) ~ N(z) dV/dz, the
 Gallazzi et al. (2005) mass-metallicity relation, and a mass/redshift-shifted
 Student-t Continuity-SFH prior tied to the Behroozi et al. (2019) cosmic
-SFRD. See ``synference/src/synference/priors_beta.py`` for the implementation
-and ``.claude/plans/`` for design notes.
+SFRD. See ``synference/src/synference/priors_beta.py`` for the implementation.
 
 Dust (Av/slope/dust_bump_amplitude/fesc_lya) is drawn independently via
 ``draw_from_hypercube``, matching Prospector-Beta's own (non-conditional)
@@ -172,9 +171,34 @@ try:
 except Exception:
     n_proc = 6
 
+try:
+    run_mode = int(sys.argv[2])
+except Exception:
+    run_mode = 2  # default: single-node, no grid compilation
+
 print(f"Number of processes/task: {n_proc}")
 
 av_to_tau_v = 1.086  # conversion factor from Av to tau_v for the dust attenuation curve
+
+
+# Module-level (picklable) parameter transforms used by GalaxyBasis/create_mock_library,
+# which run with n_proc worker processes and an optional multi_node path.
+def _tau_v_ism_to_av(x):
+    return x["tau_v_ism"] * av_to_tau_v
+
+
+def _tau_v_birth_to_dust_ratio(x):
+    return x["tau_v_birth"] / x["tau_v_ism"]
+
+
+def _av_to_tau_v_ism(x):
+    return x["Av"] / av_to_tau_v
+
+
+def _av_to_tau_v_birth(x):
+    return (x["Av"] / av_to_tau_v) * x["dust_ratio"]
+
+
 overwrite = False  # whether to overwrite existing grids
 Nmodels = 500_000  # number of models to generate
 grid_name = "BPASS"  # name for the grid
@@ -190,7 +214,6 @@ mass_range = (7.0, 12.5)  # log10(M*/Msun)
 met_range = (-1.98, 0.19)  # log10(Z/Zsun), Gallazzi+05 grid limits
 logsfr_ratio_range = (-5.0, 5.0)
 logsfr_ratio_tscale = 0.3
-const_phi = True  # clamp the SMF to its [0.2, 3.0] validity range (matches TemplateLibrary["beta"])
 
 # --- Independent (non-conditional) dust priors ---
 # Prospector-Beta's dust2/dust_index map onto this repo's existing Av/slope
@@ -224,7 +247,7 @@ if rank == size - 1:  # Last node gets the remainder
     end_idx = Nmodels
 mask[start_idx:end_idx] = True
 
-if int(sys.argv[2]) == 1:
+if run_mode == 1:
     mask = np.ones(Nmodels, dtype=bool)
 
 batch_size = np.sum(mask) + 1
@@ -248,7 +271,6 @@ beta_params = sample_prospector_beta_prior(
     met_range=met_range,
     logsfr_ratio_range=logsfr_ratio_range,
     logsfr_ratio_tscale=logsfr_ratio_tscale,
-    const_phi=const_phi,
     cosmo=cosmo,
     rng=seed,
     mask=mask,
@@ -341,8 +363,8 @@ galaxy_params = {
 }
 
 alt_parametrizations = {
-    "tau_v_ism": ("Av", lambda x: x["tau_v_ism"] * av_to_tau_v),
-    "tau_v_birth": ("dust_ratio", lambda x: x["tau_v_birth"] / x["tau_v_ism"]),
+    "tau_v_ism": ("Av", _tau_v_ism_to_av),
+    "tau_v_birth": ("dust_ratio", _tau_v_birth_to_dust_ratio),
 }
 
 print(f"Creating basis for {name} with Continuity SFH (Prospector-Beta priors).")
@@ -363,13 +385,12 @@ basis = GalaxyBasis(
     log_stellar_masses=beta_params["log_mass"],
 )
 
-multinode = True if sys.argv[2] == "0" else False  # Check if running in multinode mode
-compile_grid = True if sys.argv[2] == "1" else False  # Check if running in multinode mode
+multinode = run_mode == 0  # Check if running in multinode mode
+compile_grid = run_mode == 1  # Check if compiling the grid
 
 param_transforms_to_save = {
-    "tau_v_ism": lambda x: x["Av"] / av_to_tau_v,  # Save Av instead of tau_v_ism
-    "tau_v_birth": lambda x: (x["Av"] / av_to_tau_v)
-    * x["dust_ratio"],  # Save dust_ratio instead of tau_v_birth
+    "tau_v_ism": _av_to_tau_v_ism,  # Save Av instead of tau_v_ism
+    "tau_v_birth": _av_to_tau_v_birth,  # Save dust_ratio instead of tau_v_birth
 }
 
 basis.create_mock_library(
