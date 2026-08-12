@@ -17,8 +17,6 @@ from io import StringIO
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import ili
-import jax
-import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 import optuna
@@ -65,6 +63,7 @@ from .noise_models import (
     load_unc_model_from_hdf5,
     save_unc_model_to_hdf5,
 )
+from .simformer import SimformerModel, UniformBoxPrior, train_simformer
 from .utils import (
     FilterArithmeticParser,
     TimeoutException,
@@ -3392,7 +3391,9 @@ class SBI_Fitter:
                 num_samples=num_samples,
                 **kwargs,
             )
-            samples_quant = samples
+            if samples.ndim == 2:
+                samples = samples[None, ...]
+            samples_quant = samples.transpose(2, 0, 1)
 
         else:
             samples = self.sample_posterior(
@@ -4216,335 +4217,6 @@ class SBI_Fitter:
         finally:
             if old_handler is not None:
                 signal.signal(signal.SIGALRM, old_handler)
-
-    def run_single_simformer(
-        self,
-        train_test_fraction: float = 0.8,
-        random_seed: int = None,
-        train_indices: np.ndarray = None,
-        test_indices: np.ndarray = None,
-        save_model: bool = True,
-        verbose: bool = True,
-        out_dir: str = f"{code_path}/models/name/",
-        plot: bool = True,
-        name_append: str = "timestamp",
-        save_method: str = "dill",
-        set_self: bool = True,
-        override_prior_ranges: dict = {},
-        load_existing_model: bool = True,
-        use_existing_indices: bool = True,
-        evaluate_model: bool = True,
-        max_num_epochs: int = 100_000,
-        sde_type: str = "ve",
-        simformer_type="score",
-        model_kwargs: dict = {},
-        learning_rate: float = 0.0005,
-        training_batch_size: int = 200,
-        validation_fraction: float = 0.1,
-        stop_after_epochs: int = 20,
-        clip_max_norm: float = 5.0,
-        training_args: dict = {},
-    ) -> tuple:
-        r"""Trains a single Simformer model using the SBI implementation.
-
-        May need to be on this branch:
-        https://github.com/sbi-dev/sbi/pull/1621/
-
-        Parameters:
-            train_test_fraction: Fraction of the dataset to be used for training.
-            random_seed: Random seed for reproducibility.
-            train_indices: Indices of the training set.
-            test_indices: Indices of the test set. If None, no test set is used.
-            save_model: Whether to save the trained model.
-            verbose: Whether to print verbose output.
-            out_dir: Directory to save the model.
-            plot: Whether to plot the results.
-            name_append: String to append to the model name.
-            set_self: Whether to set the self attribute.
-            override_prior_ranges: Dictionary to override prior ranges.
-            load_existing_model: Whether to load an existing model.
-            use_existing_indices: Whether to use existing indices.
-            evaluate_model: Whether to evaluate the model.
-            max_num_epochs: Maximum number of epochs to train the model.
-            sde_type: Type of SDE to use ('ve','vp' or 'subvp'). Not used for flow matching.
-            simformer_type: Type of Simformer to use ('score' or 'flow').
-            model_kwargs: Additional keyword arguments to pass to the Simformer builder.
-                Available kwargs and defaults are:
-                For both 'score' and 'flow':
-                - hidden_features: int = 100,
-                - num_heads: int = 4,
-                - num_layers: int = 4,
-                - mlp_ratio: int = 2,
-                - time_embedding_dim: int = 32,
-                - embedding_net: nn.Module = nn.Identity(),
-                - dim_val: int = 64,
-                - dim_id: int = 32,
-                - dim_cond: int = 16,
-                - ada_time: bool = False,
-                - \**kwargs: Any,
-            learning_rate: Learning rate for the optimizer.
-            training_batch_size: Batch size for training.
-            validation_fraction: Fraction of the training set to use for validation.
-            stop_after_epochs: Number of epochs without improvement before stopping.
-            clip_max_norm: Maximum norm for gradient clipping.
-            training_args: Additional arguments to pass to the training function.
-        """
-        from sbi.inference import FlowMatchingSimformer, Simformer
-
-        assert self.has_features, (
-            "Feature array not created. Please create the feature array first."
-        )
-
-        if self.fitted_parameter_array is None:
-            raise ValueError("Parameter grid not created. Please create the parameter grid first.")
-
-        if name_append == "timestamp":
-            name_append = self._timestamp
-
-        out_dir = os.path.join(os.path.abspath(out_dir), self.name)
-
-        if not os.path.exists(out_dir):
-            os.makedirs(out_dir)
-
-        run = False
-        if (
-            os.path.exists(f"{out_dir}/{self.name}_{name_append}_params.pkl")
-            and load_existing_model
-        ):
-            logger.info(
-                f"Loading existing model from {out_dir}/{self.name}_{name_append}_params.pkl"  # noqa: E501
-            )
-            posterior, stats, params = self.load_model_from_pkl(
-                f"{out_dir}/{self.name}_{name_append}_posterior.pkl",
-                set_self=set_self,
-            )
-            # return posterior, stats
-            run = True
-
-            if params is not None:
-                save_model = False  # Don't save the model again if we loaded it.
-        elif os.path.exists(f"{out_dir}/{self.name}_{name_append}_simformer.pkl"):
-            logger.info(
-                "Model with same name already exists. \
-                Please change the name of this model or delete the existing one."
-            )
-            return None
-
-        if (
-            use_existing_indices
-            and (self._train_indices is not None)
-            and (self._test_indices is not None)
-        ):
-            train_indices = self._train_indices
-            test_indices = self._test_indices
-            logger.info("Using existing train and test indices.")
-
-        if (train_indices is None) or (test_indices is None):
-            train_indices, test_indices = self.split_dataset(
-                train_fraction=train_test_fraction,
-                random_seed=random_seed,
-                verbose=verbose,
-            )
-
-        if set_self:
-            self._train_indices = train_indices
-            self._test_indices = test_indices
-
-        X_train = self.feature_array[train_indices]
-        y_train = self.fitted_parameter_array[train_indices]
-        X_test = self.feature_array[test_indices]
-        y_test = self.fitted_parameter_array[test_indices]
-
-        # Construct simformer unflattened features
-
-        X_train = torch.tensor(X_train, dtype=torch.float32, device=self.device)
-        y_train = torch.tensor(y_train, dtype=torch.float32, device=self.device)
-        X_test = torch.tensor(X_test, dtype=torch.float32, device=self.device)
-        y_test = torch.tensor(y_test, dtype=torch.float32, device=self.device)
-
-        inputs = torch.cat([y_train, X_train], dim=1)
-
-        prior = self.create_priors(
-            override_prior_ranges=override_prior_ranges,
-            verbose=verbose,
-        )
-
-        if not run:
-            simformer = Simformer if simformer_type == "score" else FlowMatchingSimformer
-
-            from torch.utils.tensorboard import SummaryWriter
-
-            summary_writer = (
-                SummaryWriter(log_dir=f"{out_dir}/logs/{self.name}_{name_append}")
-                if verbose
-                else None
-            )
-
-            # model_kwargs - passed to model_builder.
-            inference = simformer(
-                device=self.device,
-                sde_type=sde_type,
-                logging_level="INFO",
-                show_progress_bars=verbose,
-                summary_writer=summary_writer if verbose else None,
-                **model_kwargs,
-            )
-
-            training_args_default = {
-                "training_batch_size": training_batch_size,
-                "learning_rate": learning_rate,
-                "validation_fraction": validation_fraction,
-                "stop_after_epochs": stop_after_epochs,
-                "max_num_epochs": max_num_epochs,
-                "clip_max_norm": clip_max_norm,
-                "force_first_round_loss": False,
-                "discard_prior_samples": False,
-                "retrain_from_scratch": False,
-                "show_train_summary": True,
-                "calibration_kernel": None,
-                "ema_loss_decay": 0.1,
-                "validation_times": 10,
-                "dataloader_kwargs": None,
-            }
-            training_args_default.update(training_args)
-
-            inference.append_simulations(inputs, data_device=self.device)
-
-            start_time = time.time()
-            inference.train(**training_args_default)
-            end_time = time.time()
-            # use torch to save score_estimator
-
-            stats = [inference._summary]
-
-            try:
-                torch.save(inference, f"{out_dir}/{self.name}_{name_append}_simformer.pkl")
-            except Exception as e:
-                logger.error(
-                    f"Error saving simformer "
-                    f"to {out_dir}/{self.name}_{name_append}_simformer.pkl: {e}"
-                )
-
-            inference.set_condition_indexes(
-                new_posterior_latent_idx=list(range(len(self.fitted_parameter_names))),
-                new_posterior_observed_idx=list(
-                    range(len(self.fitted_parameter_names), inputs.shape[1])
-                ),
-            )
-            posterior = inference.build_posterior(prior=prior)
-
-            """ This would be nice, but DirectPosterior is not compatible with Simformer yet
-            it seems (no support for .parameters() method)
-            posterior = DirectPosterior(posterior_estimator=posterior, prior=prior)
-            posterior = EnsemblePosterior(
-                posteriors=[posterior],
-                weights=torch.tensor([1.0], device=self.device),
-                theta_transform=posterior.theta_transform,
-            )
-            """
-            # Save the posterior in a compatible format.
-            try:
-                with open(f"{out_dir}/{self.name}_{name_append}_posterior.pkl", "wb") as f:
-                    if save_method == "dill":
-                        import dill
-
-                        dill.dump(posterior, f)
-                    elif save_method == "joblib":
-                        dump(posterior, f, compress=3)
-                    elif save_method == "pickle":
-                        pickle.dump(posterior, f)
-                    else:
-                        torch.save(posterior, f"{out_dir}/{self.name}_{name_append}_posterior.pkl")
-            except Exception as e:
-                logger.error(
-                    f"Error saving posterior {out_dir}/{self.name}_{name_append}_posterior.pkl: {e}"
-                )
-
-            if set_self:
-                self.simformer = inference
-                self.posteriors = posterior
-                self._prior = prior
-                self.stats = stats
-                self._X_train = X_train.cpu().numpy()
-                self._y_train = y_train.cpu().numpy()
-                self._X_test = X_test.cpu().numpy()
-                self._y_test = y_test.cpu().numpy()
-
-            if save_model:
-                param_dict = {
-                    "train_indices": train_indices,
-                    "test_indices": test_indices,
-                    "sde_type": sde_type,
-                    "simformer_type": simformer_type,
-                    "model_kwargs": model_kwargs,
-                    "random_seed": random_seed,
-                    "training_time": end_time - start_time,
-                    "training_args": training_args_default,
-                    "prior": prior,
-                    "stats": stats,
-                }
-                self.save_state(
-                    out_dir=out_dir,
-                    name_append=name_append,
-                    save_method=save_method,
-                    has_grid=True,
-                    **param_dict,
-                )
-
-        if plot:
-            if verbose:
-                logger.info("Plotting training diagnostics...")
-            self.plot_diagnostics(
-                X_train=X_train.cpu().numpy(),
-                y_train=y_train.cpu().numpy(),
-                X_test=X_test.cpu().numpy(),
-                y_test=y_test.cpu().numpy(),
-                plots_dir=f"{out_dir}/plots/{name_append}/",
-                stats=None,
-                sample_method="direct",
-                posteriors=posterior,
-            )
-        # Evaluate the model
-        if evaluate_model:
-            metrics_path = f"{out_dir}/{self.name}_{name_append}_summary.json"
-            if verbose:
-                logger.info("Evaluating the model...")
-            stats = self.evaluate_model(
-                posteriors=posterior,
-                X_test=X_test,
-                y_test=y_test,
-            )
-
-            try:
-                with open(metrics_path, "w") as f:
-                    json.dump(stats, f, indent=4)
-            except Exception as e:
-                logger.error(f"Error saving metrics to {metrics_path}: {e}")
-
-            if set_self:
-                self.stats = stats
-
-        return inference
-
-        # Build conditional just lets you set whichever parameters are missing.
-        # Build_posterior and build_likelihood are just wrappers around build_conditional.
-
-        # conditional = inference.build_conditional(condition_mask=[False, True])
-        # conditional_samples = conditional.sample((10000,), x=x_o)
-
-        # Must set indexes here to indicate which are observed and which are latent.
-
-        # Set condition indexes properly from len(self.fitted_param_names)
-        # and len(self.feature_names)
-
-        # inference.set_condition_indexes(new_posterior_latent_idx=[0],
-        # new_posterior_observed_idx=[1])
-
-        #
-        # posterior_samples = posterior.sample((10000,), x=x_o)
-
-        # likelihood = inference.build_likelihood()
-        # likelihood_samples = likelihood.sample((10000,), x=theta_o)
 
     def run_single_sbi(
         self,
@@ -6822,7 +6494,7 @@ class SBI_Fitter:
             for metric in metrics:
                 # print(metric, type(metrics[metric]))
                 if (
-                    isinstance(metrics[metric], (np.ndarray, list, torch.Tensor, jnp.ndarray))
+                    isinstance(metrics[metric], (np.ndarray, list, torch.Tensor))
                     and hasattr(metrics[metric], "__len__")
                     and len(metrics[metric]) == len(self.fitted_parameter_names)
                 ):
@@ -8206,28 +7878,38 @@ class ModelComparison:
 
 
 class Simformer_Fitter(SBI_Fitter):
-    """Simformer Fitter for SBI models.
+    """SBI fitter backed by the native PyTorch Simformer.
 
-    This class implements the Simformer architecture for SBI tasks.
+    The Simformer (Gloeckler et al. 2024) is a transformer + score-diffusion model
+    trained on the joint ``[theta, x]`` with per-example condition masks. A single
+    trained model provides the posterior, the likelihood, and arbitrary conditionals
+    (e.g. missing photometric bands), plus interval-constrained sampling via guidance.
 
-    To Do:
-    - Ensure more inherited methods actually work with Simformer.
-    - Implement TARP and other metrics which are native to LtU-ILI.
-    - Ensure methods to act on real observations and recover photometry work.
-
+    The trained model is a :class:`synference.simformer.SimformerModel` stored on
+    ``self.posteriors``. Node order everywhere is ``[theta..., x...]`` and condition
+    masks are boolean arrays where True marks an observed (conditioned) node.
     """
 
     def __init__(self, name: str = "simformer_fitter", **kwargs):
         """Initialize the Simformer Fitter."""
         super().__init__(name=name, **kwargs)
 
-        self.simformer_task = None
+    @staticmethod
+    def _resolve_name_placeholder(path: str, name: str) -> str:
+        """Substitute the ``{name}`` placeholder in a default path template.
+
+        Only the literal ``{name}`` token is substituted, so caller-supplied
+        paths (e.g. the already-resolved absolute paths ``run_single_sbi``
+        builds from ``out_dir``) pass through unchanged instead of having
+        every occurrence of the substring "name" rewritten.
+        """
+        return path.replace("{name}", name) if "{name}" in path else path
 
     @classmethod
     def init_from_hdf5(
         cls, model_name, hdf5_path: str = None, return_output: bool = False, **kwargs
     ):
-        """Initialize the Simformer Fitter."""
+        """Initialize the Simformer Fitter from an HDF5 library."""
         return super().init_from_hdf5(
             model_name,
             hdf5_path,
@@ -8237,7 +7919,7 @@ class Simformer_Fitter(SBI_Fitter):
 
     @classmethod
     def load_saved_model(cls, model_name: str, library_path: str, model_file: str, **kwargs):
-        """Load a saved Simformer model from a file."""
+        """Load a saved Simformer model given a library and a model directory."""
         model = cls.init_from_hdf5(
             model_name=model_name,
             hdf5_path=library_path,
@@ -8254,7 +7936,6 @@ class Simformer_Fitter(SBI_Fitter):
 
     def run_single_sbi(
         self,
-        backend: str = "jax",
         num_training_simulations: int = 10_000,
         train_test_fraction: float = 0.9,
         random_seed: int = 42,
@@ -8263,23 +7944,25 @@ class Simformer_Fitter(SBI_Fitter):
         load_existing_model: bool = True,
         name_append: str = "timestamp",
         save_method: str = "joblib",
-        task_func: Optional[Callable] = None,
         model_config_dict_overrides: Optional[Dict[str, Any]] = None,
-        sde_config_dict: Optional[Dict[str, Any]] = None,
-        train_config_dict_overrides: Optional[Dict[str, Any]] = None,
         sde_config_dict_overrides: Optional[Dict[str, Any]] = None,
-        attention_mask_type: str = "full",
+        train_config_dict_overrides: Optional[Dict[str, Any]] = None,
+        attention_mask_type: Union[str, np.ndarray] = "full",
         evaluate_model: bool = True,
+        out_dir: str = f"{code_path}/models/",
+        num_posterior_draws_per_sample: int = 1000,
+        device: Optional[str] = None,
     ):
-        """Train a Simformer model using the provided configurations.
+        """Train a Simformer model on the feature/parameter arrays.
 
-        This method sets up the Simformer task, prepares the data, trains
-        the model using the specified configurations, and saves the trained
-        model to a pickle file.
+        Trains with denoising score matching over the joint ``[theta, x]`` using the
+        default paper configuration (VE-SDE, structured-random condition masks); see
+        :data:`synference.simformer.DEFAULT_MODEL_CONFIG`,
+        :data:`synference.simformer.DEFAULT_SDE_CONFIG`, and
+        :data:`synference.simformer.DEFAULT_TRAIN_CONFIG` for the available override
+        keys (unknown keys raise a ``ValueError``).
 
         Args:
-            backend (str, optional): Backend to use for training ('jax' or 'torch').
-                Defaults to "jax".
             num_training_simulations (int, optional): Number of training simulations
                 to generate. Only used if `has_simulator` is True, otherwise
                 the `feature_array` is used. Defaults to 10,000.
@@ -8287,266 +7970,178 @@ class Simformer_Fitter(SBI_Fitter):
                 training. Defaults to 0.9.
             random_seed (int, optional): Random seed for reproducibility.
                 Defaults to 42.
-            set_self (bool, optional): If True, sets the trained model and task
-                to the instance attributes. Defaults to True.
+            set_self (bool, optional): If True, sets the trained model to the
+                instance attributes. Defaults to True.
             verbose (bool, optional): If True, prints progress information
                 during training. Defaults to True.
             load_existing_model (bool, optional): If True, loads an existing
-                model from a pickle file if it exists. Defaults to True.
+                model from disk if it exists. Defaults to True.
             name_append (str, optional): String to append to the model name in
                 the output file. Defaults to "timestamp".
-            save_method (str, optional): Method to use for saving the model
-                (e.g., 'torch', 'pickle'). Defaults to "joblib".
-            task_func (Callable, optional): Function to create the task. If None,
-                uses the default `GalaxyPhotometryTask`. Defaults to None.
-            model_config_dict_overrides (dict, optional): Dictionary to override
-                the default model configuration. Defaults to None.
-            sde_config_dict (dict, optional): Dictionary to override configs
-                for the SDE. Defaults to a pre-defined VPSDE configuration.
-            train_config_dict_overrides (dict, optional): Dictionary to override the
-                training configuration. Defaults to a pre-defined configuration.
-            sde_config_dict_overrides (dict, optional): Dictionary to override
-                the SDE configuration. Defaults to None.
-            attention_mask_type (str, optional): Type of attention mask to use
-                ('full', 'causal', or 'none'). Defaults to "full".
-            evaluate_model (bool, optional): If True, evaluates the trained
-                model on the validation set and prints metrics. Defaults to True.
+            save_method (str, optional): Method used for the sidecar params file
+                (the model itself is always saved with torch). Defaults to "joblib".
+            model_config_dict_overrides (dict, optional): Overrides for the model
+                architecture config. Defaults to None.
+            sde_config_dict_overrides (dict, optional): Overrides for the SDE config
+                (e.g. ``{"name": "vpsde", "beta_max": 20.0}``). Defaults to None.
+            train_config_dict_overrides (dict, optional): Overrides for the training
+                config. Defaults to None.
+            attention_mask_type (str or np.ndarray, optional): Base attention mask —
+                "full" (dense), "directed"/"causal", or a custom boolean array.
+                Defaults to "full".
+            evaluate_model (bool, optional): If True, evaluates the trained model on
+                the test split and saves diagnostic plots/metrics. Defaults to True.
+            out_dir (str, optional): Root output directory; the model is written to
+                ``{out_dir}/{self.name}/``. Defaults to ``{code_path}/models/``.
+            num_posterior_draws_per_sample (int, optional): Posterior draws per test
+                observation during evaluation. Defaults to 1000.
+            device (str, optional): Torch device for training. Defaults to
+                ``self.device``.
 
-
-        - Add support for constraint functions during sampling to allow intervals
-            (e.g., from `scoresbibm.methods.guidance` import
-            `generalized_guidance`, `get_constraint_fn`).
+        Returns:
+            tuple: The trained :class:`synference.simformer.SimformerModel` and the
+            training stats dictionary.
         """
-        from omegaconf import OmegaConf
-        from scoresbibm.methods.score_transformer import train_transformer_model
-
-        model_config_dict = {
-            "name": "ScoreTransformer",
-            "d_model": 128,
-            "n_heads": 4,
-            "n_layers": 4,
-            "d_feedforward": 256,
-            "dropout": 0.1,
-            "max_len": 5000,  # Adjust based on theta_dim + x_dim
-            "tokenizer": {"name": "LinearTokenizer", "encoding_dim": 64},
-            "use_output_scale_fn": True,
-        }
-        if model_config_dict_overrides is not None:
-            model_config_dict.update(model_config_dict_overrides)
-
-        sde_config_dict = {
-            "name": "VPSDE",  # or "VESDE"
-            "beta_min": 0.1,
-            "beta_max": 20.0,
-            "num_steps": 1000,
-            "T_min": 1e-05,
-            "T_max": 1.0,
-        }
-        if sde_config_dict_overrides is not None:
-            sde_config_dict.update(sde_config_dict_overrides)
-
-        train_config_dict = {
-            "learning_rate": 1e-4,  # Initial learning rate for training # used
-            "min_learning_rate": 1e-6,  # Minimum learning rate for training # used
-            "z_score_data": True,  # Whether to z-score the data # used
-            "total_number_steps_scaling": 5,  # Scaling factor for total number of steps
-            "max_number_steps": 1e8,  # Maximum number of steps for training # used
-            "min_number_steps": 1e4,  # Minimum number of steps for training # used
-            "training_batch_size": 64,  # Batch size for training # used
-            "val_every": 100,  # Validate every 100 steps # used
-            "clip_max_norm": 10.0,  # Gradient clipping max norm # used
-            "condition_mask_fn": {
-                "name": "joint"
-            },  # Use the base mask function defined in the task
-            "edge_mask_fn": {"name": "none"},
-            "validation_fraction": 0.1,  # Fraction of data to use for validation # used
-            "val_repeat": 5,  # Number of times to repeat validation # used
-            "stop_early_count": 5,  # Number of steps to wait before stopping early # used
-            "rebalance_loss": False,  # Whether to rebalance the loss # used
-        }
-        if train_config_dict_overrides is not None:
-            train_config_dict.update(train_config_dict_overrides)
-
-        if task_func is None:
-            from .simformer import GalaxyPhotometryTask as task_func
-
         if name_append == "timestamp":
             name_append = f"{self._timestamp}"
-
         if len(name_append) > 0 and name_append[0] != "_":
             name_append = f"_{name_append}"
 
-        out_path = f"{code_path}/models/{self.name}/{self.name}{name_append}_posterior.pkl"
-        if load_existing_model and os.path.exists(out_path):
-            logger.info(f"Loading existing model from {out_path}")
-            trained_score_model, meta = self.load_model_from_pkl(
-                model_dir=f"{code_path}/models/{self.name}/",
-                model_name=f"{self.name}{name_append}_posterior",
-                set_self=True,
-            )
-            run = True
-        else:
-            run = False
+        out_dir = os.path.join(os.path.abspath(out_dir), self.name)
+        model_path = os.path.join(out_dir, f"{self.name}{name_append}_posterior.pkl")
 
-        priors = self.create_priors()
+        if device is None:
+            device = self.device
+
+        prior = self.create_priors(set_self=True)
 
         if self.has_simulator:
-            logger.info("Using online simulator for training.")
-            simulator_function = self.simulator
-            learning_type = "online"
+            logger.info(f"Generating {num_training_simulations} simulations for training.")
+            x_all, theta_all = self.generate_pairs_from_simulator(num_training_simulations)
+            n_train = int(train_test_fraction * len(x_all))
+            rng = np.random.default_rng(random_seed)
+            order = rng.permutation(len(x_all))
+            train_idx, test_idx = order[:n_train], order[n_train:]
         else:
-            logger.info("Using pre-generated samples for training.")
             assert self.feature_array is not None, (
                 "Feature array must be provided for pre-generated samples."
             )
-            simulator_function = None
-            learning_type = "offline"
-
-        if not self.has_simulator:
-            # Split the dataset into training and validation sets.
-            train_indices, test_indices = self.split_dataset(
+            train_idx, test_idx = self.split_dataset(
                 train_fraction=train_test_fraction,
                 random_seed=random_seed,
                 verbose=verbose,
             )
+            x_all = np.asarray(self.feature_array, dtype=np.float32)
+            theta_all = np.asarray(self.fitted_parameter_array, dtype=np.float32)
 
-            x = jnp.array(self.feature_array, dtype=jnp.float32)
-            theta = jnp.array(self.fitted_parameter_array, dtype=jnp.float32)
+        x_train, theta_train = x_all[train_idx], theta_all[train_idx]
+        x_test, theta_test = x_all[test_idx], theta_all[test_idx]
 
-            training_data = {
-                "theta": theta[train_indices],
-                "x": x[train_indices],
-            }
-
-            validation_data = {
-                "theta": theta[test_indices],
-                "x": x[test_indices],
-            }
-
-        task = task_func(
-            name="galaxy_photometry",
-            backend=backend,
-            prior_dict=priors,
-            param_names_ordered=self.fitted_parameter_names,
-            run_simulator_fn=simulator_function,
-            num_filters=len(self.feature_names),
-            test_X_data=copy.deepcopy(validation_data["x"]),
-            test_theta_data=copy.deepcopy(validation_data["theta"]),
-            attention_mask_type=attention_mask_type,
-        )
-
-        method_config_dict = {
-            "device": str(self.device),  # Ensure this matches device setup
-            "sde": sde_config_dict,
-            "model": model_config_dict,
-            "train": train_config_dict,
+        meta = {
+            "param_names": list(self.fitted_parameter_names),
+            "feature_names": list(self.feature_names),
+            "prior_ranges": prior.prior_ranges,
         }
 
-        # Convert the main method_cfg to OmegaConf DictConfig
-        method_cfg = OmegaConf.create(method_config_dict)
-        master_rng_key = jax.random.PRNGKey(random_seed)
-
-        if self.has_simulator:
-            logger.info(f"Generating {num_training_simulations} training simulations...")
-            training_data = task.get_data(num_samples=num_training_simulations)
-
-            num_validation_simulations = int(num_training_simulations * train_test_fraction)
-
-            validation_data = task.get_data(num_samples=num_validation_simulations)
-
-        if not run:
+        stats = None
+        if load_existing_model and os.path.exists(model_path):
+            logger.info(f"Loading existing model from {model_path}")
+            trained_model, _ = self.load_model_from_pkl(
+                model_dir=out_dir,
+                model_name=f"{self.name}{name_append}_posterior",
+                set_self=set_self,
+            )
+        else:
             if verbose:
                 logger.info(f"Starting training at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
-            trained_score_model = train_transformer_model(
-                task=task,
-                data=training_data,
-                method_cfg=method_cfg,
-                rng=master_rng_key,
+            trained_model, stats = train_simformer(
+                theta_train,
+                x_train,
+                model_config=model_config_dict_overrides,
+                sde_config=sde_config_dict_overrides,
+                train_config=train_config_dict_overrides,
+                base_mask=attention_mask_type,
+                meta=meta,
+                device=device,
+                seed=random_seed,
+                verbose=verbose,
             )
             if verbose:
                 logger.info(f"Finished training at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
             if set_self:
-                self.simformer_task = task
-                self.posteriors = trained_score_model
+                self.posteriors = trained_model
+                self.stats = stats
 
-        if verbose:
-            logger.info(f"Saving model at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-
-        self.save_model_to_pkl(
-            task=task,
-            posteriors=trained_score_model,
-            output_folder=f"{code_path}/models/{self.name}/",
-            name_append=name_append,
-            method_config_dict=method_config_dict,
-            save_method=save_method,
-            extras={
-                "model_config_dict": model_config_dict,
-                "sde_config_dict": sde_config_dict,
-                "train_config_dict": train_config_dict,
-                "random_seed": random_seed,
-                "num_training_simulations": num_training_simulations,
-                "train_test_fraction": train_test_fraction,
-                "attention_mask_type": attention_mask_type,
-                "has_simulator": self.has_simulator,
-                "learning_type": learning_type,
-            },
-        )
-
-        # Evaluate model.
-        test_x = validation_data["x"]
-        theta_val = validation_data["theta"]
+            self.save_model_to_pkl(
+                posteriors=trained_model,
+                out_dir=out_dir,
+                name_append=name_append,
+                save_method=save_method,
+                stats=stats,
+                extras={
+                    "model_config_dict": model_config_dict_overrides or {},
+                    "sde_config_dict": sde_config_dict_overrides or {},
+                    "train_config_dict": train_config_dict_overrides or {},
+                    "random_seed": random_seed,
+                    "num_training_simulations": num_training_simulations,
+                    "train_test_fraction": train_test_fraction,
+                    "has_simulator": self.has_simulator,
+                    "learning_type": "online" if self.has_simulator else "offline",
+                },
+            )
 
         if set_self:
-            self._X_test = np.array(test_x)
-            self._y_test = np.array(theta_val)
+            self._X_test = np.asarray(x_test)
+            self._y_test = np.asarray(theta_test)
 
         if evaluate_model:
             if verbose:
                 logger.info(f"Evaluating model at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
             self.plot_diagnostics(
-                task=task,
-                X_test=test_x,
-                y_test=theta_val,
-                posteriors=trained_score_model,
-                num_samples=1000,
-                num_evaluations=25,
+                X_test=x_test,
+                y_test=theta_test,
+                posteriors=trained_model,
+                num_samples=num_posterior_draws_per_sample,
                 rng_seed=random_seed,
-                plots_dir=f"{code_path}/models/{self.name}/plots/{name_append}/",
-                metric_path=f"{code_path}/models/{self.name}/{self.name}_{name_append}_metrics.json",
+                plots_dir=os.path.join(out_dir, "plots", name_append.lstrip("_")),
+                metric_path=os.path.join(out_dir, f"{self.name}{name_append}_metrics.json"),
             )
+
+        return trained_model, stats
 
     def load_model_from_pkl(
         self, model_dir: str, model_name: str = "simformer", set_self: bool = True
     ):
-        """Load a Simformer model from a pickle file.
+        """Load a Simformer model and its sidecar parameter file.
 
         Parameters:
-        -----------
-        model_dir : str
-            Directory where the model file is located.
-        model_name : str, optional
-            Name of the model file to load. Default is "simformer".
-        set_self : bool, optional
-            If True, sets the loaded model and task to the instance attributes.
-            Default is True.
-        """
-        from .simformer import load_full_model
+            model_dir: Directory containing the saved model files.
+            model_name: Name of the model file (with or without the ``_posterior``
+                suffix). Default is "simformer".
+            set_self: If True, sets the loaded model and metadata on the instance.
 
+        Returns:
+            tuple: The loaded :class:`synference.simformer.SimformerModel` and the
+            metadata dictionary from the sidecar params file.
+        """
         if not model_name.endswith("_posterior"):
             model_name = f"{model_name}_posterior"
 
-        model, meta, task = load_full_model(
-            model_dir,
-            model_name,
-        )
+        model_path = os.path.join(model_dir, f"{model_name}.pkl")
+        model = SimformerModel.load(model_path, map_location=self.device)
+
+        meta_path = os.path.join(model_dir, f"{model_name.replace('_posterior', '_params')}.pkl")
+        meta = {}
+        if os.path.exists(meta_path):
+            meta = load(meta_path)
+        else:
+            logger.warning(f"No params file found at {meta_path}.")
 
         if set_self:
-            self.simformer_task = task
             self.posteriors = model
-
             for item in meta:
                 val = meta[item]
                 if isinstance(val, list):
@@ -8564,122 +8159,72 @@ class Simformer_Fitter(SBI_Fitter):
 
                 setattr(self, item, val)
 
-            model.has_features = True
+            self.has_features = getattr(self, "feature_array", None) is not None
 
         return model, meta
 
     def save_model_to_pkl(
         self,
-        task=None,
         posteriors=None,
-        name_append="",
-        out_dir: str = f"{code_path}/models/name/",
-        save_method="joblib",
-        **extras,
+        name_append: str = "",
+        out_dir: str = f"{code_path}/models/{{name}}/",
+        save_method: str = "joblib",
+        stats=None,
+        extras: Optional[dict] = None,
     ):
-        """Save the Simformer model to a pickle file.
+        """Save the Simformer model and the fitter state to disk.
+
+        The model itself is written with :meth:`SimformerModel.save` (a plain torch
+        payload); ``save_method`` only affects the sidecar params file written by
+        :meth:`SBI_Fitter.save_state`.
 
         Parameters:
-        *************
-        task : object, optional
-            Task object containing the model and data.
-            If None, uses the simformer_task attribute of the object.
-        posteriors : object, optional
-            Posteriors to save. If None, uses the posteriors attribute of the object.
-        name_append : str, optional
-            String to append to the model name in the output file.
-            Default is an empty string.
-        out_dir : str, optional
-            Directory to save the model files.
-            Default is f"{code_path}/models/name/".
-        save_method : str, optional
-            Method to use for saving the model.
-            Options are 'torch', 'joblib', 'pickle', and 'hdf5'.
-            Default is 'torch'.
-        extras : dict, optional
-            Additional parameters to save with the model.
-            These will be added to the saved dictionary.
+            posteriors: The :class:`synference.simformer.SimformerModel` to save.
+                If None, uses ``self.posteriors``.
+            name_append: String appended to the model name in the output files.
+            out_dir: Output directory (``{name}`` replaced by ``self.name``).
+            save_method: Serialization method for the sidecar params file.
+            stats: Training stats dictionary (loss traces are summarized).
+            extras: Additional entries stored in the params file.
         """
-        if task is None:
-            task = self.simformer_task
         if posteriors is None:
             posteriors = self.posteriors
+        if posteriors is None:
+            raise ValueError("A trained model must be provided.")
 
-        if task is None or posteriors is None:
-            raise ValueError("Task and posteriors must be provided.")
-
-        out_dir = out_dir.replace("name", self.name)
-
-        if not os.path.exists(out_dir):
-            os.makedirs(out_dir)
+        out_dir = self._resolve_name_placeholder(out_dir, self.name)
+        os.makedirs(out_dir, exist_ok=True)
 
         if len(name_append) > 0 and name_append[0] != "_":
             name_append = f"_{name_append}"
 
         file_name = os.path.join(out_dir, f"{self.name}{name_append}_posterior.pkl")
-
-        if save_method == "torch":
-            from torch import save
-
-            # Save trained model using PyTorch
-            save(posteriors, file_name)
-        elif save_method == "joblib":
-            from joblib import dump
-
-            # Save trained model using joblib
-            dump(posteriors, file_name, compress=3)
-        elif save_method == "pickle":
-            import pickle
-
-            # Save trained model using pickle
-            with open(file_name, "wb") as f:
-                pickle.dump(posteriors, f)
-        elif save_method == "hdf5":
-            raise NotImplementedError("HDF5 saving is not implemented yet.")
-        elif save_method == "dill":
-            import dill
-
-            with open(file_name, "wb") as f:
-                dill.dump(posteriors, f)
-        else:
-            raise ValueError(
-                f"Invalid save_method: {save_method}. "
-                "Choose from 'torch', 'joblib', 'pickle', 'dill', or 'hdf5'."
-            )
-
-        from scoresbibm.methods.score_transformer import get_z_score_fn
-
-        # Why is this here?
-        if (
-            posteriors.z_score_params is not None
-            and posteriors.z_score_params["z_score_fn"] is None
-        ):
-            zscore, un_zscore = get_z_score_fn(
-                posteriors.z_score_params["mean_per_node_id"],
-                posteriors.z_score_params["std_per_node_id"],
-            )
-            posteriors.z_score_params["z_score_fn"] = zscore
-            posteriors.z_score_params["un_z_score_fn"] = un_zscore
+        posteriors.save(file_name)
 
         save_dict = {
-            "_x_dim": task.get_x_dim(),
-            "_theta_dim": task.get_theta_dim(),
-            "prior_dict": task.prior_dist.prior_ranges,
-            "param_names_ordered": task.param_names_ordered,
-            "backend": task.backend,
+            "theta_dim": posteriors.theta_dim,
+            "x_dim": posteriors.x_dim,
+            "prior_dict": posteriors.meta.get("prior_ranges", {}),
+            "param_names_ordered": posteriors.meta.get("param_names", []),
+            "backend": "torch",
         }
+        if stats is not None:
+            summary = {
+                key: value
+                for key, value in stats.items()
+                if isinstance(value, (int, float, bool, str)) or value is None
+            }
+            save_dict["stats"] = [summary]
+        if extras:
+            save_dict.update(extras)
 
-        save_dict.update(extras)
-
-        # Move the posteriors to CPU and convert to numpy if needed. Saves problems recreating
-        # the arrays later
         save_dict = make_serializable(save_dict, allowed_types=[np.ndarray])
 
         self.save_state(
             out_dir=out_dir,
             name_append=name_append,
             save_method=save_method,
-            has_grid=~self.has_simulator,
+            has_grid=not self.has_simulator,
             **save_dict,
         )
 
@@ -8687,78 +8232,55 @@ class Simformer_Fitter(SBI_Fitter):
         self,
         X_test=None,
         y_test=None,
-        num_samples=1000,
-        num_evaluations=25,
-        task=None,
+        num_samples: int = 1000,
         posteriors=None,
         rng_seed: int = 42,
-        plots_dir: str = f"{code_path}/models/name/plots/",
-        metric_path: str = f"{code_path}/models/name/name_metrics.json",
+        plots_dir: str = f"{code_path}/models/{{name}}/plots/",
+        metric_path: str = f"{code_path}/models/{{name}}/{{name}}_metrics.json",
         overwrite: bool = False,
     ):
-        """Plot diagnostics for the Simformer model.
+        """Evaluate the model on test data and save diagnostic plots and metrics.
 
         Args:
-            X_test (np.ndarray, optional): Test data to evaluate the model.
-                If None, uses the `X_test` attribute. Defaults to None.
-            y_test (np.ndarray, optional): True values for the test data.
-                If None, uses the `y_test` attribute. Defaults to None.
-            num_samples (int, optional): Number of samples to draw from the
-                posterior. Defaults to 1000.
-            num_evaluations (int, optional): Number of evaluations to perform
-                for coverage. Defaults to 25.
-            task (object, optional): Task object containing the model and data.
-                If None, uses the `simformer_task` attribute. Defaults to None.
-            posteriors (object, optional): Posteriors to use for sampling.
-                If None, uses the posteriors stored in the object.
-                Defaults to None.
-            rng_seed (int, optional): Random seed for reproducibility.
-                Defaults to 42.
-            plots_dir (str, optional): Directory to save the plots.
-                Defaults to f"{code_path}/models/{name}/plots/".
-            metric_path (str, optional): Path to save the metrics JSON file.
-                Defaults to f"{code_path}/models/{name}/{name}_metrics.json".
-            overwrite (bool, optional): If True, overwrites existing plots
-                and metrics. Defaults to False.
+            X_test (np.ndarray, optional): Test features. Defaults to ``self._X_test``.
+            y_test (np.ndarray, optional): True test parameters. Defaults to
+                ``self._y_test``.
+            num_samples (int, optional): Posterior draws per observation.
+                Defaults to 1000.
+            posteriors (SimformerModel, optional): Model to evaluate. Defaults to
+                ``self.posteriors``.
+            rng_seed (int, optional): Random seed. Defaults to 42.
+            plots_dir (str, optional): Directory for the plots.
+            metric_path (str, optional): Path for the metrics JSON file.
+            overwrite (bool, optional): Unused, kept for API parity. Defaults to
+                False.
 
         Returns:
-            None:
-                This function saves plots and metrics to disk and does not
-                return anything.
+            None: Plots and metrics are written to disk.
         """
-        if task is None:
-            task = self.simformer_task
-
         if posteriors is None:
             posteriors = self.posteriors
+        if X_test is None or y_test is None:
+            X_test, y_test = self._X_test, self._y_test
 
-        """
-        eval_inference_task(
-            task=task,
-            model=posteriors,
-            metric_fn=c2st,  # Use the c2st metric function
-            metric_params={"condition_mask_fn": "posterior"},
-            rng=master_rng_key,
-            num_samples=num_samples,
-            num_evaluations=num_evaluations,
-        )
-        """
         samples = self.sample_posterior(
             X_test=X_test,
             num_samples=num_samples,
             posteriors=posteriors,
             rng_seed=rng_seed,
         )
+        if samples.ndim == 2:
+            samples = samples[None, ...]
 
         metrics = self.evaluate_model(
             posteriors=posteriors,
             X_test=X_test,
             y_test=y_test,
             samples=samples,
+            num_samples=num_samples,
         )
-        metrics_path = metric_path.replace("name", self.name)
-        if not os.path.exists(os.path.dirname(metrics_path)):
-            os.makedirs(os.path.dirname(metrics_path))
+        metrics_path = self._resolve_name_placeholder(metric_path, self.name)
+        os.makedirs(os.path.dirname(metrics_path), exist_ok=True)
 
         try:
             with open(metrics_path, "w") as f:
@@ -8767,10 +8289,8 @@ class Simformer_Fitter(SBI_Fitter):
             logger.error(f"Error saving metrics to {metrics_path}: {e}")
 
         self.plot_sample_accuracy(
-            num_samples=num_samples,
             X_test=X_test,
             y_test=y_test,
-            task=task,
             posteriors=posteriors,
             rng_seed=rng_seed,
             plots_dir=plots_dir,
@@ -8778,91 +8298,63 @@ class Simformer_Fitter(SBI_Fitter):
         )
 
         self.plot_coverage(
-            num_samples=num_samples,
-            num_evaluations=num_evaluations,
-            task=task,
-            posteriors=posteriors,
-            rng_seed=rng_seed,
+            y_test=y_test,
+            samples=samples,
             plots_dir=plots_dir,
-            overwrite=overwrite,
         )
 
     def plot_sample_accuracy(
         self,
-        num_samples=1000,
+        num_samples: int = 1000,
         X_test=None,
         y_test=None,
-        task=None,
         posteriors=None,
         rng_seed: int = 42,
-        plots_dir: str = f"{code_path}/models/name/plots/",
+        plots_dir: str = f"{code_path}/models/{{name}}/plots/",
         samples=None,
     ):
-        """Plot the accuracy of the sampled posterior distribution.
+        """Plot recovered posterior quantiles against the true parameter values.
 
         Parameters:
-        ------------
-        num_samples : int, optional
-            Number of samples to draw from the posterior. Default is 1000.
-        X_test : np.ndarray, optional
-            Test data to sample from the posterior. If None, uses the
-            X_test attribute of the object.
-        y_test : np.ndarray, optional
-            True values for the test data. If None, uses the y_test
-            attribute of the object.
-        task : object, optional
-            Task object containing the model and data. If None, uses the
-            simformer_task attribute of the object.
-        posteriors : object, optional
-            Posteriors to use for sampling. If None, uses the posteriors
-            stored in the object.
-        rng_seed : int, optional
-            Random seed for reproducibility. Default is 42.
-        plots_dir : str, optional
-            Directory to save the plots. Default is
-            f"{code_path}/models/{name}/plots/".
-        samples : np.ndarray, optional
-            Pre-computed samples from the posterior. If None, samples will be
-            drawn from the posterior using the sample_posterior method.
+            num_samples: Posterior draws per observation if ``samples`` is None.
+            X_test: Test features. Defaults to ``self._X_test``.
+            y_test: True test parameters. Defaults to ``self._y_test``.
+            posteriors: Model to sample from. Defaults to ``self.posteriors``.
+            rng_seed: Random seed.
+            plots_dir: Directory for the plot ("name" replaced by ``self.name``).
+            samples: Precomputed samples of shape ``(n_obs, num_samples, n_theta)``.
         """
-        if task is None:
-            task = self.simformer_task
-
         if posteriors is None:
             posteriors = self.posteriors
-
-        posterior_condition_mask = jnp.array(
-            [0] * task.get_theta_dim() + [1] * task.get_x_dim(), dtype=jnp.bool_
-        )
+        if X_test is None or y_test is None:
+            X_test, y_test = self._X_test, self._y_test
 
         if samples is None:
-            y_test_recovered = self.sample_posterior(
+            samples = self.sample_posterior(
                 X_test=X_test,
-                num_samples=1000,
+                num_samples=num_samples,
                 posteriors=posteriors,
                 rng_seed=rng_seed,
-                attention_mask=posterior_condition_mask,
             )
-        else:
-            y_test_recovered = samples
+            if samples.ndim == 2:
+                samples = samples[None, ...]
 
-        # Get 16, 50 and 84 percentiles for each parameter for each test sample
-
+        y_test = np.asarray(y_test)
+        if y_test.ndim == 1:
+            y_test = y_test[:, None]
+        param_names = list(self.simple_fitted_parameter_names)
         fig, ax = plt.subplots(
             nrows=1,
-            ncols=len(task.param_names_ordered),
-            figsize=(len(task.param_names_ordered) * 3, 3),
+            ncols=len(param_names),
+            figsize=(len(param_names) * 3, 3),
+            squeeze=False,
         )
+        ax = ax[0]
 
-        for i, param in enumerate(task.param_names_ordered):
-            # Get the 16th, 50th and 84th percentiles for the parameter
-            p16, p50, p84 = np.percentile(
-                y_test_recovered[:, :, i],
-                [16, 50, 84],
-                axis=1,
-            ).squeeze()
+        for i, param in enumerate(param_names):
+            p16, p50, p84 = np.percentile(samples[:, :, i], [16, 50, 84], axis=1)
             ax[i].errorbar(
-                y_test[:, i],  # True values
+                y_test[:, i],
                 p50,
                 yerr=[p50 - p16, p84 - p50],
                 fmt="o",
@@ -8871,285 +8363,314 @@ class Simformer_Fitter(SBI_Fitter):
                 elinewidth=0.5,
                 alpha=0.75,
             )
-            # Add a 1:1 line
             ax[i].plot(
                 [y_test[:, i].min(), y_test[:, i].max()],
                 [y_test[:, i].min(), y_test[:, i].max()],
                 "k--",
             )
-
             ax[i].set_title(param)
             ax[i].set_xlabel("True")
             if i == 0:
                 ax[i].set_ylabel("Predicted")
 
         plt.tight_layout()
-
-        plots_dir = plots_dir.replace("name", self.name)
-
-        if not os.path.exists(plots_dir):
-            os.makedirs(plots_dir)
-        # TODO: Rename to match convention
-        plt.savefig(os.path.join(plots_dir, "plot_sample_predictions.jpg"))
+        plots_dir = self._resolve_name_placeholder(plots_dir, self.name)
+        os.makedirs(plots_dir, exist_ok=True)
+        fig.savefig(os.path.join(plots_dir, "plot_sample_predictions.jpg"))
+        plt.close(fig)
 
     def plot_coverage(
         self,
-        num_samples=1000,
-        num_evaluations=25,
-        task=None,
+        y_test=None,
+        samples=None,
+        X_test=None,
+        num_samples: int = 1000,
         posteriors=None,
         rng_seed: int = 42,
-        plots_dir: str = f"{code_path}/models/name/plots/",
+        plots_dir: str = f"{code_path}/models/{{name}}/plots/",
     ):
-        """Plot the coverage of the posterior distribution.
+        """Plot TARP coverage and SBC rank histograms for the posterior.
+
+        Note:
+            This override is intentionally not signature-compatible with
+            :meth:`SBI_Fitter.plot_coverage` (which takes ``X``/``y``,
+            ``sample_method``, ``plot_list``, etc.): the Simformer diffusion
+            sampler is driven directly through ``X_test``/``y_test`` and
+            precomputed ``samples`` instead. Callers using the base
+            ``SBI_Fitter`` API must adapt to these keyword names.
 
         Parameters:
-        ------------
-        num_samples : int, optional
-            Number of samples to draw from the posterior. Default is 1000.
-        num_evaluations : int, optional
-            Number of evaluations to perform for coverage. Default is 25.
-        task : object, optional
-            Task object containing the model and data. If None, uses the
-            simformer_task attribute of the object.
-        posteriors : object, optional
-            Posteriors to use for sampling. If None, uses the posteriors
-            stored in the object.
-        rng_seed : int, optional
-            Random seed for reproducibility. Default is 42.
-        plots_dir : str, optional
-            Directory to save the plots. Default is
-            f"{code_path}/models/{name}/plots/".
+            y_test: True test parameters. Defaults to ``self._y_test``.
+            samples: Precomputed samples of shape ``(n_obs, num_samples, n_theta)``.
+                Drawn from the posterior if None.
+            X_test: Test features (used only if ``samples`` is None).
+            num_samples: Posterior draws per observation if sampling here.
+            posteriors: Model to sample from. Defaults to ``self.posteriors``.
+            rng_seed: Random seed.
+            plots_dir: Directory for the plots (``{name}`` replaced by ``self.name``).
         """
-        master_rng_key = jax.random.PRNGKey(rng_seed)
+        if y_test is None:
+            y_test = self._y_test
+        if samples is None:
+            if X_test is None:
+                X_test = self._X_test
+            samples = self.sample_posterior(
+                X_test=X_test,
+                num_samples=num_samples,
+                posteriors=posteriors,
+                rng_seed=rng_seed,
+            )
+            if samples.ndim == 2:
+                samples = samples[None, ...]
 
-        from scoresbibm.evaluation.eval_task import eval_coverage
+        y_test = np.asarray(y_test)
+        if y_test.ndim == 1:
+            y_test = y_test[:, None]
+        plots_dir = self._resolve_name_placeholder(plots_dir, self.name)
+        os.makedirs(plots_dir, exist_ok=True)
 
-        metric_values, eval_time = eval_coverage(
-            task=task,
-            model=posteriors,
-            metric_params={
-                "num_samples": num_samples,
-                "num_evaluations": num_evaluations,
-                "condition_mask_fn": "posterior",  # posterior, joint, likelihood,
-                # random or structured random
-                "num_bins": 20,  # Number of bins for histogram
-                "sample_kwargs": {},
-                "log_prob_kwargs": {},
-                "batch_size": 64,  # Batch size for sampling
-            },
-            rng=master_rng_key,
+        # TARP expects (num_samples, num_sims, num_dims).
+        ecp, alpha = tarp.get_tarp_coverage(np.transpose(samples, (1, 0, 2)), y_test, norm=True)
+        fig, ax = plt.subplots(figsize=(4, 4))
+        ax.plot(alpha, ecp, marker="o", markersize=2, label="TARP coverage")
+        ax.plot([0, 1], [0, 1], "k--", label="Ideal")
+        ax.set_xlabel("Credibility level")
+        ax.set_ylabel("Expected coverage")
+        ax.legend()
+        fig.tight_layout()
+        fig.savefig(os.path.join(plots_dir, f"coverage_plot_{self._timestamp}.png"))
+        plt.close(fig)
+
+        # SBC rank histograms: rank of the truth among the posterior samples.
+        ranks = (samples < y_test[:, None, :]).sum(axis=1)
+        param_names = list(self.simple_fitted_parameter_names)
+        fig, ax = plt.subplots(
+            nrows=1,
+            ncols=len(param_names),
+            figsize=(len(param_names) * 3, 3),
+            squeeze=False,
         )
-
-        plt.plot(metric_values[0], metric_values[1], marker="o", label="Coverage")
-        plt.plot([0, 1], [0, 1], "k--", label="Ideal Coverage")
-        plt.xlabel("Predicted Percentile")
-        plt.ylabel("Empirical Percentile")
-        plt.legend()
-
-        plt.title(f"Coverage Plot (num_samples={num_samples}, num_evaluations={num_evaluations})")
-
-        plots_dir = plots_dir.replace("name", self.name)
-
-        if not os.path.exists(plots_dir):
-            os.makedirs(plots_dir)
-
-        plt.savefig(os.path.join(plots_dir, f"coverage_plot_{self._timestamp}.png"))
+        ax = ax[0]
+        for i, param in enumerate(param_names):
+            ax[i].hist(ranks[:, i], bins=20, density=True, alpha=0.8)
+            ax[i].axhline(1.0 / samples.shape[1] * 20 / 20, color="k", ls="--", lw=1)
+            ax[i].set_title(param)
+            ax[i].set_xlabel("Rank")
+        fig.tight_layout()
+        fig.savefig(os.path.join(plots_dir, f"sbc_ranks_{self._timestamp}.png"))
+        plt.close(fig)
 
     def plot_posterior(self):
-        """Plot the posterior distribution."""
+        """Plot the posterior distribution (not implemented)."""
         pass
 
-    def log_prob(self, X_test, condition_mask="full", posteriors=None, theta=None):
-        """Compute the log probability of the data given the model.
+    def log_prob(
+        self,
+        X_test,
+        theta=None,
+        posteriors=None,
+        condition_mask: Union[str, np.ndarray] = "full",
+        num_steps: int = 100,
+        num_samples: int = 100,
+        **kwargs,
+    ):
+        """Compute log probabilities of parameters given observations.
 
-        Parameters
-        ----------
-        X_test : np.ndarray
-            Observed data of shape (n_observations, n_features) or (n_features,)
-        condition_mask : np.ndarray or str
-            Mask indicating which parts of the data are observed.
-            If 'full', assumes all features are observed.
-        posteriors : object, optional
-            Posteriors to use for computing the log probability. If None,
-            will use the posteriors stored in the object.
-        theta : np.ndarray, optional
-            Parameter samples of shape (n_samples, n_params). If None,
-            will sample from posterior.
+        Parameters:
+            X_test: Observed features of shape ``(n_obs, n_conditioned)`` or
+                ``(n_conditioned,)``.
+            theta: Parameter values. If it has one row per observation, a paired
+                log probability is returned per observation. If ``X_test`` is a
+                single observation, ``theta`` may hold many rows. If None,
+                ``num_samples`` posterior samples are drawn and scored per
+                observation.
+            posteriors: Model to use. Defaults to ``self.posteriors``.
+            condition_mask: Boolean node mask (True = observed) or "full" for the
+                standard posterior mask.
+            num_steps: Number of probability-flow ODE steps.
+            num_samples: Posterior draws per observation when ``theta`` is None.
+            **kwargs: Forwarded to :meth:`SimformerModel.log_prob`.
 
         Returns:
-        -------
-        np.ndarray
-            Log probabilities of shape (n_observations, n_samples) where each
-            element [i,j] is the log probability of observation i under
-            posterior sample j.
+            np.ndarray: Log probabilities — shape ``(n_obs,)`` for paired input,
+            ``(n_theta_rows,)`` for a single observation, or
+            ``(n_obs, num_samples)`` when ``theta`` is None.
         """
         if posteriors is None:
             posteriors = self.posteriors
 
+        mask = self._resolve_condition_mask(condition_mask)
+        X_test = np.atleast_2d(np.asarray(X_test, dtype=np.float32))
+        n_obs = X_test.shape[0]
+
+        if theta is None:
+            samples = self.sample_posterior(
+                X_test,
+                num_samples=num_samples,
+                posteriors=posteriors,
+                condition_mask=mask,
+            )
+            if samples.ndim == 2:
+                samples = samples[None, ...]
+            log_probs = np.stack(
+                [
+                    posteriors.log_prob(samples[i], X_test[i], mask, num_steps=num_steps, **kwargs)
+                    for i in range(n_obs)
+                ]
+            )
+            return log_probs[0] if n_obs == 1 else log_probs
+
+        theta = np.atleast_2d(np.asarray(theta, dtype=np.float32))
+        if theta.shape[0] == n_obs:
+            return np.atleast_1d(
+                posteriors.log_prob(theta, X_test, mask, num_steps=num_steps, **kwargs)
+            )
+        if n_obs == 1:
+            return np.atleast_1d(
+                posteriors.log_prob(theta, X_test[0], mask, num_steps=num_steps, **kwargs)
+            )
+        raise ValueError(f"Cannot pair theta of shape {theta.shape} with {n_obs} observations.")
+
+    def _resolve_condition_mask(self, condition_mask) -> np.ndarray:
+        """Resolve the "full" sentinel to the standard posterior condition mask."""
         num_theta = len(self.fitted_parameter_names)
         num_x = len(self.feature_names)
-
-        if condition_mask == "full":
-            condition_mask = jnp.array([0] * num_theta + [1] * num_x, dtype=jnp.bool_)
-        else:
-            condition_mask = jnp.array(condition_mask, dtype=jnp.bool_)
-
-        X_test = np.atleast_2d(X_test)
-        n_observations = X_test.shape[0]
-
-        # Get posterior samples if not provided
-        if theta is None:
-            theta = self.sample_posterior(
-                X_test=X_test,
-                posteriors=posteriors,
-                condition_mask=condition_mask,
+        if isinstance(condition_mask, str):
+            if condition_mask != "full":
+                raise ValueError(f"Unknown condition mask '{condition_mask}'. Use 'full'.")
+            return np.array([False] * num_theta + [True] * num_x)
+        mask = np.asarray(condition_mask, dtype=bool)
+        if mask.shape != (num_theta + num_x,):
+            raise ValueError(
+                f"condition_mask must have shape ({num_theta + num_x},), got {mask.shape}."
             )
-
-        # Ensure theta is 2D: (n_samples, n_params)
-        theta = np.atleast_2d(theta)
-        n_samples = theta.shape[0]
-
-        # Initialize result array
-        log_probs = np.zeros((n_observations, n_samples))
-
-        # Compute log probability for each observation and each posterior sample
-        for i, x_obs in enumerate(X_test):
-            x_o = jnp.array(x_obs, dtype=jnp.float32)
-
-            for j in range(n_samples):
-                theta_sample = jnp.array(theta[j], dtype=jnp.float32)
-
-                log_prob = posteriors.log_prob(
-                    theta=theta_sample, x_o=x_o, condition_mask=condition_mask
-                )
-                log_probs[i, j] = float(log_prob)
-
-        # Return appropriate shape based on input
-        if n_observations == 1 and n_samples == 1:
-            return log_probs[0, 0]  # Single scalar
-        elif n_observations == 1:
-            return log_probs[0, :]  # 1D array of samples for single observation
-        elif n_samples == 1:
-            return log_probs[:, 0]  # 1D array of observations for single sample
-        else:
-            return log_probs  # 2D array
+        return mask
 
     def sample_posterior(
         self,
         X_test,
         num_samples: int = 1000,
-        posteriors: object = None,
+        posteriors=None,
         rng_seed: int = 42,
-        attention_mask: Union[str, np.ndarray] = "full",
+        condition_mask: Union[str, np.ndarray] = "full",
         batch_size: int = 100,
+        num_steps: Optional[int] = None,
+        sample_method: str = "sde",
         **kwargs,
     ):
-        """Sample from the posterior distribution.
+        """Sample from the posterior (or any conditional) for a set of observations.
 
-        Parameters
-        ----------
+        Parameters:
+            X_test: Observations of shape ``(n_obs, n_conditioned)`` or
+                ``(n_conditioned,)``. Columns must match the conditioned nodes of
+                ``condition_mask`` in node order.
+            num_samples: Samples per observation. Default is 1000.
+            posteriors: Model to sample from. Defaults to ``self.posteriors``.
+            rng_seed: Random seed for the sampler.
+            condition_mask: Boolean node mask (True = observed) or "full" for the
+                standard posterior mask over ``[theta..., x...]``.
+            batch_size: Observations integrated simultaneously.
+            num_steps: Integration steps (default: the model's sampling default).
+            sample_method: "sde" (stochastic) or "ode" (deterministic).
+            **kwargs: Ignored extra keyword arguments from generic callers
+                (a warning is logged).
 
-        X_test : np.ndarray
-            Test data to sample from the posterior.
-
-        num_samples : int, optional
-            Number of samples to draw from the posterior. Default is 1000.
-        posteriors : object, optional
-            Posteriors to use for sampling. If None, will use the posteriors
-            stored in the object.
-        attention_mask : Union[str, np.ndarray], optional
-            Attention mask to use for sampling. Can be 'full' or a numpy array.
-            Default is 'full'. Full means you have full observations for all bands.
-            If you have missing bands, you can provide a numpy array with
-            the shape
-
-        TODO: Make this work for multidimensional X_test.
-
+        Returns:
+            np.ndarray: Samples of shape ``(n_obs, num_samples, n_latent)``, squeezed
+            to ``(num_samples, n_latent)`` for a single observation.
         """
         if posteriors is None:
             posteriors = self.posteriors
-        master_rng_key = jax.random.PRNGKey(rng_seed)
+        if kwargs:
+            logger.warning(f"sample_posterior ignoring unsupported kwargs: {sorted(kwargs)}")
 
-        num_theta = len(self.fitted_parameter_names)
-        num_x = len(self.feature_names)
-
-        X_test = np.atleast_2d(X_test)
-
-        assert X_test.shape[1] == num_x or attention_mask == "full", (
-            "Must provide all features or a manual attention mask. "
+        mask = self._resolve_condition_mask(condition_mask)
+        X_test = np.atleast_2d(np.asarray(X_test, dtype=np.float32))
+        assert X_test.shape[1] == mask.sum(), (
+            f"X_test has {X_test.shape[1]} columns but the condition mask expects "
+            f"{int(mask.sum())} observed values."
         )
 
-        if attention_mask == "full":
-            mask = jnp.array([0] * num_theta + [1] * num_x, dtype=jnp.bool_)
-        else:
-            mask = attention_mask.astype(np.bool_)
+        generator = torch.Generator(device=posteriors.device)
+        generator.manual_seed(int(rng_seed))
 
-        all_samples = []
+        all_samples = posteriors.sample_batched(
+            num_samples,
+            X_test,
+            mask,
+            batch_size=batch_size,
+            num_steps=num_steps,
+            method=sample_method,
+            generator=generator,
+        ).astype(np.float32)
 
-        for x in tqdm(X_test, desc="Sampling from posterior"):
-            samples = posteriors.sample_batched(
-                num_samples=num_samples,
-                x_o=x,
-                condition_mask=mask,
-                rng=master_rng_key,
-            )
-
-            samples = np.array(samples[0], dtype=np.float32)
-            all_samples.append(samples)
-        """ Batched sampling is slow.
-        nbatches = int(np.ceil(X_test.shape[0] / batch_size))
-        for batch_idx in trange(nbatches, desc="Sampling from posterior"):
-            start_idx = batch_idx * batch_size
-            end_idx = min((batch_idx + 1) * batch_size, X_test.shape[0])
-            x_batch = jnp.array(X_test[start_idx:end_idx], dtype=jnp.float32)
-
-            # Sample from the posterior for the batch
-            samples_batch = posteriors.sample_batched(
-                num_samples=num_samples,
-                x_o=x_batch,
-                condition_mask=mask,
-                rng=master_rng_key,
-            )
-
-            # Convert to numpy and append to the list
-            all_samples.extend(np.array(samples_batch, dtype=np.float32))
-        """
-
-        all_samples = np.array(all_samples, dtype=np.float32)
-
-        # if X_test is 1-dimensional, flatten the output
         if X_test.shape[0] == 1:
-            all_samples = all_samples[0]
-
+            return all_samples[0]
         return all_samples
 
-        """theta_samples = samples[:, :theta_dim]
-        if attention_mask != 'full':
-            phot_samples = samples[:, theta_dim:]
-            return theta_samples, phot_samples
-        else:
-            return theta_samples"""
+    def sample_posterior_intervals(
+        self,
+        X_test,
+        constraint_mask,
+        a=None,
+        b=None,
+        num_samples: int = 1000,
+        posteriors=None,
+        rng_seed: int = 42,
+        condition_mask: Union[str, np.ndarray] = "full",
+        num_steps: Optional[int] = None,
+        scale_bias: float = 1e-2,
+    ):
+        """Sample the posterior with interval constraints on some nodes via guidance.
+
+        Parameters:
+            X_test: A single observation of shape ``(n_conditioned,)`` (values for
+                the effective condition mask, i.e. excluding constrained nodes).
+            constraint_mask: Boolean node mask of interval-constrained nodes.
+            a: Lower bounds for the constrained nodes (original units), or None.
+            b: Upper bounds for the constrained nodes (original units), or None.
+            num_samples: Number of samples.
+            posteriors: Model to sample from. Defaults to ``self.posteriors``.
+            rng_seed: Random seed.
+            condition_mask: Boolean node mask or "full".
+            num_steps: Integration steps.
+            scale_bias: Stability bias in the guidance scale (see
+                :meth:`SimformerModel.sample_intervals`).
+
+        Returns:
+            np.ndarray: Samples of shape ``(num_samples, n_latent)`` where the
+            latents include the constrained nodes.
+        """
+        if posteriors is None:
+            posteriors = self.posteriors
+        mask = self._resolve_condition_mask(condition_mask)
+        generator = torch.Generator(device=posteriors.device)
+        generator.manual_seed(int(rng_seed))
+        return posteriors.sample_intervals(
+            num_samples,
+            x_o=np.asarray(X_test, dtype=np.float32).reshape(-1),
+            condition_mask=mask,
+            constraint_mask=np.asarray(constraint_mask, dtype=bool),
+            a=a,
+            b=b,
+            scale_bias=scale_bias,
+            num_steps=num_steps,
+            generator=generator,
+        )
 
     def create_priors(
         self, override_prior_ranges: dict = {}, verbose: bool = True, set_self: bool = False
     ):
-        """Create priors for the Simformer model.
+        """Create a uniform box prior over the fitted parameters.
 
         Parameters:
-        -----------
-        override_prior_ranges : dict, optional
-            Dictionary to override the default prior ranges.
-            Default is an empty dictionary.
-        verbose : bool, optional
-            If True, prints information about the prior creation.
-            Default is True.
-        set_self : bool, optional
-            If True, sets the created prior to the instance attribute.
+            override_prior_ranges: Overrides for the default prior ranges.
+            verbose: If True, prints information about the prior creation.
+            set_self: If True, stores the prior on ``self._prior``.
 
+        Returns:
+            UniformBoxPrior: The constructed prior.
         """
-        from .simformer import GalaxyPrior
-
         priors_sbi = (
             super()
             .create_priors(
@@ -9165,7 +8686,7 @@ class Simformer_Fitter(SBI_Fitter):
             high = float(priors_sbi.high[i])
             prior_ranges[name] = (low, high)
 
-        prior = GalaxyPrior(prior_ranges, self.fitted_parameter_names)
+        prior = UniformBoxPrior(prior_ranges, self.fitted_parameter_names)
 
         if set_self:
             self._prior = prior
@@ -9173,7 +8694,7 @@ class Simformer_Fitter(SBI_Fitter):
         return prior
 
     def optimize_sbi(self):
-        """Optimize the SBI model."""
+        """Optimize the SBI model (not implemented for the Simformer)."""
         raise NotImplementedError("Simformer_Fitter does not implement optimize_sbi method. ")
 
     def fit_catalogue(
@@ -9192,20 +8713,18 @@ class Simformer_Fitter(SBI_Fitter):
         check_out_of_distribution: bool = True,
         simulator: Optional[GalaxySimulator] = None,
         rng_seed: int = 42,
-        attention_mask: Union[str, np.ndarray] = "full",
+        condition_mask: Union[str, np.ndarray] = "full",
         batch_size: int = 100,
         missing_data_mcmc: bool = False,
-        log_times=False,
+        log_times: bool = False,
     ):
-        """Wrapper for fit_catalogue in parent.
+        """Fit a catalogue of observations (wrapper around the base implementation).
 
-        To Do: Better attention mask.
-
+        See :meth:`SBI_Fitter.fit_catalogue` for the shared parameters. The
+        Simformer-specific ``condition_mask`` (True = observed node) replaces the
+        old ``attention_mask`` argument and is forwarded to
+        :meth:`sample_posterior`.
         """
-        sample_method: str = "direct"
-        sample_kwargs: dict = {}
-        timeout_seconds_per_row: int = 5
-
         return super().fit_catalogue(
             observations=observations,
             columns_to_feature_names=columns_to_feature_names,
@@ -9220,11 +8739,11 @@ class Simformer_Fitter(SBI_Fitter):
             plot_SEDs=plot_SEDs,
             check_out_of_distribution=check_out_of_distribution,
             simulator=simulator,
-            sample_method=sample_method,
-            sample_kwargs=sample_kwargs,
-            timeout_seconds_per_row=timeout_seconds_per_row,
+            sample_method="direct",
+            sample_kwargs={},
+            timeout_seconds_per_row=5,
             rng_seed=rng_seed,
-            attention_mask=attention_mask,
+            condition_mask=condition_mask,
             batch_size=batch_size,
             missing_data_mcmc=missing_data_mcmc,
             log_times=log_times,

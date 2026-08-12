@@ -32,6 +32,7 @@ grid_name = "test_grid"
 grid = Grid(
     grid_name,
     grid_dir=grid_dir,
+    use_precision=np.float32
 )
 
 filter_codes = [

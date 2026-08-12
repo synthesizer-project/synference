@@ -1,5 +1,6 @@
-from synference import SBI_Fitter
 import numpy as np
+
+from synference import SBI_Fitter
 
 fitter = SBI_Fitter.init_from_hdf5(
     "SPHINX_inference",

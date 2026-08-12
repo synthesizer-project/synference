@@ -28,6 +28,24 @@ from .library import (
 
 
 
+from .priors_beta import (
+    beta_agebins,
+    delta_t_dex,
+    expected_logsfr_ratios,
+    loc_massmet,
+    mass_func_at_z,
+    sample_prospector_beta_prior,
+    scale_massmet,
+    setup_dynamic_z_prior,
+    setup_mass_normalization,
+)
+
+from .priors_alpha import (
+    dirichlet_zfraction_beta_params,
+    sample_dirichlet_sfr_fractions,
+    sample_dust_ratio,
+)
+
 from .noise_models import (
     EmpiricalUncertaintyModel, create_uncertainty_models_from_EPOCHS_cat,
     DepthUncertaintyModel, UncertaintyModel, AsinhEmpiricalUncertaintyModel,
@@ -37,6 +55,8 @@ from .noise_models import (
 
 from .custom_runner import SBICustomRunner
 
+from .simformer import SimformerModel, UniformBoxPrior, train_simformer
+
 try:
     from .sbi_runner import SBI_Fitter, MissingPhotometryHandler, Simformer_Fitter
 except ImportError as e:
@@ -44,7 +64,6 @@ except ImportError as e:
     print('Dependencies for SBI not installed. Only the library generation functions will be available.')
 
 
-#from .simformer import UncertainityModelTask
 warnings.filterwarnings('ignore')
 
 __all__ = [
@@ -79,6 +98,9 @@ __all__ = [
     "SBI_Fitter",
     "MissingPhotometryHandler",
     "Simformer_Fitter",
+    "SimformerModel",
+    "UniformBoxPrior",
+    "train_simformer",
     "GalaxySimulator",
     "generate_random_DB_sfh",
     "EmpiricalUncertaintyModel",
@@ -114,4 +136,16 @@ __all__ = [
     "create_database_universal",
     "download_test_data",
     "test_data_dir",
+    "sample_prospector_beta_prior",
+    "loc_massmet",
+    "scale_massmet",
+    "mass_func_at_z",
+    "delta_t_dex",
+    "expected_logsfr_ratios",
+    "beta_agebins",
+    "setup_mass_normalization",
+    "setup_dynamic_z_prior",
+    "dirichlet_zfraction_beta_params",
+    "sample_dirichlet_sfr_fractions",
+    "sample_dust_ratio",
 ]

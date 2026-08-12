@@ -2048,6 +2048,9 @@ class GalaxyBasis:
             # store grid_name and grid_dir
             base.attrs["grid_name"] = self.grid.grid_name
             base.attrs["grid_dir"] = self.grid.grid_dir
+            # store the grid's floating-point precision so `from_library` can
+            # restore it exactly, rather than assuming a fixed precision.
+            base.attrs["grid_precision"] = np.dtype(getattr(self.grid, "_dtype", np.float64)).name
 
             # store emission model class name
             em_group = base.create_group("EmissionModel")
@@ -5316,7 +5319,11 @@ class GalaxySimulator(object):
                 logger.info("Overriding internal library name from provided file path.")
                 grid_name = os.path.basename(grid_dir).replace(".hdf5", "").replace(".h5", "")
                 grid_dir = os.path.dirname(grid_dir)
-            grid = Grid(grid_name, grid_dir)  # new_lam=lam)
+            # Restore the precision the grid was generated with. Libraries written
+            # before `grid_precision` was persisted fall back to float64 (Grid's
+            # own default), so loading them doesn't silently change precision.
+            grid_precision = np.dtype(model_group.attrs.get("grid_precision", "float64"))
+            grid = Grid(grid_name, grid_dir, use_precision=grid_precision)  # new_lam=lam)
 
             # Step 2. Make instrument
             if model_group["Instrument"].attrs.get("instrument_type", None) is None:
