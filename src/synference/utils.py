@@ -807,6 +807,97 @@ def asinh_err_to_f_jy(
     return unyt_array(f_jy_err, units=Jy)
 
 
+# Constructor arguments of dust emission generators that are wired up by the
+# parent emission model (not user parameters) and so are never stored.
+_DUST_EMISSION_NON_PARAMS = ("self", "intrinsic", "attenuated", "scaler", "verbose")
+
+
+def _dust_emission_init_params(generator) -> dict:
+    """Return the constructor parameters of a dust emission generator.
+
+    Uses ``inspect.signature(type(generator).__init__)`` intersected with the
+    generator's attributes, so derived attributes (e.g. Casey12's ``lam_c``
+    and ``n_pl``) are not stored and the generator can be re-created with
+    ``type(generator)(**params)``. ``do_cmb_heating`` is included.
+
+    Raises:
+        ValueError: if a parameter cannot be stored in an HDF5 attribute
+            (e.g. the dust grid of DraineLi07).
+    """
+    import inspect
+
+    sig = inspect.signature(type(generator).__init__).parameters
+    params = {}
+    for name, par in sig.items():
+        if name in _DUST_EMISSION_NON_PARAMS or par.kind in (
+            inspect.Parameter.VAR_POSITIONAL,
+            inspect.Parameter.VAR_KEYWORD,
+        ):
+            continue
+        if not hasattr(generator, name):
+            continue
+        value = getattr(generator, name)
+        if isinstance(value, np.ndarray) and not hasattr(value, "units") and value.ndim == 0:
+            value = value.item()
+        if isinstance(value, np.generic):
+            value = value.item()
+        storable = value is None or isinstance(value, (bool, int, float, str))
+        storable = storable or (hasattr(value, "units") and np.ndim(value) == 0)
+        if not storable:
+            raise ValueError(
+                f"Cannot store dust emission model {type(generator).__name__}: parameter "
+                f"'{name}' is a {type(value).__name__}, which cannot be saved to the "
+                "library file. Libraries using this dust emission model cannot be "
+                "re-created with GalaxySimulator.from_library; pass the emission model "
+                "explicitly via override_emission_model instead."
+            )
+        if value is None:
+            # None cannot be stored in an HDF5 attribute list; the
+            # constructor default is used on reload.
+            continue
+        params[name] = value
+    return params
+
+
+def load_dust_emission_params(generator_class, keys, values, units) -> dict:
+    """Decode dust emission parameters stored by :func:`save_emission_model`.
+
+    Args:
+        generator_class: The dust emission generator class.
+        keys: The stored ``dust_emission_keys`` attribute.
+        values: The stored ``dust_emission_values`` attribute.
+        units: The stored ``dust_emission_units`` attribute.
+
+    Returns:
+        dict: keyword arguments for ``generator_class(**kwargs)``.
+    """
+    import ast
+    import inspect
+
+    sig = inspect.signature(generator_class.__init__).parameters
+    params = {}
+    for key, value, unit in zip(keys, values, units):
+        key = key.decode("utf-8") if isinstance(key, bytes) else str(key)
+        unit = unit.decode("utf-8") if isinstance(unit, bytes) else str(unit)
+        if isinstance(value, bytes):
+            value = value.decode("utf-8")
+        if isinstance(value, np.generic):
+            value = value.item()
+        if isinstance(value, str):
+            try:
+                parsed = ast.literal_eval(value)
+                if isinstance(parsed, (bool, int, float)):
+                    value = parsed
+            except (ValueError, SyntaxError):
+                pass  # a genuine string, e.g. an emitter attribute name
+        if unit != "" and not isinstance(value, str):
+            value = unyt_quantity(float(value), unit)
+        elif key in sig and isinstance(sig[key].default, bool) and not isinstance(value, str):
+            value = bool(value)
+        params[key] = value
+    return params
+
+
 def save_emission_model(model):
     """Save the fixed parameters of the emission model.
 
@@ -837,7 +928,11 @@ def save_emission_model(model):
         dust_attenuation_keys.pop("description", None)
         # drop any hidden keys (starting with _)
         for key in list(dust_attenuation_keys.keys()):
-            if isinstance(dust_attenuation_keys[key], np.ndarray):
+            # (unyt quantities are ndarrays too: keep them, their units are
+            # stored separately below)
+            if isinstance(dust_attenuation_keys[key], np.ndarray) and not hasattr(
+                dust_attenuation_keys[key], "units"
+            ):
                 dust_attenuation_keys[key] = dust_attenuation_keys[key].tolist()
             # force numpy types to native python types
             if "numpy" in str(type(dust_attenuation_keys[key])) and not hasattr(
@@ -856,10 +951,7 @@ def save_emission_model(model):
 
     if "dust_emission" in model._models:
         dust_em = model._models["dust_emission"].generator
-        settable_params = dust_em.__annotations__
-        dust_emission_keys.update(
-            {param: getattr(dust_em, param) for param in settable_params.keys()}
-        )
+        dust_emission_keys.update(_dust_emission_init_params(dust_em))
         dust_emission_model = type(dust_em).__name__
     else:
         dust_emission_model = None
@@ -900,6 +992,10 @@ def save_emission_model(model):
             dust_emission_units.append("")
 
     dust_emission_values = list(dust_emission_keys.values())
+    # HDF5 attributes cannot hold mixed str/number lists: store everything as
+    # strings in that case (decoded again by GalaxySimulator.from_library).
+    if any(isinstance(v, str) for v in dust_emission_values):
+        dust_emission_values = [str(v) for v in dust_emission_values]
     dust_emission_keys = list(dust_emission_keys.keys())
 
     return {
@@ -2213,6 +2309,151 @@ def make_serializable(obj: Any, allowed_types=None) -> Any:
         return str(obj)
     except Exception:
         return f"<unserializable object of type {type(obj).__name__}>"
+
+
+def merge_pipeline_files(paths, out_path, galaxies_group="Galaxies", compression="same"):
+    """Concatenate Synthesizer pipeline HDF5 files (in order) into one file.
+
+    Used to merge the per-chunk files written by worker processes in
+    :meth:`synference.library.GalaxyBasis.process_galaxies`. The result has
+    the layout a single serial ``Pipeline.write`` would produce:
+
+    * root attributes and every top-level group other than ``Galaxies``
+      (``Instruments``, ``EmissionModel``, ``Lines`` ...) are copied from the
+      first file;
+    * every dataset under ``Galaxies`` is concatenated along the first
+      (galaxy) axis in the order of ``paths``, keeping its attributes
+      (e.g. ``Units``), dtype and compression; group attributes are kept.
+
+    Args:
+        paths (list of str): Pipeline files to merge, in galaxy order.
+        out_path (str): Output file path (overwritten).
+        galaxies_group (str): Name of the per-galaxy group.
+        compression (str/None): Compression of the merged per-galaxy datasets.
+            "same" (default) keeps the filter of the input datasets (gzip for
+            Synthesizer files); None writes them uncompressed, which is ~20x
+            faster to write (gzip only saves a few per cent on float spectra
+            and photometry) and is transparent to readers.
+
+    Raises:
+        ValueError: If the files do not contain the same per-galaxy datasets,
+            or the datasets of a file disagree on the number of galaxies.
+    """
+    if len(paths) == 0:
+        raise ValueError("No files to merge.")
+
+    def _collect(group, prefix, dsets, groups):
+        for key, item in group.items():
+            path = f"{prefix}/{key}" if prefix else key
+            if isinstance(item, h5py.Group):
+                groups[path] = dict(item.attrs)
+                _collect(item, path, dsets, groups)
+            else:
+                dsets[path] = item
+
+    # Pass 1: work out the merged dataset shapes and dtypes.
+    specs = {}
+    counts = []
+    for i, path in enumerate(paths):
+        with h5py.File(path, "r") as f:
+            dsets, groups = {}, {}
+            if galaxies_group in f:
+                _collect(f[galaxies_group], "", dsets, groups)
+            if i == 0:
+                group_attrs = groups
+                for name, d in dsets.items():
+                    specs[name] = {
+                        "tail": d.shape[1:],
+                        "dtype": d.dtype,
+                        "ndim": d.ndim,
+                        "attrs": dict(d.attrs),
+                        "compression": d.compression,
+                        "compression_opts": d.compression_opts,
+                    }
+            elif set(dsets) != set(specs):
+                missing = sorted(set(specs) ^ set(dsets))
+                raise ValueError(
+                    f"Cannot merge {path}: per-galaxy datasets differ from {paths[0]} "
+                    f"({missing[:10]})."
+                )
+            n = None
+            for name, d in dsets.items():
+                spec = specs[name]
+                if d.ndim == 0 or spec["ndim"] == 0:
+                    continue
+                if d.shape[1:] != spec["tail"]:
+                    raise ValueError(
+                        f"Cannot merge {path}: dataset {name} has shape {d.shape}, "
+                        f"expected (N, *{spec['tail']})."
+                    )
+                if n is None:
+                    n = d.shape[0]
+                elif d.shape[0] != n:
+                    raise ValueError(
+                        f"Cannot merge {path}: datasets disagree on the number of galaxies."
+                    )
+                if d.dtype != spec["dtype"]:
+                    if d.dtype.kind == "S" and spec["dtype"].kind == "S":
+                        if d.dtype.itemsize > spec["dtype"].itemsize:
+                            spec["dtype"] = d.dtype
+                    else:
+                        spec["dtype"] = np.result_type(spec["dtype"], d.dtype)
+            counts.append(0 if n is None else n)
+
+    n_total = int(np.sum(counts))
+
+    # Pass 2: write the merged file.
+    with h5py.File(out_path, "w") as out:
+        with h5py.File(paths[0], "r") as first:
+            for attr, value in first.attrs.items():
+                out.attrs[attr] = value
+            for key in first.keys():
+                if key != galaxies_group:
+                    first.copy(first[key], out, name=key)
+            if galaxies_group in first:
+                gal = out.create_group(galaxies_group)
+                for attr, value in first[galaxies_group].attrs.items():
+                    gal.attrs[attr] = value
+                for gpath, attrs in group_attrs.items():
+                    grp = gal.require_group(gpath)
+                    for attr, value in attrs.items():
+                        grp.attrs[attr] = value
+                for name, spec in specs.items():
+                    if spec["ndim"] == 0:
+                        first.copy(first[galaxies_group][name], gal, name=name)
+                        continue
+                    kwargs = {}
+                    if compression != "same":
+                        if compression is not None:
+                            kwargs["compression"] = compression
+                    elif spec["compression"] is not None and n_total > 0:
+                        kwargs["compression"] = spec["compression"]
+                        kwargs["compression_opts"] = spec["compression_opts"]
+                    dset = gal.create_dataset(
+                        name, shape=(n_total, *spec["tail"]), dtype=spec["dtype"], **kwargs
+                    )
+                    for attr, value in spec["attrs"].items():
+                        dset.attrs[attr] = value
+
+        if galaxies_group in out:
+            gal = out[galaxies_group]
+            files = [h5py.File(path, "r") for path in paths]
+            try:
+                # One dataset at a time: read it from every file, concatenate
+                # and write it in a single call (writing many small slices
+                # into a compressed, chunked dataset is very slow).
+                for name, spec in specs.items():
+                    if spec["ndim"] == 0:
+                        continue
+                    parts = [f[galaxies_group][name][()] for f, n in zip(files, counts) if n > 0]
+                    if len(parts) > 0:
+                        gal[name][...] = np.concatenate(parts, axis=0).astype(
+                            spec["dtype"], copy=False
+                        )
+                    del parts
+            finally:
+                for f in files:
+                    f.close()
 
 
 def combine_rank_files(size, filepath, num_galaxies, starts, ends):

@@ -3,6 +3,7 @@
 import copy
 import inspect
 import os
+import sys
 import threading
 from collections import defaultdict
 from datetime import datetime
@@ -16,7 +17,6 @@ import numpy as np
 import torch
 from astropy.cosmology import Cosmology, Planck18, z_at_value
 from dill.source import getsource
-from joblib import Parallel, delayed, parallel_config
 from matplotlib.ticker import FuncFormatter, ScalarFormatter
 from scipy.linalg import inv
 from scipy.stats import qmc
@@ -34,6 +34,9 @@ try:
     from synthesizer.parametric import SFH, Galaxy, Stars, ZDist
     from synthesizer.particle.stars import sample_sfzh
     from synthesizer.pipeline import Pipeline
+
+    from .fast_igm import TabulatedIGM
+    from .fast_sfzh import make_parametric_stars
 
     synthesizer_available = True
 except ImportError as e:
@@ -65,7 +68,13 @@ from unyt import (
 from .noise_models import (
     EmpiricalUncertaintyModel,
 )
-from .utils import check_log_scaling, check_scaling, list_parameters, save_emission_model
+from .utils import (
+    check_log_scaling,
+    check_scaling,
+    list_parameters,
+    load_dust_emission_params,
+    save_emission_model,
+)
 
 file_path = os.path.dirname(os.path.realpath(__file__))
 library_folder = os.path.join(os.path.dirname(os.path.dirname(file_path)), "libraries")
@@ -458,7 +467,9 @@ def calculate_line_luminosity(
         emission_model_key: The key for the emission model to use (default is 'total').
 
     Returns:
-        A dictionary with line names as keys and their luminosities as values.
+        The line luminosity as a unyt_quantity in erg/s. (Synthesizer's
+        internal luminosity unit is now Lsun; erg/s is kept for continuity
+        with libraries created with older versions.)
     """
     from synthesizer.emissions.utils import aliases
 
@@ -466,7 +477,7 @@ def calculate_line_luminosity(
 
     galaxy.stars.get_lines(([line]), emission_model)
 
-    return galaxy.stars.lines[emission_model_key].luminosity[0]
+    return galaxy.stars.lines[emission_model_key].luminosity[0].to("erg/s")
 
 
 def calculate_sfh_quantile(galaxy, quantile=0.5, norm=False, cosmo=Planck18):
@@ -547,7 +558,7 @@ def calculate_xi_ion0(galaxy, emission_model, emission_model_key="total"):
 
     galaxy.stars.get_lines(([Ha]), emission_model)
 
-    ha_luminosity = galaxy.stars.lines[emission_model_key].luminosity[0]
+    ha_luminosity = galaxy.stars.lines[emission_model_key].luminosity[0].to("erg/s")
 
     MUV = calculate_MUV(galaxy, cosmo=Planck18)[emission_model_key].to("erg/s/Hz")
 
@@ -630,8 +641,10 @@ def calculate_agn_fraction(
 
     wav = galaxy.spectra[total_em_key].lam
 
-    total_lum = galaxy.spectra[total_em_key].luminosity  # erg/s
-    agn_lum = galaxy.black_holes.spectra[agn_em_key].luminosity  # erg/s
+    # nu * L_nu in Synthesizer's internal luminosity unit (Lsun); the units
+    # cancel in the ratio below.
+    total_lum = galaxy.spectra[total_em_key].luminosity
+    agn_lum = galaxy.black_holes.spectra[agn_em_key].luminosity
 
     mask = (wav >= min_wav_rest) & (wav <= max_wav_rest)
     agn_fraction = np.trapezoid(agn_lum[mask], x=wav[mask]) / np.trapezoid(
@@ -1099,7 +1112,9 @@ def draw_from_hypercube(
 
     all_param_dict = {}
     for i, key in enumerate(param_ranges.keys()):
-        samples = scaled_samples[:, i].astype(np.float32)
+        # Keep float64: Synthesizer's precision checks reject mixing float32
+        # parameters (e.g. ZDist metallicities) with float64 masses/grids.
+        samples = scaled_samples[:, i].astype(np.float64)
         if key in unlog_keys:
             samples = 10**samples
 
@@ -1135,7 +1150,8 @@ def load_hypercube_from_npy(file_path: str):
     # Load the hypercube data from the .npy file
     hypercube = np.load(file_path)
 
-    return hypercube.astype(np.float32)
+    # float64 to match Synthesizer's default precision (see draw_from_hypercube)
+    return hypercube.astype(np.float64)
 
 
 def generate_sfh_basis(
@@ -1338,7 +1354,65 @@ def generate_sfh_basis(
     return np.array(sfhs), redshifts
 
 
-# from joblib import delayed, Parallel, wrap_non_picklable_objects, parallel_config
+# ------------------------------------------
+# Galaxy construction
+# ------------------------------------------
+
+# Environment variables controlling the size of native thread pools. Worker
+# processes used for process-based parallelism set these to 1 so that N
+# processes do not each spin up N threads (oversubscription).
+_THREAD_ENV_VARS = (
+    "OMP_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "VECLIB_MAXIMUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+)
+
+# Minimum number of galaxies per worker for process-based parallelism to be
+# worthwhile (smaller jobs are run serially).
+_MIN_GALAXIES_PER_WORKER = 25
+# Target number of chunks per worker (for load balancing) and maximum chunk
+# size (bounds per-worker memory and the size of the temporary chunk files).
+_CHUNKS_PER_WORKER = 4
+_MIN_CHUNK_SIZE = 100
+_MAX_CHUNK_SIZE = 2000
+# Number of galaxies above which tabulate_igm="auto" switches on the tabulated
+# IGM (building the table costs ~1-3 s, saving ~5-10 ms per observed Sed).
+_TABULATE_IGM_MIN_GALAXIES = 500
+
+
+def _as_float64_scalar(value):
+    """Cast reduced-precision numpy floating scalars to Python floats.
+
+    Synthesizer refuses to mix float32 and float64 arrays, so e.g. a float32
+    tau_v drawn from a hypercube/torch tensor can break spectra generation
+    when everything else is float64. float64 values are returned unchanged.
+    """
+    if isinstance(value, np.floating) and value.dtype != np.float64:
+        return float(value)
+    if isinstance(value, unyt_quantity) and value.dtype.kind == "f" and value.dtype != np.float64:
+        return value.astype(np.float64)
+    return value
+
+
+def _float64_metal_dist(metal_dist):
+    """Return a DeltaConstant ZDist whose metallicity is float64.
+
+    A ``ZDist.DeltaConstant`` built from a float32 metallicity would make
+    Synthesizer's quad SFZH path fail its precision checks. Returns a shallow
+    copy (the user's object is not modified) or the input unchanged.
+    """
+    if (
+        isinstance(metal_dist, ZDist.Common)
+        and getattr(metal_dist, "name", None) == "DeltaConstant"
+        and isinstance(getattr(metal_dist, "metallicity_", None), np.floating)
+        and metal_dist.metallicity_.dtype != np.float64
+    ):
+        metal_dist = copy.copy(metal_dist)
+        metal_dist.metallicity_ = float(metal_dist.metallicity_)
+        metal_dist.log10metallicity_ = float(metal_dist.log10metallicity_)
+    return metal_dist
 
 
 def create_galaxy(
@@ -1347,11 +1421,35 @@ def create_galaxy(
     metal_dist: Type[ZDist.Common],
     grid: Grid,
     log_stellar_masses: Union[float, list] = 9,
+    fast_sfzh: bool = True,
     **galaxy_kwargs,
 ) -> Type[Galaxy]:
-    """Create a new galaxy with the specified parameters."""
-    # Initialise the parametric Stars object
+    """Create a new galaxy with the specified parameters.
 
+    Parameters
+    ----------
+    sfh : SFH.Common
+        Star formation history.
+    redshift : float
+        Redshift of the galaxy.
+    metal_dist : ZDist.Common
+        Metallicity distribution.
+    grid : Grid
+        SPS grid (sets the age/metallicity binning of the SFZH).
+    log_stellar_masses : float or list of float
+        log10 initial stellar mass in Msun. A list creates a particle galaxy
+        by sampling the SFZH.
+    fast_sfzh : bool
+        If True (default) the SFZH is computed with the vectorised
+        :func:`synference.fast_sfzh.make_parametric_stars` (~1 ms instead of
+        10-100 ms; agrees with Synthesizer's quad integration to <=1e-3
+        relative per bin, usually ~1e-8). It falls back to Synthesizer's own
+        path for unsupported SFH/ZDist classes. Set False to use
+        ``synthesizer.parametric.Stars`` directly (the original behaviour).
+    galaxy_kwargs : dict
+        Emitter parameters set on the Stars object; keys prefixed ``bh_`` /
+        ``gas_`` create a parametric BlackHole / Gas component.
+    """
     assert not isinstance(log_stellar_masses, (unyt_array, unyt_quantity)), (
         "log_stellar_masses must be a float or list of floats, not a unyt array"
     )
@@ -1360,12 +1458,13 @@ def create_galaxy(
         log_stellar_masses[0] if isinstance(log_stellar_masses, (list)) else log_stellar_masses
     )
 
-    single_mass = 10**single_mass * Msun
+    single_mass = 10 ** float(single_mass) * Msun
 
     # If there are any black hole or gas kwargs, pop them out of galaxy_kwargs
     bh_kwargs = {}
     gas_kwargs = {}
     for key in list(galaxy_kwargs.keys()):
+        galaxy_kwargs[key] = _as_float64_scalar(galaxy_kwargs[key])
         if key.startswith("bh_"):
             new_key = key.replace("bh_", "")
             bh_kwargs[new_key] = galaxy_kwargs.pop(key)
@@ -1373,14 +1472,26 @@ def create_galaxy(
             new_key = key.replace("gas_", "")
             gas_kwargs[new_key] = galaxy_kwargs.pop(key)
 
-    param_stars = Stars(
-        log10ages=grid.log10ages,
-        metallicities=grid.metallicities,
-        sf_hist=sfh,
-        metal_dist=metal_dist,
-        initial_mass=single_mass,
-        **galaxy_kwargs,  # most parameters want to be on the emitter
-    )
+    metal_dist = _float64_metal_dist(metal_dist)
+
+    if fast_sfzh:
+        param_stars = make_parametric_stars(
+            sfh,
+            metal_dist,
+            np.asarray(grid.log10ages),
+            grid.metallicities,
+            initial_mass=single_mass,
+            **galaxy_kwargs,  # most parameters want to be on the emitter
+        )
+    else:
+        param_stars = Stars(
+            log10ages=grid.log10ages,
+            metallicities=grid.metallicities,
+            sf_hist=sfh,
+            metal_dist=metal_dist,
+            initial_mass=single_mass,
+            **galaxy_kwargs,  # most parameters want to be on the emitter
+        )
 
     # Define the number of stellar particles
     n = len(log_stellar_masses) if isinstance(log_stellar_masses, list) else 1
@@ -1410,8 +1521,6 @@ def create_galaxy(
         from synthesizer.parametric import BlackHole
 
         bh = BlackHole(**bh_kwargs)
-        # Dumb fix
-        bh.accretion_rates_eddington = bh.accretion_rate_eddington
     else:
         bh = None
 
@@ -1428,74 +1537,468 @@ def create_galaxy(
     return galaxy
 
 
+def _galaxy_save_params(galaxy_data, fixed_params, alt_parametrizations):
+    """Return the parameter dictionary stored for a matched galaxy.
+
+    This is the dictionary attached to the galaxy as ``gal.all_params`` and
+    written to the pipeline output (one dataset per key). It only depends on
+    the (lightweight) galaxy description, so it can be computed without
+    building the galaxy.
+    """
+    params = fixed_params.copy()
+    params.update(galaxy_data["varying_params"])
+    save_params = copy.deepcopy(params)
+
+    save_params["redshift"] = galaxy_data["redshift"]
+    try:
+        save_params.update(galaxy_data["sfh"].parameters)
+    except AttributeError:
+        # This occurs if SFH is just a burst e.g. a single value
+        save_params["sfh"] = galaxy_data["sfh"]
+
+    try:
+        save_params.update(galaxy_data["metal_dist"].parameters)
+    except AttributeError:
+        save_params["metal_dist"] = galaxy_data["metal_dist"]
+
+    # Apply alternative parametrizations
+    if len(alt_parametrizations) > 0:
+        to_remove = set()
+        for key, (new_key, func) in alt_parametrizations.items():
+            if key in save_params:
+                if isinstance(new_key, str):
+                    save_params[new_key] = func(save_params)
+                    to_remove.add(key)
+                elif isinstance(new_key, (list, tuple)):
+                    for k in new_key:
+                        save_params[k] = func(k, save_params)
+                    to_remove.add(key)
+
+        for key in to_remove:
+            save_params.pop(key, None)
+
+    return save_params
+
+
+def _build_matched_galaxy(galaxy_data, fixed_params, grid, save_params=None, fast_sfzh=True):
+    """Build one galaxy from its lightweight description."""
+    params = fixed_params.copy()
+    params.update(galaxy_data["varying_params"])
+    gal = create_galaxy(
+        sfh=galaxy_data["sfh"],
+        redshift=galaxy_data["redshift"],
+        metal_dist=galaxy_data["metal_dist"],
+        log_stellar_masses=galaxy_data["log_stellar_mass"],
+        grid=grid,
+        fast_sfzh=fast_sfzh,
+        **params,
+    )
+    gal.all_params = save_params
+    return gal
+
+
+class _GalaxyRecipe:
+    """Lightweight, picklable description of a set of galaxies.
+
+    Holds, for every galaxy, the small objects needed to build it (SFH,
+    ZDist, redshift, mass and varying emitter parameters) plus the parameter
+    dictionary to attach as ``gal.all_params``. Galaxies are only built when
+    needed (:meth:`build`), so the parent process of a parallel run never
+    holds every galaxy, and worker processes only build their own chunk.
+
+    Slicing returns a new recipe for the sub-range.
+    """
+
+    def __init__(self, galaxy_data, save_params, fixed_params, fast_sfzh=True):
+        """Store the galaxy descriptions (see class docstring)."""
+        assert len(galaxy_data) == len(save_params)
+        self.galaxy_data = galaxy_data
+        self.save_params = save_params
+        self.fixed_params = fixed_params
+        self.fast_sfzh = fast_sfzh
+
+    def __len__(self):
+        """Number of galaxies described."""
+        return len(self.galaxy_data)
+
+    def __getitem__(self, item):
+        """Return a sub-recipe for a slice."""
+        if not isinstance(item, slice):
+            raise TypeError("_GalaxyRecipe only supports slicing; use build().")
+        return _GalaxyRecipe(
+            self.galaxy_data[item], self.save_params[item], self.fixed_params, self.fast_sfzh
+        )
+
+    @property
+    def redshifts(self):
+        """Redshifts of the described galaxies."""
+        return np.array([float(d["redshift"]) for d in self.galaxy_data])
+
+    def build(self, grid) -> List[Type[Galaxy]]:
+        """Build all described galaxies."""
+        return [
+            _build_matched_galaxy(d, self.fixed_params, grid, p, fast_sfzh=self.fast_sfzh)
+            for d, p in zip(self.galaxy_data, self.save_params)
+        ]
+
+
 def _init_worker(grid, alt_parametrizations, fixed_params):
-    """Initialize worker process with shared data."""
+    """Initialize worker with shared data (kept for backwards compatibility)."""
     _thread_local.grid = grid
     _thread_local.alt_parametrizations = alt_parametrizations
     _thread_local.fixed_params = fixed_params
 
 
-def _process_galaxy_batch(galaxy_indices_and_data):
-    """Process a batch of galaxies in a single worker."""
-    # Access shared data from thread-local storage
+def _process_galaxy_batch(galaxy_indices_and_data, fast_sfzh=True):
+    """Build a batch of matched galaxies (kept for backwards compatibility)."""
     grid = _thread_local.grid
     alt_parametrizations = _thread_local.alt_parametrizations
     base_params = _thread_local.fixed_params
 
     galaxies = []
-
     for galaxy_idx, galaxy_data in galaxy_indices_and_data:
-        # Reconstruct minimal parameters for this galaxy
-        params = base_params.copy()  # Only copy once per batch item
-        params.update(galaxy_data["varying_params"])
-
-        save_params = copy.deepcopy(params)
-
-        # Create galaxy
-        gal = create_galaxy(
-            sfh=galaxy_data["sfh"],
-            redshift=galaxy_data["redshift"],
-            metal_dist=galaxy_data["metal_dist"],
-            log_stellar_masses=galaxy_data["log_stellar_mass"],
-            grid=grid,  # Use shared reference
-            **params,
+        save_params = _galaxy_save_params(galaxy_data, base_params, alt_parametrizations)
+        gal = _build_matched_galaxy(
+            galaxy_data, base_params, grid, save_params, fast_sfzh=fast_sfzh
         )
-
-        # Process parameters (reuse logic from original)
-        save_params["redshift"] = galaxy_data["redshift"]
-        try:
-            save_params.update(galaxy_data["sfh"].parameters)
-        except AttributeError:
-            # This occurs if SFH is just a burst e.g. a single value
-            save_params["sfh"] = galaxy_data["sfh"]
-            pass
-
-        try:
-            save_params.update(galaxy_data["metal_dist"].parameters)
-        except AttributeError:
-            save_params["metal_dist"] = galaxy_data["metal_dist"]
-            pass
-
-        # Apply alternative parametrizations
-        if len(alt_parametrizations) > 0:
-            to_remove = set()
-            for key, (new_key, func) in alt_parametrizations.items():
-                if key in save_params:
-                    if isinstance(new_key, str):
-                        save_params[new_key] = func(save_params)
-                        to_remove.add(key)
-                    elif isinstance(new_key, (list, tuple)):
-                        for k in new_key:
-                            save_params[k] = func(k, save_params)
-                        to_remove.add(key)
-
-            for key in to_remove:
-                save_params.pop(key, None)
-
-        gal.all_params = save_params
         galaxies.append((galaxy_idx, gal))
 
     return galaxies
+
+
+# ------------------------------------------
+# Process-based parallelism for the pipeline
+# ------------------------------------------
+
+# State shared with worker processes. With the fork start method this is
+# inherited copy-on-write (nothing is pickled); otherwise it is pickled once
+# per worker by the executor initializer.
+_PARALLEL_STATE: Dict[str, Any] = {}
+
+
+def _limit_native_threads():
+    """Limit OpenMP/BLAS/torch thread pools of this process to one thread."""
+    for var in _THREAD_ENV_VARS:
+        os.environ[var] = "1"
+    try:
+        from threadpoolctl import threadpool_limits
+
+        threadpool_limits(1)
+    except Exception:  # pragma: no cover - threadpoolctl is optional
+        pass
+    try:
+        torch.set_num_threads(1)
+    except Exception:  # pragma: no cover
+        pass
+
+
+def _parallel_worker_init(state):
+    """Initializer for pipeline worker processes."""
+    global _PARALLEL_STATE
+    _PARALLEL_STATE = state
+    _limit_native_threads()
+
+
+def _parallel_worker_run(task):
+    """Build a chunk of galaxies, run a serial Pipeline on it and write it.
+
+    Args:
+        task (tuple): (chunk_id, start, end, items, out_path). ``items`` is
+            None when the galaxy source was inherited from the parent (fork),
+            otherwise the chunk's galaxies / recipe.
+
+    Returns:
+        tuple: (chunk_id, number of galaxies, elapsed seconds)
+    """
+    chunk_id, start, end, items, out_path = task
+    state = _PARALLEL_STATE
+    basis = state["basis"]
+    if items is None:
+        items = state["source"][start:end]
+
+    t0 = datetime.now()
+    if isinstance(items, _GalaxyRecipe):
+        galaxies = items.build(basis.grid)
+    else:
+        galaxies = list(items)
+
+    pipeline = basis._setup_pipeline(
+        nthreads=1,
+        comm=None,
+        verbose=0,
+        igm=state["igm"],
+        em_lines_to_save=state["em_lines_to_save"],
+        extra_analysis_functions=state["extra_analysis_functions"],
+    )
+    # NOTE: Pipeline.run pops galaxies from the list it was given
+    n = len(galaxies)
+    pipeline.add_galaxies(galaxies)
+    pipeline.run()
+    pipeline.write(out_path, verbose=0)
+    del pipeline, galaxies
+    return chunk_id, n, (datetime.now() - t0).total_seconds()
+
+
+class _PipelinePool:
+    """Worker processes running the Synthesizer pipeline on chunks of galaxies.
+
+    The galaxies (a list of Galaxy objects or a lazy ``_GalaxyRecipe``) are
+    split into contiguous chunks. Each worker process builds its chunk's
+    galaxies, runs a serial Synthesizer Pipeline (nthreads=1, no MPI) on
+    them and writes a temporary HDF5 file; the chunk files are then
+    concatenated in order (:func:`synference.utils.merge_pipeline_files`)
+    into a file with exactly the layout a serial ``Pipeline.write`` produces.
+
+    On Linux the ``fork`` start method is used: the GalaxyBasis (grid,
+    emission model, instrument), the IGM and the galaxy descriptions are
+    inherited copy-on-write and only chunk indices are sent to the workers.
+    Elsewhere (or with ``start_method="loky"``) a loky executor is used: the
+    shared state is pickled once per worker and each chunk is sent with its
+    task. The pool is created once and reused for every batch, since
+    starting worker processes is not free (~0.1 s per fork for a typical
+    Synference process).
+    """
+
+    def __init__(
+        self,
+        basis,
+        galaxies,
+        n_proc,
+        igm=None,
+        em_lines_to_save=None,
+        extra_analysis_functions=None,
+        start_method=None,
+    ):
+        """Start the worker processes (see class docstring)."""
+        import multiprocessing as mp
+
+        self.basis = basis
+        self.galaxies = galaxies
+        self.n_workers = max(1, int(n_proc))
+
+        if start_method is None:
+            start_method = (
+                "fork"
+                if sys.platform.startswith("linux") and "fork" in mp.get_all_start_methods()
+                else "loky"
+            )
+        self.start_method = start_method
+
+        state = {
+            "basis": basis,
+            "source": galaxies if start_method == "fork" else None,
+            "igm": igm,
+            "em_lines_to_save": em_lines_to_save,
+            "extra_analysis_functions": extra_analysis_functions or {},
+        }
+
+        if start_method == "loky":
+            from joblib.externals.loky import get_reusable_executor
+
+            self.executor = get_reusable_executor(
+                max_workers=self.n_workers,
+                initializer=_parallel_worker_init,
+                initargs=(state,),
+                env={var: "1" for var in _THREAD_ENV_VARS},
+                reuse=False,
+            )
+        else:
+            from concurrent.futures import ProcessPoolExecutor
+
+            self.executor = ProcessPoolExecutor(
+                max_workers=self.n_workers,
+                mp_context=mp.get_context(start_method),
+                initializer=_parallel_worker_init,
+                initargs=(state,),
+            )
+
+    def __enter__(self):
+        """Use as a context manager (shuts the workers down on exit)."""
+        return self
+
+    def __exit__(self, *exc):
+        """Shut the workers down."""
+        self.shutdown()
+        return False
+
+    def shutdown(self):
+        """Shut the worker processes down."""
+        if self.executor is not None:
+            if self.start_method == "loky":
+                self.executor.shutdown(wait=True)
+            else:
+                self.executor.shutdown(wait=True, cancel_futures=True)
+            self.executor = None
+
+    def run(self, start: int, end: int, out_path: str) -> None:
+        """Process galaxies[start:end] and write them to out_path."""
+        import shutil
+        import tempfile
+        import warnings
+        from concurrent.futures import as_completed
+
+        from .utils import merge_pipeline_files
+
+        n_gal = end - start
+        n_workers = max(1, min(self.n_workers, n_gal))
+        # A few chunks per worker for load balancing, but not too small
+        # (each chunk pays a fixed pipeline set-up + file write cost).
+        chunk_size = max(
+            int(np.ceil(n_gal / (n_workers * _CHUNKS_PER_WORKER))),
+            min(_MIN_CHUNK_SIZE, int(np.ceil(n_gal / n_workers))),
+        )
+        chunk_size = max(1, min(chunk_size, _MAX_CHUNK_SIZE))
+        # Use a multiple of the number of workers so they finish together.
+        n_chunks = int(np.ceil(n_gal / chunk_size))
+        n_chunks = int(np.ceil(n_chunks / n_workers)) * n_workers
+        chunk_size = max(1, int(np.ceil(n_gal / n_chunks)))
+        ranges = [(s, min(s + chunk_size, end)) for s in range(start, end, chunk_size)]
+
+        out_dir = os.path.dirname(os.path.abspath(out_path))
+        base = os.path.splitext(os.path.basename(out_path))[0]
+        tmp_dir = tempfile.mkdtemp(prefix=f".{base}_chunks_", dir=out_dir)
+        chunk_paths = [os.path.join(tmp_dir, f"chunk_{i:06d}.hdf5") for i in range(len(ranges))]
+
+        logger.info(
+            f"Running pipeline for {n_gal} galaxies on {n_workers} worker processes "
+            f"({len(ranges)} chunks of <= {chunk_size}, start method '{self.start_method}')."
+        )
+
+        futures = []
+        t_start = datetime.now()
+        try:
+            with warnings.catch_warnings():
+                # Python >= 3.12 warns about fork() in multi-threaded processes;
+                # the workers only run single-threaded serial code.
+                warnings.filterwarnings("ignore", category=DeprecationWarning)
+                for i, (s, e) in enumerate(ranges):
+                    items = None if self.start_method == "fork" else self.galaxies[s:e]
+                    futures.append(
+                        self.executor.submit(_parallel_worker_run, (i, s, e, items, chunk_paths[i]))
+                    )
+                done = 0
+                for fut in tqdm(
+                    as_completed(futures),
+                    total=len(futures),
+                    desc=f"Processing {self.basis.model_name} galaxies",
+                    disable=(rank != 0),
+                ):
+                    _, n_done, _ = fut.result()
+                    done += n_done
+            if done != n_gal:
+                raise RuntimeError(f"Expected {n_gal} galaxies to be processed, got {done}.")
+
+            t_merge = datetime.now()
+            # Uncompressed: gzip saves only a few per cent on float data but
+            # would make the (serial) merge several times slower.
+            merge_pipeline_files(chunk_paths, out_path, compression=None)
+            logger.info(
+                f"Workers took {t_merge - t_start}; merging {len(chunk_paths)} chunk files "
+                f"took {datetime.now() - t_merge}."
+            )
+        except BaseException:
+            for fut in futures:
+                fut.cancel()
+            self.shutdown()
+            raise
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def _validate_emission_model_keys(emission_model, keys, what="emission_model_key"):
+    """Check that each key (label or glob pattern) exists in an emission model.
+
+    Raises:
+        ValueError: with the available labels and the model's root label,
+            since e.g. Synthesizer's TotalEmission without dust emission
+            returns a model whose root label is 'attenuated' or 'emergent'
+            rather than the requested 'total'.
+    """
+    import fnmatch
+
+    if keys is None:
+        return
+    if isinstance(keys, str):
+        keys = [keys]
+    labels = list(emission_model._models.keys())
+    for key in keys:
+        if not isinstance(key, str):
+            raise TypeError(f"{what} must be a string label, got {type(key)}.")
+        if key in labels or any(fnmatch.fnmatchcase(label, key) for label in labels):
+            continue
+        raise ValueError(
+            f"{what}='{key}' does not match any model in the emission model "
+            f"{type(emission_model).__name__}. Its root label is "
+            f"'{emission_model.label}' (use emission_model.label), available labels: "
+            f"{sorted(labels)}. Note that some Synthesizer models ignore label= "
+            "(e.g. TotalEmission without dust emission returns a model labelled "
+            "'attenuated' or 'emergent')."
+        )
+
+
+def _line_dependency_labels(emission_model) -> List[str]:
+    """Labels whose spectra must be kept for emission-line generation.
+
+    Energy-balance / scaled generators (e.g. dust emission: Greybody,
+    Blackbody, Casey12, DraineLi07) generate their lines from the spectra of
+    the generator model itself and of the models they are scaled by
+    (intrinsic/attenuated/scaler). Since Synthesizer only keeps saved spectra
+    (and skips unsaved branches), these must be saved when lines are wanted.
+    """
+    labels = []
+    for label, model in emission_model._models.items():
+        if not getattr(model, "_is_generating", False):
+            continue
+        gen = model.generator
+        deps = []
+        for attr in ("_intrinsic", "_attenuated", "_scaler"):
+            dep = getattr(gen, attr, None)
+            if dep is None:
+                continue
+            deps.append(dep if isinstance(dep, str) else getattr(dep, "label", None))
+        deps = [d for d in deps if d is not None and d in emission_model._models]
+        if len(deps) > 0:
+            for lab in [label] + deps:
+                if lab not in labels:
+                    labels.append(lab)
+    return labels
+
+
+def _dust_curve_param_clashes(emission_model, param_names) -> Dict[str, List[str]]:
+    """Find emitter parameters with the same name as a dust curve parameter.
+
+    Synthesizer lets an emitter attribute override a transformer parameter
+    of the same name, so e.g. a galaxy parameter called ``slope`` would
+    silently replace a fixed ``PowerLaw(slope=-1)``. A curve parameter set to
+    a string deliberately aliases an emitter attribute and is not reported.
+
+    Returns:
+        dict: curve class name -> list of clashing parameter names.
+    """
+    try:
+        from synthesizer.emission_models.transformers.dust_attenuation import (
+            AttenuationLaw,
+        )
+    except ImportError:  # pragma: no cover
+        return {}
+
+    clashes = {}
+    seen = set()
+    for model in emission_model._models.values():
+        curve = getattr(model, "_transformer", None)
+        if not isinstance(curve, AttenuationLaw) or id(curve) in seen:
+            continue
+        seen.add(id(curve))
+        try:
+            curve_params = set(inspect.signature(type(curve).__init__).parameters) - {"self"}
+        except (TypeError, ValueError):  # pragma: no cover
+            continue
+        for name in param_names:
+            if name in curve_params and hasattr(curve, name):
+                if isinstance(getattr(curve, name), str):
+                    continue
+                clashes.setdefault(type(curve).__name__, []).append(name)
+    return clashes
 
 
 class GalaxyBasis:
@@ -1532,6 +2035,8 @@ class GalaxyBasis:
         redshift_dependent_sfh: bool = False,
         params_to_ignore: List[str] = None,
         build_library: bool = False,
+        fast_sfzh: bool = True,
+        tabulate_igm: Union[bool, str] = "auto",
     ) -> None:
         """Initialize the GalaxyBasis object with SFHs, redshifts, and other parameters.
 
@@ -1576,6 +2081,18 @@ class GalaxyBasis:
             If False, assume all dimensions of parameters are the same size and
             build the library from the parameters. I.e don't generate combinations of
             parameters, just use the parameters as they are.
+        fast_sfzh : bool, optional
+            If True (default), build the parametric SFZH of each galaxy with the
+            vectorised :mod:`synference.fast_sfzh` (10-100x faster than
+            Synthesizer's per-bin ``scipy.quad``; per-bin SFZH agrees to <=1e-3
+            relative, photometry to <~1e-6 mag). Set False to reproduce the
+            original Synthesizer ``Stars`` path exactly.
+        tabulate_igm : bool or "auto", optional
+            Whether :meth:`process_galaxies` replaces the IGM model by a
+            :class:`synference.fast_igm.TabulatedIGM` (pre-computed transmission
+            table, ~50x faster; band errors <~1.3e-4 mag). "auto" (default)
+            tabulates when at least 500 galaxies are processed (building the
+            table takes ~1-3 s). False reproduces the original exact IGM.
         """
         if galaxy_params is None:
             galaxy_params = {}
@@ -1601,6 +2118,9 @@ class GalaxyBasis:
         self.log_stellar_masses = log_stellar_masses
         self.params_to_ignore = params_to_ignore
         self.build_library = build_library
+        self.fast_sfzh = fast_sfzh
+        self.tabulate_igm = tabulate_igm
+        self._igm_cache = {}
 
         self.galaxies = []
 
@@ -1628,6 +2148,21 @@ class GalaxyBasis:
                 else:
                     # If the value is a dictionary, process it as a prior
                     self.galaxy_params[key] = self.process_priors(value)
+
+        # Synthesizer lets emitter attributes override dust curve parameters of
+        # the same name, which can silently change a fixed curve parameter.
+        if isinstance(emission_model, EmissionModel):
+            emitter_param_names = set(self.galaxy_params.keys())
+            clashes = _dust_curve_param_clashes(emission_model, emitter_param_names)
+            for curve_name, names in clashes.items():
+                logger.warning(
+                    f"galaxy_params {names} have the same name as parameters of the "
+                    f"dust curve {curve_name} in the emission model. Synthesizer uses "
+                    "the emitter (galaxy) value in preference to the value fixed on "
+                    "the curve, so the curve's own value will be overridden. Rename the "
+                    "galaxy parameter, or set the curve parameter to the galaxy "
+                    "parameter's name (a string) if this is intended."
+                )
 
         if not build_library:
             logger.info("Generating library directly from provided parameter samples.")
@@ -1773,6 +2308,7 @@ class GalaxyBasis:
                             metal_dist=Z_dist,
                             log_stellar_masses=log_base_masses,
                             grid=self.grid,
+                            fast_sfzh=self.fast_sfzh,
                             **params,
                         )
 
@@ -1960,6 +2496,14 @@ class GalaxyBasis:
                 "EmissionModel",
             ]
         )
+
+        try:
+            if isinstance(self.emission_model, EmissionModel):
+                save_emission_model(self.emission_model)
+        except ValueError as e:
+            if verbose:
+                logger.warning(f"{e} Cannot store model.")
+            accept = False
 
         if type(self.emission_model).__name__ not in PREMADE_MODELS:
             if verbose:
@@ -2166,6 +2710,7 @@ class GalaxyBasis:
         Type[Galaxy]
         Galaxy object created with the specified parameters.
         """
+        galaxy_kwargs.setdefault("fast_sfzh", getattr(self, "fast_sfzh", True))
         return create_galaxy(
             sfh=sfh,
             redshift=redshift,
@@ -2173,6 +2718,51 @@ class GalaxyBasis:
             log_stellar_masses=log_stellar_masses,
             grid=grid if grid is not None else self.grid,
             **galaxy_kwargs,
+        )
+
+    def _matched_galaxy_recipe(
+        self,
+        fixed_params,
+        varying_param_names,
+        log_base_masses,
+        galaxies_mask=None,
+    ) -> "_GalaxyRecipe":
+        """Describe the matched galaxies without building them.
+
+        Returns a :class:`_GalaxyRecipe` holding, for each (unmasked) index,
+        the SFH, ZDist, redshift, mass and varying parameters, plus the
+        ``all_params`` dictionary stored for that galaxy.
+        """
+        galaxy_data = []
+        save_params = []
+        for i in tqdm(range(len(self.sfhs)), desc="Preparing galaxies", disable=(rank != 0)):
+            # Skip this galaxy if the mask is provided and is False
+            if galaxies_mask is not None and len(galaxies_mask) > 0 and not galaxies_mask[i]:
+                continue
+
+            varying_params = {key: self.galaxy_params[key][i] for key in varying_param_names}
+
+            # Determine the stellar mass for this galaxy
+            try:
+                mass = log_base_masses[i]
+            except (IndexError, TypeError):
+                mass = log_base_masses
+
+            data = {
+                "sfh": self.sfhs[i],
+                "redshift": self.redshifts[i],
+                "metal_dist": self.metal_dists[i],
+                "log_stellar_mass": mass,
+                "varying_params": varying_params,  # Only varying parameters
+            }
+            galaxy_data.append(data)
+            save_params.append(_galaxy_save_params(data, fixed_params, self.alt_parametrizations))
+
+        return _GalaxyRecipe(
+            galaxy_data,
+            save_params,
+            fixed_params,
+            fast_sfzh=getattr(self, "fast_sfzh", True),
         )
 
     def create_galaxies_optimized(
@@ -2184,98 +2774,27 @@ class GalaxyBasis:
         n_proc=28,
         batch_size=None,
     ):
-        """Optimized version with reduced serialization overhead."""
-        # Determine optimal batch size if not provided
-        if batch_size is None:
-            total_galaxies = len(self.sfhs)
-            if galaxies_mask is not None and len(galaxies_mask) > 0:
-                total_galaxies = np.sum(galaxies_mask)
-            batch_size = max(1, total_galaxies // (n_proc))  # 1 batch per thread
-            logger.info(total_galaxies)
+        """Build all matched galaxies (serially) and store them in self.galaxies.
 
-        # Prepare lightweight job inputs (grouped into batches)
-        job_batches = []
-        current_batch = []
-
-        for i in tqdm(range(len(self.sfhs)), desc="Preparing galaxy batches", disable=(rank != 0)):
-            # Skip this galaxy if the mask is provided and is False
-            if galaxies_mask is not None and len(galaxies_mask) > 0 and not galaxies_mask[i]:
-                continue
-
-            # Create minimal data structure (no large objects)
-            varying_params = {}
-            for key in varying_param_names:
-                varying_params[key] = self.galaxy_params[key][i]
-
-            # Determine the stellar mass for this galaxy
-            try:
-                mass = log_base_masses[i]
-            except (IndexError, TypeError):
-                mass = log_base_masses
-
-            galaxy_data = {
-                "sfh": self.sfhs[i],
-                "redshift": self.redshifts[i],
-                "metal_dist": self.metal_dists[i],
-                "log_stellar_mass": mass,
-                "varying_params": varying_params,  # Only varying parameters
-            }
-
-            current_batch.append((i, galaxy_data))
-
-            # Create batch when it reaches desired size
-            if len(current_batch) >= batch_size:
-                job_batches.append(current_batch)
-                current_batch = []
-
-        # Add remaining galaxies to final batch
-        if current_batch:
-            job_batches.append(current_batch)
-
-        if n_proc > 1:
-            logger.info(f"Creating {len(job_batches)} batches across {n_proc} processes.")
-            logger.info(
-                f"Average batch size: {sum(len(batch) for batch in job_batches) / len(job_batches):.1f}"  # noqa: E501
-            )
-
-            # Create a wrapper function that includes the shared data
-            def process_batch_with_shared_data(batch):
-                # Initialize thread-local data for this worker
-                _init_worker(self.grid, self.alt_parametrizations, fixed_params)
-                return _process_galaxy_batch(batch)
-
-            # Use threading backend
-            with parallel_config("threading"):
-                tasks = [delayed(process_batch_with_shared_data)(batch) for batch in job_batches]
-
-                # Process batches
-                batch_results = Parallel(n_jobs=n_proc)(
-                    tqdm(tasks, desc="Creating galaxy batches", disable=(rank != 0))
-                )
-
-            # Flatten results and sort by original index
-            all_results = []
-            for batch_result in batch_results:
-                all_results.extend(batch_result)
-
-            # Sort by original galaxy index to maintain order
-            all_results.sort(key=lambda x: x[0])
-            self.galaxies = [galaxy for _, galaxy in all_results]
-
-        else:
-            # Sequential processing - initialize once for the main thread
-            _init_worker(self.grid, self.alt_parametrizations, fixed_params)
-            self.galaxies = []
-            for batch in tqdm(job_batches, desc="Creating galaxies", disable=(rank != 0)):
-                batch_galaxies = _process_galaxy_batch(batch)
-                self.galaxies.extend([galaxy for _, galaxy in batch_galaxies])
+        With the fast SFZH galaxy creation costs ~1 ms, so it is no longer
+        parallelised here; ``n_proc`` and ``batch_size`` are accepted for
+        backwards compatibility and ignored. Parallelism across galaxies is
+        done by :meth:`process_galaxies` (worker processes build *and* process
+        their own galaxies).
+        """
+        recipe = self._matched_galaxy_recipe(
+            fixed_params, varying_param_names, log_base_masses, galaxies_mask
+        )
+        self.galaxies = recipe.build(self.grid)
+        return self.galaxies
 
     def _create_matched_galaxies(
         self,
         log_base_masses: Union[float, np.ndarray] = 9,
         galaxies_mask: Optional[np.ndarray] = None,
         n_proc: int = 1,
-    ) -> List[Type[Galaxy]]:
+        lazy: bool = False,
+    ) -> Union[List[Type[Galaxy]], "_GalaxyRecipe"]:
         """Creates galaxies where all parameters have been sampled.
 
         A galaxy is created for each SFH, redshift, and metallicity distribution
@@ -2285,13 +2804,21 @@ class GalaxyBasis:
         ----------
         log_base_masses : Union[float, np.ndarray], optional
             Base mass (or array of base masses) to use for the galaxies.
-        n_procs : int, optional
-            Number of processes to use for parallel processing, by default 1.
+        galaxies_mask : np.ndarray, optional
+            Boolean mask selecting which galaxies to create.
+        n_proc : int, optional
+            Unused (kept for backwards compatibility). See process_galaxies.
+        lazy : bool, optional
+            If True, do not build the galaxies; return a lightweight
+            ``_GalaxyRecipe`` which :meth:`process_galaxies` builds batch by
+            batch (or inside worker processes). self.galaxies is left empty.
+            Parameter bookkeeping (varying/fixed parameter names etc.) is
+            identical in both cases.
 
         Returns:
         -------
-        List[Type[Galaxy]]
-            List of Galaxy objects created with the specified parameters.
+        List[Type[Galaxy]] or _GalaxyRecipe
+            List of Galaxy objects (or the recipe if lazy=True).
         """
         if len(self.metal_dists) == 1:
             # Just reference the first one
@@ -2341,47 +2868,15 @@ class GalaxyBasis:
         ):
             self.per_particle = True
 
-        """
-        job_inputs: List[Dict[str, Any]] = []
-        for i in tqdm(range(len(self.sfhs)), desc="Batching galaxy inputs", disable=(rank != 0)):
-            # Skip this galaxy if the mask is provided and is False
-            if galaxies_mask is not None and len(galaxies_mask) > 0 and not galaxies_mask[i]:
-                continue
-
-            # Assemble the parameters for this specific galaxy
-            params = fixed_params.copy()
-            for key in varying_param_names:
-                params[key] = self.galaxy_params[key][i]
-
-            # Determine the stellar mass for this galaxy
-            try:
-                mass = log_base_masses[i]
-            except (IndexError, TypeError):
-                mass = log_base_masses
-
-            job_inputs.append(
-                {
-                    "sfh": self.sfhs[i],
-                    "redshift": self.redshifts[i],
-                    "metal_dist": self.metal_dists[i],
-                    "log_stellar_mass": mass,
-                    "params": params,
-                    "grid": self.grid,
-                    "alt_parametrizations": self.alt_parametrizations,
-                }
-            )
-        """
-
-        # Use the optimized version
-        self.create_galaxies_optimized(
-            galaxies_mask=galaxies_mask,
-            varying_param_names=varying_param_names,
-            log_base_masses=log_base_masses,
-            fixed_params=fixed_params,
-            n_proc=1,
+        recipe = self._matched_galaxy_recipe(
+            fixed_params, varying_param_names, log_base_masses, galaxies_mask
         )
-
-        logger.info(f"Created {len(self.galaxies)} galaxies.")
+        if lazy:
+            self.galaxies = []
+            logger.info(f"Prepared {len(recipe)} galaxies (built on demand).")
+        else:
+            self.galaxies = recipe.build(self.grid)
+            logger.info(f"Created {len(self.galaxies)} galaxies.")
 
         # Use sets instead of lists for faster lookups and unique values
         self.all_parameters = defaultdict(set)
@@ -2389,12 +2884,12 @@ class GalaxyBasis:
 
         param_units = {}
         # Process all galaxies in one pass
-        for i, gal in enumerate(self.galaxies):
+        for i, all_params in enumerate(recipe.save_params):
             # Store the galaxy parameters directly
-            self.all_params[i] = gal.all_params
+            self.all_params[i] = all_params
 
             # Add unique values to sets using update operation
-            for key, value in gal.all_params.items():
+            for key, value in all_params.items():
                 if key not in self.params_to_ignore:
                     if isinstance(value, (unyt_quantity, unyt_array)):
                         unit = str(value.units)
@@ -2452,11 +2947,189 @@ class GalaxyBasis:
 
         logger.info("Finished creating galaxies.")
 
-        return self.galaxies
+        return recipe if lazy else self.galaxies
+
+    def _configure_saved_spectra(
+        self,
+        emission_model_keys=None,
+        spectra_to_save=None,
+        em_lines_to_save=None,
+    ) -> Optional[List[str]]:
+        """Set which spectra the emission model keeps (and therefore computes).
+
+        Synthesizer only generates the models needed for saved spectra, and
+        the pipeline computes observed spectra/photometry for every saved
+        spectrum, so saving only what is needed matters a lot for speed.
+
+        - ``emission_model_keys`` given: save those (+ ``spectra_to_save``).
+        - ``emission_model_keys`` None and the emission model still has its
+          default "save everything" flags: save only the root model
+          (``emission_model.label``) + ``spectra_to_save``, with a warning.
+          (Before v0.2 every spectrum was saved, ~4x slower for Pacman models;
+          pass ``emission_model_keys="*"`` to get that.)
+        - ``emission_model_keys`` None and the user configured the saved
+          spectra already (``emission_model.save_spectra``): respected.
+
+        If emission lines are requested, the spectra that energy-balance dust
+        emission generators need to generate lines are also saved.
+
+        Returns:
+            The list of labels that were set to be saved (None if unchanged).
+        """
+        model = self.emission_model
+        spectra_to_save = list(spectra_to_save) if spectra_to_save is not None else []
+
+        if emission_model_keys is None:
+            default_flags = all(
+                m.save for label, m in model._models.items() if not label.startswith("_")
+            )
+            if default_flags:
+                keys = [model.label]
+                logger.warning(
+                    "emission_model_keys not given: only saving the root spectra "
+                    f"'{model.label}' (+ spectra_to_save={spectra_to_save}). Previous "
+                    f"versions saved all {len(model._models)} spectra of the emission "
+                    "model, which is several times slower; pass emission_model_keys='*' "
+                    "(or a list of labels) to save more."
+                )
+            else:
+                keys = list(model.saved_labels)
+        elif isinstance(emission_model_keys, str):
+            keys = [emission_model_keys]
+        else:
+            keys = list(emission_model_keys)
+
+        _validate_emission_model_keys(model, keys, "emission_model_keys")
+        _validate_emission_model_keys(model, spectra_to_save, "spectra_to_save")
+
+        keys = keys + [k for k in spectra_to_save if k not in keys]
+        if em_lines_to_save is not None and len(em_lines_to_save) > 0:
+            extra = [k for k in _line_dependency_labels(model) if k not in keys]
+            if len(extra) > 0:
+                logger.info(
+                    f"Also saving spectra {extra} (needed to generate emission lines "
+                    "for the dust emission model)."
+                )
+                keys = keys + extra
+
+        model.save_spectra(*keys)
+        return keys
+
+    def _resolve_igm(self, igm, redshifts, tabulate_igm=None):
+        """Return the IGM object to use (possibly a cached TabulatedIGM).
+
+        Args:
+            igm: IGM class/instance requested by the user (or None).
+            redshifts (array): Redshifts of all galaxies to be processed.
+            tabulate_igm (bool/str/None): Override of self.tabulate_igm.
+        """
+        if igm is None or isinstance(igm, TabulatedIGM):
+            return igm
+
+        mode = getattr(self, "tabulate_igm", "auto") if tabulate_igm is None else tabulate_igm
+        redshifts = np.asarray(redshifts, dtype=float)
+        if mode == "auto":
+            mode = len(redshifts) >= _TABULATE_IGM_MIN_GALAXIES
+        if not mode or len(redshifts) == 0:
+            return igm
+
+        # Table up to just above the maximum redshift (anything outside the
+        # table falls back to the exact model anyway).
+        z_max = max(0.5, float(np.ceil((np.max(redshifts) + 0.05) * 2.0) / 2.0))
+        base_key = igm if isinstance(igm, type) else id(igm)
+        lam = np.asarray(self.grid.lam.to(Angstrom).value, dtype=np.float64)
+        key = (base_key, z_max, lam.shape[0], float(lam[0]), float(lam[-1]))
+
+        if not hasattr(self, "_igm_cache"):
+            self._igm_cache = {}
+        if key not in self._igm_cache:
+            start = datetime.now()
+            self._igm_cache[key] = TabulatedIGM(base=igm, z_min=0.0, z_max=z_max, lam=lam)
+            logger.info(
+                f"Built tabulated IGM ({self._igm_cache[key]}) in {datetime.now() - start}."
+            )
+        return self._igm_cache[key]
+
+    def _setup_pipeline(
+        self,
+        nthreads=1,
+        comm=None,
+        verbose=0,
+        igm=Inoue14,
+        em_lines_to_save=None,
+        extra_analysis_functions=None,
+    ) -> Pipeline:
+        """Create a Pipeline with the analysis functions and outputs Synference needs."""
+        if extra_analysis_functions is None:
+            extra_analysis_functions = {}
+
+        pipeline = Pipeline(
+            emission_model=self.emission_model,
+            nthreads=nthreads,
+            verbose=verbose,
+            comm=comm,
+        )
+
+        for key in self.all_parameters.keys():
+            pipeline.add_analysis_func(
+                lambda gal, key=key: gal.all_params[key],
+                result_key=key,
+            )
+
+        pipeline.add_analysis_func(lambda gal: gal.stars.initial_mass, result_key="mass")
+
+        # Add any extra analysis functions requested by the user.
+        for key, params in extra_analysis_functions.items():
+            if callable(params):
+                func = copy.deepcopy(params)
+                params = []
+            else:
+                func = params[0]
+                params = params[1:]
+
+            pipeline.add_analysis_func(func, f"supp_{key}", *params)
+
+        # pipeline.get_spectra() # Switch off so they aren't saved
+        pipeline.get_observed_spectra(self.cosmo, igm=igm)
+
+        if self.instrument.can_do_photometry:
+            pipeline.get_photometry_fluxes(self.instrument, igm=igm)
+
+        if em_lines_to_save is not None and len(em_lines_to_save) > 0:
+            # ["H 1 6562.80A", "O 3 5006.84A", "H 1 4861.32A"]
+            pipeline.get_lines(line_ids=em_lines_to_save)
+            pipeline.get_observed_lines(self.cosmo, igm=igm)
+
+        return pipeline
+
+    def _run_pipeline_parallel(
+        self,
+        galaxies,
+        out_path: str,
+        n_proc: int,
+        igm=None,
+        em_lines_to_save=None,
+        extra_analysis_functions=None,
+        start_method: Optional[str] = None,
+    ) -> None:
+        """Run the pipeline over galaxies with worker processes and write out_path.
+
+        Convenience wrapper around :class:`_PipelinePool` for a single batch.
+        """
+        with _PipelinePool(
+            self,
+            galaxies,
+            n_proc,
+            igm=igm,
+            em_lines_to_save=em_lines_to_save,
+            extra_analysis_functions=extra_analysis_functions,
+            start_method=start_method,
+        ) as pool:
+            pool.run(0, len(galaxies), out_path)
 
     def process_galaxies(
         self,
-        galaxies: List[Type[Galaxy]],
+        galaxies: Union[List[Type[Galaxy]], "_GalaxyRecipe"],
         out_name: str = "auto",
         out_dir: str = "internal",
         n_proc: int = 4,
@@ -2470,14 +3143,18 @@ class GalaxyBasis:
         spectra_to_save: list = None,
         em_lines_to_save: list = None,
         igm=Inoue14,
+        tabulate_igm: Union[bool, str, None] = None,
+        start_method: Optional[str] = None,
         **extra_analysis_functions,
-    ) -> Pipeline:
+    ) -> None:
         """Processes galaxies through Synthesizer pipeline.
 
         Parameters
         ----------
-        galaxies : List[Type[Galaxy]]
-            List of Galaxy objects to process.
+        galaxies : List[Type[Galaxy]] or _GalaxyRecipe
+            List of Galaxy objects to process, or the lazy recipe returned by
+            ``_create_matched_galaxies(lazy=True)`` (galaxies are then built
+            batch by batch, or inside the worker processes).
         out_name : str, optional
             Name of the output file to save the pipeline results, by default "auto".
             If "auto", uses the model_name.
@@ -2485,50 +3162,82 @@ class GalaxyBasis:
             Directory to save the output file, by default "internal".
             If "internal", saves to the Synthesizer grids directory.
         n_proc : int, optional
-            Number of processes to use for parallel processing, by default 4.
+            Number of worker *processes* (not threads) used to process
+            galaxies in parallel on this node, by default 4. Each process
+            builds and processes a chunk of galaxies with a single-threaded
+            Synthesizer pipeline (OpenMP/BLAS limited to 1 thread), and the
+            chunk outputs are merged into the same file a serial run writes.
+            n_proc=1 runs serially in this process. Small jobs (< 25
+            galaxies per process) use fewer processes. With ``multi_node=True``
+            n_proc keeps its old meaning: OpenMP threads of the per-rank
+            Synthesizer pipeline (MPI ranks provide the parallelism).
         verbose : int, optional
             Verbosity level for the pipeline, by default 1.
         save : bool, optional
             If True, saves the pipeline results to disk, by default True.
-        emission_model_keys : List[str], optional
-            List of emission model keys to save spectra for, by default None.
-            If None, saves all spectra.
+            (Parallel processing requires save=True.)
+        emission_model_keys : str or List[str], optional
+            Emission model label(s) to save spectra for, by default None. If
+            None and the saved spectra of the emission model have not been
+            configured, only the root model (``emission_model.label``) is saved
+            (behaviour change: previously all spectra were saved, which is
+            several times slower; use "*" for all). See
+            :meth:`_configure_saved_spectra`.
         batch_galaxies : bool, optional
             If True, processes galaxies in batches, by default True.
             If False, processes all galaxies in a single batch.
         batch_size : int, optional
             Size of each batch of galaxies to process, by default 40,000.
+            Each batch is written to its own file (``<name>_<i>.hdf5``) when
+            there is more than one batch.
         spectra_to_save : list, optional
-            List of spectra types to save, by default None. If None, saves only the root spectra.
+            Additional spectra labels to save, by default None.
         em_lines_to_save : list, optional
             List of emission lines to save, by default None.
+        igm : IGM class or instance, optional
+            The IGM model, by default Inoue14. None disables IGM attenuation.
+        tabulate_igm : bool or "auto", optional
+            Override GalaxyBasis.tabulate_igm for this call (tabulated IGM
+            transmission, see :class:`synference.fast_igm.TabulatedIGM`).
+        start_method : str, optional
+            Multiprocessing start method for n_proc > 1: None (default: "fork"
+            on Linux, else "loky"), "fork", "forkserver", "spawn" or "loky".
         extra_analysis_functions : dict, optional
             Additional analysis functions to add to the pipeline.
             Should be a dictionary where keys are function names and values are tuples
             of the function and its parameters.
 
-        Returns:
-        -------
-        Pipeline
-            The pipeline object after processing the galaxies.
-
         """
         self.emission_model.set_per_particle(self.per_particle)
 
-        if spectra_to_save is None:
-            spectra_to_save = []
-
-        if emission_model_keys is not None:
-            self.emission_model.save_spectra(emission_model_keys, *spectra_to_save)
+        self._configure_saved_spectra(emission_model_keys, spectra_to_save, em_lines_to_save)
 
         logger.info("Creating pipeline.")
 
-        if not batch_galaxies:
-            batch_size = len(galaxies)
+        if multi_node:
+            from synthesizer.extensions.openmp_check import check_openmp
+
+            if not check_openmp() and n_proc > 1:
+                logger.warning(
+                    "Synthesizer not installed with OpenMP support. "
+                    "Pipeline will run on a single core"
+                )
+                n_proc = 1
 
         n_gal = len(galaxies)
+        if not batch_galaxies:
+            batch_size = max(n_gal, 1)
+
         n_batches = int(np.ceil(n_gal / batch_size))
 
+        # Choose the IGM once for all batches (a tabulated IGM is built once).
+        if isinstance(galaxies, _GalaxyRecipe):
+            all_redshifts = galaxies.redshifts
+        else:
+            all_redshifts = [gal.redshift for gal in galaxies]
+        igm = self._resolve_igm(igm, all_redshifts, tabulate_igm)
+
+        galaxies_all = galaxies
         if n_batches > 1:
             logger.info(f"Splitting galaxies into {n_batches} batches of size {batch_size}.")
             galaxies = [galaxies[i * batch_size : (i + 1) * batch_size] for i in range(n_batches)]
@@ -2536,6 +3245,67 @@ class GalaxyBasis:
             logger.info("Processing all galaxies in a single batch.")
             galaxies = [galaxies]
 
+        # Worker processes (single node, save=True) are started once and
+        # reused for every batch. The pool shares the full (unbatched) galaxy
+        # source, so batches are addressed by global index ranges.
+        pool = None
+        if not multi_node and save and int(n_proc) > 1:
+            max_batch = min(batch_size, n_gal)
+            n_workers = min(int(n_proc), max(1, max_batch // _MIN_GALAXIES_PER_WORKER))
+            if n_workers > 1:
+                pool = _PipelinePool(
+                    self,
+                    galaxies_all,
+                    n_workers,
+                    igm=igm,
+                    em_lines_to_save=em_lines_to_save,
+                    extra_analysis_functions=extra_analysis_functions,
+                    start_method=start_method,
+                )
+        elif not multi_node and not save and int(n_proc) > 1:
+            logger.warning("Parallel processing requires save=True; running serially.")
+
+        try:
+            self._process_batches(
+                galaxies,
+                pool=pool,
+                batch_size=batch_size,
+                n_batches=n_batches,
+                n_gal=n_gal,
+                out_name=out_name,
+                out_dir=out_dir,
+                n_proc=n_proc,
+                verbose=verbose,
+                save=save,
+                overwrite=overwrite,
+                multi_node=multi_node,
+                igm=igm,
+                em_lines_to_save=em_lines_to_save,
+                extra_analysis_functions=extra_analysis_functions,
+            )
+        finally:
+            if pool is not None:
+                pool.shutdown()
+
+    def _process_batches(
+        self,
+        galaxies,
+        pool,
+        batch_size,
+        n_batches,
+        n_gal,
+        out_name,
+        out_dir,
+        n_proc,
+        verbose,
+        save,
+        overwrite,
+        multi_node,
+        igm,
+        em_lines_to_save,
+        extra_analysis_functions,
+    ):
+        """Run (and write) each batch of galaxies; see process_galaxies."""
         for batch_i, batch_gals in enumerate(galaxies):
             skip = False
             if save:
@@ -2563,76 +3333,54 @@ class GalaxyBasis:
                     skip = True
 
             if not skip:
+                ngal = len(batch_gals)
                 if multi_node:
                     logger.info("Running pipeline in multi-node mode with MPI.")
-                    # logger.debug(f"SIZE: {size}, RANK: {rank}")
+                    n_workers = 1
                 else:
                     logger.info("Running in single-node mode.")
+                    n_workers = min(int(n_proc), max(1, ngal // _MIN_GALAXIES_PER_WORKER))
+                    if pool is None:
+                        n_workers = 1
 
-                from synthesizer.extensions.openmp_check import check_openmp
+                # Path written by this batch. In single-node mode with several
+                # batches each batch goes straight to its own <name>_<i>.hdf5.
+                write_path = fullpath if (save and (multi_node or n_batches == 1)) else None
+                if save and write_path is None:
+                    write_path = final_fullpath
 
-                if not check_openmp() and n_proc > 1:
-                    logger.warning(
-                        "Synthesizer not installed with OpenMP support. "
-                        "Pipeline will run on a single core"
-                    )
-                    n_proc = 1
-
-                pipeline = Pipeline(
-                    emission_model=self.emission_model,
-                    nthreads=n_proc,
-                    verbose=verbose,
-                    comm=comm,
-                )
-
-                for key in self.all_parameters.keys():
-                    pipeline.add_analysis_func(
-                        lambda gal, key=key: gal.all_params[key],
-                        result_key=key,
-                    )
-
-                pipeline.add_analysis_func(lambda gal: gal.stars.initial_mass, result_key="mass")
-
-                logger.info("Added analysis functions to pipeline.")
-
-                if multi_node:
-                    logger.info(f"Pipeline MPI: {pipeline.using_mpi}")
-
-                # Add any extra analysis functions requested by the user.
-
-                for key, params in extra_analysis_functions.items():
-                    if callable(params):
-                        func = copy.deepcopy(params)
-                        params = []
-                    else:
-                        func = params[0]
-                        params = params[1:]
-
-                    pipeline.add_analysis_func(func, f"supp_{key}", *params)
-
-                # pipeline.get_spectra() # Switch off so they aren't saved
-                pipeline.get_observed_spectra(self.cosmo, igm=igm)
-
-                if self.instrument.can_do_photometry:
-                    pipeline.get_photometry_fluxes(self.instrument, igm=igm)
-
-                if em_lines_to_save is not None and len(em_lines_to_save) > 0:
-                    # ["H 1 6562.80A", "O 3 5006.84A", "H 1 4861.32A"]
-                    pipeline.get_lines(line_ids=em_lines_to_save)
-                    pipeline.get_observed_lines(self.cosmo, igm=igm)
-
-                pipeline.add_galaxies(batch_gals)
-
-                ngal = len(batch_gals)
                 start = datetime.now()
                 logger.info(f"Running pipeline at {start} for {ngal} galaxies")
-                pipeline.run()
+
+                if n_workers > 1:
+                    batch_start = batch_i * batch_size
+                    pool.run(batch_start, batch_start + ngal, write_path)
+                    pipeline = None
+                else:
+                    if isinstance(batch_gals, _GalaxyRecipe):
+                        batch_gals = batch_gals.build(self.grid)
+
+                    pipeline = self._setup_pipeline(
+                        nthreads=n_proc if multi_node else 1,
+                        comm=comm if multi_node else None,
+                        verbose=verbose,
+                        igm=igm,
+                        em_lines_to_save=em_lines_to_save,
+                        extra_analysis_functions=extra_analysis_functions,
+                    )
+                    logger.info("Added analysis functions to pipeline.")
+                    if multi_node:
+                        logger.info(f"Pipeline MPI: {pipeline.using_mpi}")
+
+                    pipeline.add_galaxies(batch_gals)
+                    pipeline.run()
+
                 elapsed = datetime.now() - start
                 logger.info(f"Finished running pipeline at {datetime.now()} for {ngal} galaxies")
                 logger.info(f"Pipeline took {elapsed} to run.")
-                if save:
+                if save and pipeline is not None:
                     # Save the pipeline to a file
-                    pipeline.write(fullpath, verbose=0)
+                    pipeline.write(write_path, verbose=0)
 
                     if multi_node:
                         logger.info("Combining HDF5 files across nodes.")
@@ -2736,6 +3484,7 @@ class GalaxyBasis:
                 metal_dist=self.metal_dists[idx],
                 log_stellar_masses=log_stellar_mass,
                 grid=self.grid,
+                fast_sfzh=getattr(self, "fast_sfzh", True),
                 **galaxy_params,
             )
         else:
@@ -3069,7 +3818,10 @@ $\\log_{{10}}(M_\\star/M_\\odot)$: {np.log10(mass):.1f}"""
             Directory to save the output file, by default "library_folder".
             If "library_folder", saves to the Synthesizer grids directory.
         n_proc : int, optional
-            Number of processes to use for the pipeline, by default 6.
+            Number of worker processes (not threads) used to build and process
+            galaxies in parallel on this node, by default 6. 1 runs serially.
+            See GalaxyBasis.process_galaxies. With multi_node=True this is the
+            number of OpenMP threads per MPI rank (as before).
         overwrite : Union[bool, List[bool]], optional
             If True, overwrites the output file if it exists,
             by default False. If a list, must be the same length as bases.
@@ -3112,6 +3864,10 @@ $\\log_{{10}}(M_\\star/M_\\odot)$: {np.log10(mass):.1f}"""
             should be a tuple of the function and its parameters.
         """
         # make a CombinedBasis object with the current GalaxyBasis
+
+        # Fail early (before building any galaxy) if the key is not a label
+        # of the emission model.
+        _validate_emission_model_keys(self.emission_model, emission_model_key)
 
         if log_stellar_masses is None:
             assert self.log_stellar_masses is not None, (
@@ -3315,7 +4071,10 @@ class CombinedBasis:
         Parameters
         ----------
         n_proc : int
-            Number of processes to use for the pipeline.
+            Number of worker processes (not threads) used to build and process
+            galaxies in parallel on this node; 1 runs serially. See
+            GalaxyBasis.process_galaxies. With multi_node=True this is the
+            number of OpenMP threads per MPI rank (as before).
         overwrite : bool or list of bools
             If True, overwrite the existing files.
             If False, skip the files that already exist.
@@ -3339,6 +4098,11 @@ class CombinedBasis:
                     """overwrite must be a boolean or a
                     list of booleans with the same length as bases"""
                 )
+
+        for i, base in enumerate(self.bases):
+            _validate_emission_model_keys(
+                base.emission_model, self.base_emission_model_keys[i], "base_emission_model_keys"
+            )
 
         for i, base in enumerate(self.bases):
             full_out_path = f"{self.out_dir}/{base.model_name}.hdf5"
@@ -3370,8 +4134,13 @@ class CombinedBasis:
                         "galaxies_mask is not implemented for draw_parameter_combinations=False."
                     )
             else:
+                # Lazy: galaxies are built batch by batch (or inside the
+                # worker processes) by process_galaxies.
                 galaxies = base._create_matched_galaxies(
-                    log_base_masses=self.log_base_masses, galaxies_mask=galaxies_mask, n_proc=n_proc
+                    log_base_masses=self.log_base_masses,
+                    galaxies_mask=galaxies_mask,
+                    n_proc=n_proc,
+                    lazy=True,
                 )
 
             logger.info(f"Created {len(galaxies)} galaxies for base {base.model_name}")
@@ -4970,6 +5739,9 @@ class GalaxySimulator(object):
         ignore_scatter: bool = False,
         return_type="array",
         device: str = "cpu",
+        fast_sfzh: bool = True,
+        igm=Inoue14,
+        tabulate_igm: bool = True,
     ) -> None:
         """Parameters
 
@@ -5055,6 +5827,19 @@ class GalaxySimulator(object):
         device : str
             Device to use for tensor calculations. Default is 'cpu'.
             Can be 'cpu' or 'cuda'. Only used if return_type is 'tensor'.
+        fast_sfzh : bool
+            If True (default), build the SFZH with the vectorised
+            :func:`synference.fast_sfzh.make_parametric_stars` (10-100x faster
+            than Synthesizer's quad integration; photometry agrees to <~1e-6
+            mag). False reproduces the original ``Stars`` path.
+        igm : IGM class or instance
+            IGM model applied to observed-frame outputs. Default Inoue14 (as
+            before). None disables IGM attenuation.
+        tabulate_igm : bool
+            If True (default), wrap ``igm`` in a
+            :class:`synference.fast_igm.TabulatedIGM` (z in [0, 20], built on
+            first use, ~1-3 s; afterwards ~50x faster than exact Inoue14,
+            band errors <~1.3e-4 mag). False reproduces the exact IGM.
 
         """
         if fixed_params is None:
@@ -5103,6 +5888,11 @@ class GalaxySimulator(object):
         self.ignore_scatter = ignore_scatter
         self.return_type = return_type
         self.device = device
+        self.fast_sfzh = fast_sfzh
+        self.igm = igm
+        self.tabulate_igm = tabulate_igm
+        self._tabulated_igm = None
+        self._log10ages = np.asarray(self.grid.log10ages)
 
         self.unused_params = []
         self.reported_unused = False
@@ -5179,6 +5969,9 @@ class GalaxySimulator(object):
 
         self.emitter_params = emitter_params
         self.num_emitter_params = np.sum([len(emitter_params[key]) for key in emitter_params])
+        _validate_emission_model_keys(self.emission_model, emission_model_key, "emission_model_key")
+        # Only the requested spectra are kept, so Synthesizer skips every
+        # model branch the output does not depend on.
         self.emission_model.save_spectra(emission_model_key)
 
         self.total_possible_keys = (
@@ -5419,6 +6212,19 @@ class GalaxySimulator(object):
                         else:
                             dust_model_params[key] = value
 
+                    # Libraries written by older versions stored dimensionful
+                    # curve parameters (e.g. Calzetti2000 cent_lam) without
+                    # units: assume the units of the constructor default.
+                    dust_sig = inspect.signature(dust_model.__init__).parameters
+                    for key, value in dust_model_params.items():
+                        default = dust_sig[key].default if key in dust_sig else None
+                        if (
+                            hasattr(default, "units")
+                            and not hasattr(value, "units")
+                            and isinstance(value, (int, float, np.number))
+                        ):
+                            dust_model_params[key] = value * default.units
+
                     dust_model = dust_model(**dust_model_params)
                 else:
                     dust_model = None
@@ -5433,23 +6239,12 @@ class GalaxySimulator(object):
                             " in synthesizer.emission_models. Cannot create from_library."
                         )
 
-                    dust_emission_model_params = {}
-                    dust_emission_param_keys = em_group.attrs["dust_emission_keys"]
-                    dust_emission_param_values = em_group.attrs["dust_emission_values"]
-                    dust_emission_param_units = em_group.attrs["dust_emission_units"]
-                    for key, value, unit in zip(
-                        dust_emission_param_keys,
-                        dust_emission_param_values,
-                        dust_emission_param_units,
-                    ):
-                        if unit != "":
-                            dust_emission_model_params[key] = unyt_array(value, unit)
-                        else:
-                            dust_emission_model_params[key] = value
-                    cmb = dust_emission_model_params.pop("cmb_factor", None)
-                    dust_emission_model_params.pop("temperature_z", None)
-                    # if cmb is not None:
-                    #    dust_emission_model_params["cmb_heating"] = cmb != 1
+                    dust_emission_model_params = load_dust_emission_params(
+                        dust_emission_model,
+                        em_group.attrs["dust_emission_keys"],
+                        em_group.attrs["dust_emission_values"],
+                        em_group.attrs["dust_emission_units"],
+                    )
                     dust_emission_model = dust_emission_model(**dust_emission_model_params)
                 else:
                     dust_emission_model = None
@@ -5600,6 +6395,10 @@ class GalaxySimulator(object):
 
         params.update(self.fixed_params)
 
+        # float32 scalars (e.g. from torch) would trip Synthesizer's precision
+        # checks when mixed with the float64 grid.
+        params = {key: _as_float64_scalar(value) for key, value in params.items()}
+
         for key in self.required_keys:
             if key not in params:
                 raise ValueError(f"Missing required parameter {key}. Cannot create photometry.")
@@ -5722,14 +6521,24 @@ class GalaxySimulator(object):
             for key in found_params:
                 stellar_keys[key] = params[key]
 
-        stars = Stars(
-            log10ages=self.grid.log10ages,
-            metallicities=self.grid.metallicities,
-            sf_hist=sfh,
-            metal_dist=zdist,
-            initial_mass=mass,
-            **stellar_keys,
-        )
+        if getattr(self, "fast_sfzh", True):
+            stars = make_parametric_stars(
+                sfh,
+                zdist,
+                self._log10ages,
+                self.grid.metallicities,
+                initial_mass=mass,
+                **stellar_keys,
+            )
+        else:
+            stars = Stars(
+                log10ages=self.grid.log10ages,
+                metallicities=self.grid.metallicities,
+                sf_hist=sfh,
+                metal_dist=zdist,
+                initial_mass=mass,
+                **stellar_keys,
+            )
 
         galaxy_keys = {}
         if "galaxy" in self.emitter_params:
@@ -5775,8 +6584,10 @@ class GalaxySimulator(object):
             outputs["photo_lnu"] = copy.deepcopy(fluxes)
 
         if "fnu" in self.output_type or "photo_fnu" in self.output_type:
-            # Apply IGM and distance
-            galaxy.get_observed_spectra(self.cosmo)
+            # Apply IGM and distance, only for the spectra we return
+            galaxy.stars.spectra[self.emission_model_key].get_fnu(
+                self.cosmo, galaxy.redshift, igm=self._get_igm()
+            )
 
             if "photo_fnu" in self.output_type:
                 fluxes = galaxy.stars.spectra[self.emission_model_key].get_photo_fnu(
@@ -5876,6 +6687,18 @@ class GalaxySimulator(object):
             fluxes = torch.tensor(np.atleast_2d(fluxes), device=self.device)
 
         return fluxes
+
+    def _get_igm(self):
+        """Return the IGM used for observed-frame outputs (tabulated if requested)."""
+        igm = getattr(self, "igm", Inoue14)
+        if igm is None or not getattr(self, "tabulate_igm", False):
+            return igm
+        if isinstance(igm, TabulatedIGM):
+            return igm
+        if getattr(self, "_tabulated_igm", None) is None:
+            # Tables are built for each rest-frame wavelength array on first use.
+            self._tabulated_igm = TabulatedIGM(base=igm, z_min=0.0, z_max=20.0, min_hits=1)
+        return self._tabulated_igm
 
     def _normalize(self, fluxes, method=None, norm_unit="AB", add_norm_pos=-1):
         if method is None:
