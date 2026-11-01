@@ -3032,19 +3032,38 @@ def interval_sharpness(
 
 
 def download_test_data():
-    """Downloads test data for Synference using the synference-download CLI tool."""
+    """Downloads test data for Synference using the synference-download CLI tool.
+
+    The ``synference-download`` command is provided by Synthesizer.
+
+    Raises:
+        RuntimeError: If ``synference-download`` is not installed, or if the
+            download fails. The error includes the command's own output.
+    """
+    import shutil
     import subprocess
 
     data_dir = get_data_dir() / "synference"
     data_dir.mkdir(parents=True, exist_ok=True)
 
+    if shutil.which("synference-download") is None:
+        raise RuntimeError(
+            "The 'synference-download' command was not found. It is installed "
+            "with Synthesizer (cosmos-synthesizer); check Synthesizer is "
+            "installed in the active environment."
+        )
+
     # Download the test data
-    subprocess.run(
+    result = subprocess.run(
         ["synference-download", "--test", "--destination", f"{str(data_dir)}"],
-        check=True,
         capture_output=True,
         text=True,
     )
+    if result.returncode != 0:
+        output = "\n".join(s.strip() for s in (result.stdout, result.stderr) if s.strip())
+        raise RuntimeError(
+            f"synference-download failed with exit code {result.returncode}:\n{output}"
+        )
     print(f"Test data downloaded to {data_dir}")
 
 
