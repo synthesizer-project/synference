@@ -4,10 +4,10 @@ import sys
 
 import numpy as np
 from astropy.cosmology import Planck18
+from synthesizer.emission_models import Greybody  # noqa
 from synthesizer.emission_models.attenuation import (
     Calzetti2000,
 )  # noqa
-from synthesizer.emission_models.dust.emission import Greybody, IR_templates  # noqa
 from synthesizer.emission_models.stellar.pacman_model import (
     BimodalPacmanEmission,
 )  # noqa
@@ -20,8 +20,8 @@ from unyt import K, dimensionless
 from synference import (
     CombinedBasis,
     GalaxyBasis,
+    calculate_mass_weighted_age,
     calculate_muv,
-    calculate_mwa,
     draw_from_hypercube,
     generate_constant_R,
     generate_random_DB_sfh,
@@ -311,7 +311,7 @@ basis = GalaxyBasis(
     alt_parametrizations=alt_parametrizations,
     redshift_dependent_sfh=True,
     params_to_ignore=[],
-    build_grid=False,
+    build_library=False,
 )
 
 
@@ -339,7 +339,7 @@ for i in range(10):
 combined_basis.process_bases(
     overwrite=True,
     mUV=(calculate_muv, cosmo),
-    mwa=calculate_mwa,
+    mwa=calculate_mass_weighted_age,
     n_proc=n_proc,
     verbose=False,
     batch_size=batch_size,

@@ -7,10 +7,10 @@ import sys
 
 import numpy as np
 from astropy.cosmology import Planck18
+from synthesizer.emission_models import Greybody  # noqa
 from synthesizer.emission_models.attenuation import (
     Calzetti2000,
 )  # noqa
-from synthesizer.emission_models.dust.emission import Greybody, IR_templates  # noqa
 from synthesizer.emission_models.stellar.pacman_model import (
     PacmanEmission,
 )  # noqa
@@ -33,21 +33,21 @@ print(f"Rank {rank} with {size} processes available.")
 from synference import (
     GalaxyBasis,
     calculate_beta,
+    calculate_burstiness,
     calculate_colour,
     calculate_d4000,
+    calculate_line_ew,
+    calculate_line_flux,
     calculate_mass_weighted_age,
     calculate_muv,
+    calculate_Ndot_ion,
     calculate_sfh_quantile,
     calculate_surviving_mass,
+    calculate_xi_ion0,
     draw_from_hypercube,
     generate_constant_R,
     generate_random_DB_sfh,
     generate_sfh_basis,
-    calculate_line_ew,
-    calculate_line_flux,
-    calculate_xi_ion0,
-    calculate_burstiness,
-    calculate_Ndot_ion,
 )
 
 # Filters
@@ -584,7 +584,7 @@ for sfh_name, sfh_params in sfhs.items():
         alt_parametrizations=alt_parametrizations,
         redshift_dependent_sfh=True,
         params_to_ignore=sfh_params.get("params_to_ignore", []),
-        build_grid=False,
+        build_library=False,
         log_stellar_masses=all_param_dict["log_masses"],
     )
 

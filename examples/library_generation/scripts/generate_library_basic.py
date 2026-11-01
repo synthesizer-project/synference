@@ -4,11 +4,10 @@ import sys
 
 import numpy as np
 from astropy.cosmology import Planck18
-from synthesizer.emission_models import PacmanEmission
+from synthesizer.emission_models import Blackbody, PacmanEmission
 from synthesizer.emission_models.attenuation import (
     Calzetti2000,
 )  # noqa
-from synthesizer.emission_models.dust.emission import Blackbody
 from synthesizer.grid import Grid
 from synthesizer.instruments import FilterCollection, Instrument
 from synthesizer.parametric import SFH, ZDist

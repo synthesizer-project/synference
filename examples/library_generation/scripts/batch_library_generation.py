@@ -10,7 +10,7 @@ from synthesizer.emission_models.attenuation import (
 )  # noqa
 
 mwn18 = MWN18()
-from synthesizer.emission_models.dust.emission import Greybody, IR_templates  # noqa
+from synthesizer.emission_models import Greybody  # noqa
 from synthesizer.emission_models.stellar.pacman_model import (
     BimodalPacmanEmission,
 )  # noqa
@@ -489,7 +489,7 @@ for sfh_name, sfh_params in sfhs.items():
         alt_parametrizations=alt_parametrizations,
         redshift_dependent_sfh=True,
         params_to_ignore=sfh_params.get("params_to_ignore", []),
-        build_grid=False,
+        build_library=False,
     )
 
     combined_basis = CombinedBasis(

@@ -28,6 +28,14 @@ from .library import (
 
 
 
+try:
+    # Fast drop-in replacements for Synthesizer's parametric SFZH integration
+    # and IGM transmission (used by default in library generation).
+    from .fast_sfzh import make_parametric_stars
+    from .fast_igm import TabulatedIGM
+except ImportError:  # synthesizer not installed
+    pass
+
 from .noise_models import (
     EmpiricalUncertaintyModel, create_uncertainty_models_from_EPOCHS_cat,
     DepthUncertaintyModel, UncertaintyModel, AsinhEmpiricalUncertaintyModel,
@@ -114,4 +122,6 @@ __all__ = [
     "create_database_universal",
     "download_test_data",
     "test_data_dir",
+    "make_parametric_stars",
+    "TabulatedIGM",
 ]

@@ -5,10 +5,10 @@ import sys
 
 import numpy as np
 from astropy.cosmology import Planck18
+from synthesizer.emission_models import Greybody  # noqa
 from synthesizer.emission_models.attenuation import (
     Calzetti2000,
 )  # noqa
-from synthesizer.emission_models.dust.emission import Greybody, IR_templates  # noqa
 from synthesizer.emission_models.stellar.pacman_model import (
     BimodalPacmanEmission,
 )  # noqa
@@ -96,9 +96,9 @@ grid_dir = os.environ["SYNTHESIZER_GRID_DIR"]
 # path for this file
 
 dir_path = os.path.dirname(os.path.abspath(__file__))
-from synference import grid_folder
+from synference import library_folder
 
-out_dir = grid_folder
+out_dir = library_folder
 
 
 def continuity_agebins(
@@ -223,8 +223,8 @@ for sfh_name, sfh_params in sfhs.items():
 
     sfh_name = str(sfh_type).split(".")[-1].split("'")[0]
 
-    name = f"BPASS_Chab_{sfh_name}_SFH_{redshift[0]}_z_{redshift[1]}_logN_{np.log10(Nmodels):.1f}_CF00_v2"  # noqa: E501
-    if os.path.exists(f"{out_dir}/v2/spectral_library_{name}.hdf5") and not overwrite:
+    name = f"BPASS_Chab_{sfh_name}_SFH_z_{redshift}_logN_{np.log10(Nmodels):.1f}_CF00_v2"  # noqa: E501
+    if os.path.exists(f"{out_dir}/spectral_library_{name}.hdf5") and not overwrite:
         print(f"Grid {name} already exists, skipping.")
         continue
 
@@ -414,7 +414,7 @@ for sfh_name, sfh_params in sfhs.items():
         alt_parametrizations=alt_parametrizations,
         redshift_dependent_sfh=True,
         params_to_ignore=sfh_params.get("params_to_ignore", []),
-        build_grid=False,
+        build_library=False,
     )
 
     combined_basis = CombinedBasis(
@@ -464,5 +464,5 @@ for sfh_name, sfh_params in sfhs.items():
 
     # Create grid - kinda overkill for a single case, but it does work.
     combined_basis.create_spectral_grid(
-        overwrite=True, overload_out_name=f"spectral_library_{name}"
+        overwrite=overwrite, overload_out_name=f"spectral_library_{name}"
     )

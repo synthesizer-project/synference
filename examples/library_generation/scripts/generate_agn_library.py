@@ -5,13 +5,14 @@ from astropy.cosmology import Planck18 as cosmo
 from synthesizer import Grid
 from synthesizer.emission_models import (
     AttenuatedEmission,
+    Blackbody,
     DustEmission,
     EmissionModel,
+    Greybody,
     PacmanEmission,
     UnifiedAGN,
 )
 from synthesizer.emission_models.attenuation import PowerLaw
-from synthesizer.emission_models.dust.emission import Blackbody, Greybody
 from synthesizer.instruments import FilterCollection, Instrument
 from synthesizer.parametric import SFH, ZDist
 from tqdm import tqdm
@@ -264,7 +265,7 @@ basis = GalaxyBasis(
     galaxy_params=galaxy_params,
     alt_parametrizations={},
     redshift_dependent_sfh=True,
-    build_grid=False,
+    build_library=False,
     log_stellar_masses=all_param_dict["log_masses"],
     params_to_ignore=["max_age"],
 )
