@@ -215,6 +215,27 @@ def test_lazy_build_and_arbitrary_arrays():
     assert tab.get_transmission(5.0, np.array([5000.0]) * Angstrom).shape == (1,)
 
 
+@pytest.mark.parametrize("n_b", [200, 150], ids=["same_shape", "different_shape"])
+def test_alternating_unseen_arrays_build(n_b):
+    """Two pending arrays seen alternately both reach the build path.
+
+    Regression test: removing a pending entry with ``list.remove`` compared
+    the stored ndarrays with ``==`` and raised when another array was pending
+    ahead of it.
+    """
+    tab = TabulatedIGM(Inoue14, z_max=8.0, dz=0.1, min_hits=2)
+    exact = Inoue14()
+    lam_a = np.linspace(700.0, 3000.0, 200)
+    lam_b = np.linspace(650.0, 2500.0, n_b)
+    for z, lam in [(3.0, lam_a), (3.0, lam_b), (5.0, lam_b), (5.0, lam_a)]:
+        t = tab.get_transmission(z, lam * (1 + z) * Angstrom)
+        np.testing.assert_allclose(
+            t, exact.get_transmission(z, lam * (1 + z) * Angstrom), atol=5e-3
+        )
+    assert len(tab.tables) == 2
+    assert tab.n_table_calls == 2 and tab.n_exact_calls == 2
+
+
 def test_pickle_round_trip(tab_igm):
     """Pickled copies give identical results and don't rebuild."""
     z = 7.3

@@ -2437,23 +2437,24 @@ def merge_pipeline_files(paths, out_path, galaxies_group="Galaxies", compression
 
         if galaxies_group in out:
             gal = out[galaxies_group]
-            files = [h5py.File(path, "r") for path in paths]
-            try:
-                # One dataset at a time: read it from every file, concatenate
-                # and write it in a single call (writing many small slices
-                # into a compressed, chunked dataset is very slow).
-                for name, spec in specs.items():
-                    if spec["ndim"] == 0:
-                        continue
-                    parts = [f[galaxies_group][name][()] for f, n in zip(files, counts) if n > 0]
-                    if len(parts) > 0:
-                        gal[name][...] = np.concatenate(parts, axis=0).astype(
+            # Open one input file at a time and write its rows straight into
+            # the output at the running offset. This keeps a single file
+            # handle and a single chunk in memory, so the merge is bounded
+            # neither by the open-file limit nor by the size of the merged
+            # datasets.
+            offset = 0
+            for path, n in zip(paths, counts):
+                if n == 0:
+                    continue
+                with h5py.File(path, "r") as f:
+                    src = f[galaxies_group]
+                    for name, spec in specs.items():
+                        if spec["ndim"] == 0:
+                            continue
+                        gal[name][offset : offset + n] = src[name][()].astype(
                             spec["dtype"], copy=False
                         )
-                    del parts
-            finally:
-                for f in files:
-                    f.close()
+                offset += n
 
 
 def combine_rank_files(size, filepath, num_galaxies, starts, ends):

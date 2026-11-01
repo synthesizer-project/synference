@@ -224,7 +224,7 @@ for sfh_name, sfh_params in sfhs.items():
     sfh_name = str(sfh_type).split(".")[-1].split("'")[0]
 
     name = f"BPASS_Chab_{sfh_name}_SFH_z_{redshift}_logN_{np.log10(Nmodels):.1f}_CF00_v2"  # noqa: E501
-    if os.path.exists(f"{out_dir}/v2/spectral_library_{name}.hdf5") and not overwrite:
+    if os.path.exists(f"{out_dir}/spectral_library_{name}.hdf5") and not overwrite:
         print(f"Grid {name} already exists, skipping.")
         continue
 
@@ -464,5 +464,5 @@ for sfh_name, sfh_params in sfhs.items():
 
     # Create grid - kinda overkill for a single case, but it does work.
     combined_basis.create_spectral_grid(
-        overwrite=True, overload_out_name=f"spectral_library_{name}"
+        overwrite=overwrite, overload_out_name=f"spectral_library_{name}"
     )

@@ -438,7 +438,9 @@ class TabulatedIGM(IGMBase):
                     self._pending.pop(0)
             if entry[1] < self.min_hits:
                 return None
-            self._pending.remove(entry)
+            # Remove by identity: list.remove compares entries with ==, which
+            # would compare the stored ndarrays and raise.
+            self._pending = [e for e in self._pending if e is not entry]
             tab = self._load_or_build(entry[0])
             self._insert(tab)
             return tab
