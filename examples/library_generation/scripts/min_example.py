@@ -1,8 +1,8 @@
 import os
 
 from astropy.cosmology import Planck18
+from synthesizer.emission_models import Greybody  # noqa
 from synthesizer.emission_models.attenuation import Calzetti2000  # noqa
-from synthesizer.emission_models.dust.emission import Greybody, IR_templates  # noqa
 from synthesizer.emission_models.stellar.pacman_model import PacmanEmission  # noqa
 from synthesizer.grid import Grid
 from synthesizer.instruments import FilterCollection, Instrument
@@ -142,7 +142,7 @@ basis = GalaxyBasis(
     galaxy_params=galaxy_params,
     redshift_dependent_sfh=True,
     params_to_ignore=[],
-    build_grid=False,
+    build_library=False,
 )
 
 # Create our mock training catalogue!

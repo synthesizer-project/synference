@@ -15,8 +15,8 @@ from unyt import Myr
 
 from synference import (
     GalaxyBasis,
+    calculate_mass_weighted_age,
     calculate_muv,
-    calculate_mwa,
     draw_from_hypercube,
     generate_constant_R,
     generate_sfh_basis,
@@ -169,6 +169,8 @@ sfh_models, _ = generate_sfh_basis(
 
 
 # Emission parameters
+# With no dust emission model the root of this model is not labelled "total"
+# (it is "attenuated" for fesc=0), so below we refer to it via emission_model.label.
 emission_model = TotalEmission(
     grid=grid,
     dust_curve=Calzetti2000(),
@@ -206,7 +208,7 @@ basis = GalaxyBasis(
 def z_to_max_age(params, max_redshift=20):
     """Convert redshift to maximum age of the SFH at that redshift."""
     z = params["redshift"]
-    from cosmology import Planck18 as cosmo
+    from astropy.cosmology import Planck18 as cosmo
 
     age = cosmo.age(z) - cosmo.age(max_redshift)
     age = age.to_value("Myr") * Myr
@@ -222,7 +224,7 @@ for i in range(0, 1000, 50):
     basis.plot_galaxy(
         i,
         log_stellar_mass=all_param_dict["log_masses"][i],
-        emission_model_keys=["total"],
+        emission_model_keys=[emission_model.label],
         out_dir=out_dir,
     )
 
@@ -234,11 +236,11 @@ basis.create_mock_library(
     verbose=False,
     batch_size=50_000,
     mUV=(calculate_muv, cosmo),  # Calculate mUV for the mock catalogue.
-    mwa=calculate_mwa,  # Calculate MWA for the mock catalogue.
+    mwa=calculate_mass_weighted_age,  # Calculate MWA for the mock catalogue.
     parameter_transforms_to_save={
         "max_age": z_to_max_age
     },  # Save function to calculate the maximum age of the SFH at that redshift.
-    emission_model_key="total",
+    emission_model_key=emission_model.label,
 )
 
 """

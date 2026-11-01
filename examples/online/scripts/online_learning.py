@@ -85,12 +85,12 @@ simulator = GalaxySimulator(
     grid=grid,
     instrument=instrument,
     emission_model=emission_model,
-    emission_model_key="total",
+    emission_model_key=emission_model.label,  # "emergent": no dust emission
     emitter_params=emitter_params,
     param_units={"peak_age": Myr, "max_age": Myr},
     normalize_method=calculate_muv,
     output_type="photo_fnu",
-    out_flux_unit="ABmag",
+    out_flux_unit="AB",
 )
 
 inputs = [
